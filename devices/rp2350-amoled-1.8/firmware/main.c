@@ -7,6 +7,7 @@
 #include "FT3168.h"
 #include "QMI8658.h"
 #include "appswitch.h"
+#include "bootbtn.h"
 
 #define PANEL_W AMOLED_1IN8_WIDTH
 #define PANEL_H AMOLED_1IN8_HEIGHT
@@ -931,6 +932,16 @@ int main(void) {
 
         buttons_poll();
 
+        // BOOT is deliberately NOT polled here. Reading it takes the flash
+        // chip select away for a few microseconds with interrupts off, and
+        // doing that fifty times a second underneath an app that is
+        // continuously executing from flash, running DMA and talking I2C is a
+        // large exposure for no benefit: the only thing this app needs to know
+        // is whether BOOT is down at the instant PWR's long press arrives,
+        // which is one read per event. A periodic poll was in here briefly and
+        // the app hung with a white screen and no input, which is exactly what
+        // a corrupted instruction fetch looks like.
+
         // Visible acknowledgement of a power-key press. A small square for a
         // short press, a large one for a long press, so which physical button
         // is PWR (and whether the PMIC's 1.5s long-press threshold is being
@@ -939,15 +950,22 @@ int main(void) {
             uint8_t ev = g_keyEvent;
             g_keyEvent = 0;
             if (ev & 0x04) {
-                // Long press: hand over to the other app slot. Returns only if
-                // there is nothing to hand over to, in which case flash the
-                // marker so the press is at least acknowledged.
+                // Switching requires BOTH buttons: PWR held past the PMIC's
+                // 1.5s long-press threshold, with BOOT down at that instant.
+                // That is one BOOT read per long press and none in the hot
+                // loop, which is the difference that makes it safe.
                 //
-                // push_bisect_test() was bound here while the display defect
-                // was being chased. It is kept in the source for the next time
-                // the push path changes, but it is no longer reachable.
-                appswitch_go_other();
-                flash_marker(fb, 128, 250);
+                // An earlier note here claimed reading BOOT was not worth the
+                // risk because it had hung the board twice. That was a wrong
+                // reading of the evidence: the hangs came from a flash probe
+                // inside appswitch, and from flashes that silently never
+                // landed while the app was already hung, so every "fix" under
+                // test was actually the same old binary. BOOT reads reliably.
+                if (bootbtn_pressed()) {
+                    appswitch_go_other();
+                    // Only reached when there is no other app to switch to.
+                    flash_marker(fb, 128, 250);
+                }
             } else {
                 // Short press repaints the whole screen from the framebuffer.
                 // This is a test, and a decisive one: the log reports zero

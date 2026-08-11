@@ -20,6 +20,8 @@ pico_generate_pio_header(main ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO/qspi.pio
 target_sources(main PRIVATE
     main.c
     devlink.c
+    appswitch.c
+    bootbtn.c
 )
 
 # Add compilation subdirectory
@@ -50,6 +52,10 @@ target_link_libraries(main PRIVATE
     hardware_i2c
     hardware_gpio
     hardware_adc
+    # appswitch.c calls watchdog_reboot(), a real compiled function in
+    # hardware_watchdog/watchdog.c, not just the header-only rom_*() bootrom
+    # wrappers it used before. pico_stdlib does not pull this in on its own.
+    hardware_watchdog
 )
 
 # enable usb output, disable uart output

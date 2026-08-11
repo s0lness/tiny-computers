@@ -7,6 +7,13 @@
             "description": "Draw on the touchscreen with a finger, anti-aliased tldraw-style ink. Shake the puck to erase.",
             "sourceDir": "firmware",
             "target": "main"
+        },
+        {
+            "id": "chrono",
+            "name": "Chronometer",
+            "description": "Stopwatch, MM:SS,CC. PWR short press starts/stops, long press resets to 00:00,00.",
+            "sourceDir": "apps/chrono",
+            "target": "main"
         }
     ]
 }
