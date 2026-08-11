@@ -1,0 +1,239 @@
+# 0002: A single-binary runtime with immediate-mode apps
+
+Date: 2026-08-11
+Status: proposed (revised after review)
+
+## What this device is for
+
+A pocket-sized touchscreen puck, built as a toy for a child. It holds a handful
+of small apps: a stopwatch, a drawing pad, and later a bubble level, a dice, a
+speedometer. The owner adds apps over USB occasionally. A child uses it daily,
+away from anyone who knows how it works.
+
+Four requirements, in the owner's words: **blazing fast, very reactive, very
+instinctive, very simple to use.**
+
+That last sentence, "away from anyone who knows how it works", turns out to
+drive more of this design than the four requirements do. It is why there is a
+crash-recovery section, why destructive actions are interruptible, and why the
+menu is touched rather than chorded.
+
+## Decision
+
+### 1. One binary, an app table, and switching is a function call
+
+Apps compile into a single image. The runtime owns the screen and the input; an
+app is a struct of callbacks in a table. Switching tears down one app's state
+and renders the next.
+
+| Path | Cost | Why |
+|---|---|---|
+| function call | **under one frame** | repaint only |
+| slot switch, warm | ~20ms (untested) | reboot, skipping panel init |
+| slot switch, cold | **182ms** | reboot plus panel init |
+
+182ms is already the result of replacing the vendor's guessed delays with the
+SH8601 datasheet's real ones; it was 775ms. Of what remains, 150ms is the
+sleep-out the panel physically requires. A reboot cannot beat a function call.
+
+**App state lives in a runtime-owned arena, and the arena has a size.** With
+every app in one image, static buffers coexist at link time: ten apps each
+keeping "a bit" of state will eat the budget silently and the linker will not
+warn at 99KB, it will fail at 521. Apps get a fixed arena, reinitialised on
+switch. **Budget: 64KB.** An app that cannot fit is a design problem, not a
+budget problem.
+
+### 2. Two UI primitives, because one does not fit
+
+**Widgets, for declarative screens.** The app declares its screen every tick;
+the runtime remembers what each widget produced last tick and repaints only
+what changed. Diffing is per widget, not per pixel: a stopwatch repainting six
+digit cells at 10ms costs about 90 microseconds of push, which is affordable
+and much simpler than cell-level tracking.
+
+```c
+static void chrono_render(ui_t *ui) {
+    ui_number(ui, UI_BIG, elapsed_cs);
+    ui_hint(ui, running ? "STOP" : "START");
+}
+```
+
+**A canvas surface, for apps whose framebuffer is the document.** The sketchpad
+cannot declare its screen: there are no retained vectors, ink is MIN-composited
+destructively, and re-rasterising history is impossible by design. It asks the
+runtime for a drawing region, draws into it, and reports dirty rectangles.
+
+This split is not a compromise, it is where the constraints actually live. The
+three invariants worth centralising are all in the **push path**, not the widget
+layer:
+
+- every pushed window's row length must be a multiple of 8 pixels (decision 0001);
+- the framebuffer is byte-swapped RGB565;
+- landscape apps draw through a rotation, portrait ones do not.
+
+The runtime owns the framebuffer and the push, so both primitives get that
+safety and no app can violate it.
+
+Animation and transitions need no special case: render is a function of time.
+
+**Rejected: a retained scene graph.** Objects with properties and invalidation
+trees are the textbook answer and are wrong at this size, where screens are a
+handful of elements that change every frame anyway.
+
+### 3. Sensors are signals, published by core 1
+
+Core 1 owns `i2c1` exclusively and samples touch, the IMU and the PMIC into
+lock-free queues. Core 0 renders. This was a measurement, not a preference: the
+touch I2C read costs about 695 microseconds and was roughly 98 percent of frame
+time, while rasterising took 5 to 95.
+
+An app never talks to a chip; it reads `touch`, `accel`, `shake`, `buttons`.
+
+**Core 0 must never touch `i2c1`.** The vendor demo guards the shared bus with a
+non-atomic `while(lock); lock=1;` on a non-volatile flag, and concurrent access
+corrupts transactions in ways that surface as unrelated failures elsewhere.
+
+**The audio codec is on this bus too** (ES8311 at 0x18), so sound is core 1's
+problem as well. See section 7.
+
+### 4. Input: touch first, buttons as backup
+
+The device's best input is the touchscreen. An earlier draft of this document
+put the menu behind a 1.5 second hold plus a two-button chord, navigated by
+buttons. That was written during a week when touch was the broken subsystem and
+buttons were the trustworthy one, and it is the wrong design for a child with
+small hands.
+
+| Action | Primary | Backup |
+|---|---|---|
+| open the menu | tap the corner glyph | PWR long press with BOOT held |
+| choose an app | **tap its picture** | BOOT / PWR to move, PWR long to launch |
+| the app's action | tap, or PWR short | |
+
+The menu shows pictures, not words: reading English should not be the entry fee.
+Tapping a picture also resolves what "confirm" means, which the button-only
+design never answered.
+
+**No modal state.** If an app can enter a condition where the same input does
+something different, with nothing on screen saying so, that is a defect however
+fast it renders.
+
+**Raise the PMIC's hard power-off threshold** (register `0x27`, default 6s).
+Children hold buttons, and a held PWR is currently 4.5 seconds away from an
+unannounced power cut.
+
+### 5. Destructive actions are per-app and interruptible
+
+**Shake is not a global reset.** Shake-to-erase is charming in the sketchpad
+because it is the Etch A Sketch, an affordance older than the child. Promoting
+it to a universal destructive verb generalises from one app, and it destroys
+exactly the two things a child carries across a room to show someone: the
+drawing, and the number on the stopwatch.
+
+- Shake is **opt-in per app**, offered only where reset is the app's identity.
+- The stopwatch does not have it. BOOT already resets it.
+- Any destructive action must be **interruptible**, never a single threshold
+  crossing. The erase wipe already animates over 16 bands; a touch during the
+  wipe aborts the remaining ones. Sustained shaking is required, so a social
+  shake cannot fire it.
+
+True undo would need a second 330KB buffer that does not exist. Interruptibility
+is the affordable substitute.
+
+### 6. It must recover on its own
+
+The manual recovery for a hung app is a ten-second button ritual. That procedure
+is for the owner. The child does not have it and the owner will not be in the
+room.
+
+- A **watchdog** fed by the runtime tick, rebooting into the menu on hang. The
+  182ms cold boot makes this nearly invisible.
+- The partition machinery in `store/` is repurposed as a **golden fallback
+  image**: a bootloader that counts failed boots and chains a known-good image.
+  This replaces its earlier rationale, which contradicted section 8 of this
+  document: it was kept for installs without a rebuild, which this design
+  rejects. Crash recovery is what it is actually worth.
+
+### 7. Sound is reserved now, not retrofitted
+
+The ES8311 codec and speaker are unused. For a child, sound is half the toy: the
+stopwatch beep, the dice clatter, the erase whoosh.
+
+It is reserved now rather than added later because the codec sits on `i2c1`, so
+its configuration belongs to core 1, which is the most delicate part of this
+architecture. Retrofitting audio means reopening exactly the code least worth
+reopening. The runtime gets a sound service (play a sample by id from the 16MB
+flash) on the same signals model as the sensors.
+
+### 8. Rejected: apps as data, or a scripting layer
+
+Adding apps without a rebuild contradicts requirement one: an interpreter
+between a sensor and a pixel is the latency this design exists to remove.
+Recompiling costs the owner a minute and the child nothing.
+
+### 9. Persistence, decided
+
+- **Across sleep**, the framebuffer survives for free: SRAM stays powered.
+- **Across power-off**, the sketch is saved to flash on long idle and on low
+  battery. A drawing that vanishes is the shake problem by another route.
+- **The stopwatch forgets, and that is correct.**
+
+### 10. Power management
+
+The largest hole in the first draft, which asserted a stance on redraw policy
+with no power data at all while spinning both cores at 60Hz driving an AMOLED.
+
+Required before this is settled: **one real current measurement**, idle and
+drawing. Everything below is a policy to be checked against it, not a
+conclusion.
+
+- Dim on short idle, sleep on long idle, wake on touch or button.
+- Sleep must not cost the panel's 150ms sleep-out on every wake if it can be
+  avoided; dimming does not, which is why dim comes first.
+- Battery gauge and charge state from the AXP2101, surfaced to the runtime.
+- Low battery saves the sketch before it dies.
+- AMOLED burn-in is real (see `AGENTS.md`); anything static needs to move,
+  dim, or sleep.
+
+## Budgets
+
+End-to-end, phrased as a child would notice them rather than as frame counts.
+
+| Path | Budget | Notes |
+|---|---|---|
+| ink trails the finger | under 8 px at normal drawing speed | the felt lag is the smoothing constant, not the frame rate |
+| touch report to pixel | 1 frame | measure the real rate; the driver now asks for 100Hz and the earlier 60Hz figure is stale |
+| gesture to menu visible | under 250ms | budget the gesture, not the render |
+| app switch | 1 frame | tear down, render, push |
+| wake to lit | under 250ms | the one a child reads as "it's broken" |
+| cold start | under 250ms | 182ms today, 150ms of it mandated by the panel |
+
+Memory, of 520KB SRAM:
+
+| | |
+|---|---|
+| framebuffer, shared | 330KB |
+| app arena | 64KB |
+| runtime | under 40KB |
+| headroom | keep 80KB |
+
+## Corrections to the first draft
+
+Recorded because the errors are instructive:
+
+- The FT3168 report rate was quoted as a 60Hz floor. The firmware already asks
+  for 100Hz via register `0x88`, and a comparable project reports that this
+  register does nothing. Measure it rather than quoting either.
+- "The IMU outruns the display" was false as built: `IMU_POLL_MS` is 20, slower
+  than a frame.
+- "An app cannot invent its own dialect" holds for buttons only. Apps see raw
+  touch, necessarily, so touch conventions remain a matter of discipline.
+- Event-driven redraw was dismissed on power grounds with no power data.
+
+## Open questions
+
+- Whether TE sync (GPIO16) is worth its complexity before an app visibly tears.
+- What "reset" means for an app with no obvious zero state. The runtime should
+  not offer the gesture rather than do something surprising.
+- Whether the app arena should be a union of per-app structs, checked at compile
+  time, rather than a byte array with a runtime bound.
