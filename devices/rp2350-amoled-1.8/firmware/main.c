@@ -1,6 +1,8 @@
 #include <math.h>
 #include <stdbool.h>
 #include "pico/time.h"
+#include "pico/multicore.h"
+#include "hardware/sync.h"
 #include "DEV_Config.h"
 #include "AMOLED_1in8.h"
 #include "qspi_pio.h"
@@ -12,20 +14,29 @@
 #define PANEL_W AMOLED_1IN8_WIDTH
 #define PANEL_H AMOLED_1IN8_HEIGHT
 
-// Touch diagnostics. Costs 3 extra I2C reads every 250ms, so keep it off
-// unless something is actually wrong; when on it prints the controller's
-// WhoAmI, the finger count and the raw coordinates.
+// Touch diagnostics. RETIRED since the multicore split below: it read
+// FT3168 registers directly from what is now core0, and core0 must never
+// touch i2c1 once core1 has started (see the big comment above
+// core1_entry()). Left compiled out rather than deleted, in case it is ever
+// worth porting into core1's own loop (no printf there, so it would need to
+// publish counters instead of printing raw register values).
 #define DEBUG_TOUCH 0
 
-// Loop profiler: splits frame time across the three suspects (reading touch
-// over I2C, rasterising the segment, pushing the dirty rect over QSPI) and
-// prints once a second. Printing more often than that would perturb what it
-// is trying to measure.
+// Loop profiler: splits frame time across the suspects and prints once a
+// second. Printing more often than that would perturb what it is trying to
+// measure. Since touch sampling moved to core1 (see core1_entry()), this
+// also tracks the touch queue between the cores and what core1 is doing on
+// i2c1, so a regression on either core is visible from one printout.
 #define PROFILE 1
 
 #if PROFILE
 static uint32_t pf_touch_us, pf_raster_us, pf_push_us;
 static uint32_t pf_loops, pf_samples, pf_pushes, pf_pushPx, pf_reports;
+// Added for the multicore split: how many queue entries core0 actually
+// drained this second (as opposed to pf_samples, which only counts the ones
+// that carried a finger down), the deepest the queue got between drains,
+// and how many short capsules the curve interpolation emitted.
+static uint32_t pf_drained, pf_qDepthPeak, pf_subsegs;
 static uint32_t pf_lastMs;
 static int pf_lastX = -1, pf_lastY = -1;
 #define PF_NOW() time_us_32()
@@ -47,6 +58,17 @@ static int pf_lastX = -1, pf_lastY = -1;
 #define PEN_SIZE     5.0f
 #define PEN_THINNING 0.5f
 #define START_TAPER_LEN 10.0f
+
+// Quadratic-through-midpoints curve fill, following the technique
+// aliceisjustplaying/tinydraw documented for this same board: a fast stroke
+// only gets a raw report every 15-60px (measured: 50-61px on ours), so a
+// straight capsule between consecutive reports reads as facets rather than a
+// curve. Subdividing so each short capsule lands around this many pixels is
+// fine enough that the facet disappears; CURVE_MAX_STEPS bounds the cost on
+// the rare very long span (a bridged dropout, or the 150px MAX_JUMP_PX
+// ceiling) so one big gap cannot spike raster time unboundedly.
+#define CURVE_SEG_PX     2.5f
+#define CURVE_MAX_STEPS  40
 
 // The controller drops contact mid-stroke when the finger moves fast, which
 // arrives as a brief run of zero-finger reports. Taken at face value that ends
@@ -88,9 +110,14 @@ static int pf_lastX = -1, pf_lastY = -1;
 // reboot, which resets the RP2350 without power-cycling the touch chip, so the
 // state survives every reflash. If nothing has been reported for this long,
 // pulse the reset line and re-arm the chip. ~110ms, invisible while idle.
+// Now runs on core1 (touch_recover_core1()); the trigger is wall-clock time
+// since the last observed finger, which is unaffected by whether core1 was
+// gating its I2C reads on Touch_INT_PIN at the time (see core1_entry()).
 #define TOUCH_STALL_MS 5000
 
-// Shake-to-erase tuning.
+// Shake-to-erase tuning. Polled from core1 now (imu_poll_core1()), since the
+// IMU shares i2c1 with touch and the PMIC; see the ownership comment above
+// core1_entry().
 #define IMU_POLL_MS    20
 #define JOLT_DEV_MG    900.0f
 #define JOLT_WINDOW_MS 700
@@ -181,6 +208,56 @@ static void draw_capsule(uint16_t *fb, float ax, float ay, float r0,
     if (minY < *dMinY) *dMinY = minY;
     if (maxX > *dMaxX) *dMaxX = maxX;
     if (maxY > *dMaxY) *dMaxY = maxY;
+}
+
+// Fills the gap between two already-accepted stroke points with a curve
+// instead of the straight line draw_capsule alone would draw. p0, p1, p2 are
+// three consecutive smoothed stroke points (same radii and positions the pen
+// model already computed; nothing about pressure or streamlining changes
+// here); the curve drawn is the classic quadratic-through-midpoints
+// construction, from midpoint(p0,p1) to midpoint(p1,p2) with p1 itself as the
+// control point. Consecutive calls (sharing p1==next call's p0, and so on)
+// meet exactly at those midpoints, so the whole polyline comes out as one
+// continuous curve rather than a chain of straight facets - which is what a
+// 50-61px raw jump on a fast stroke needs, per the profiler and per
+// aliceisjustplaying/tinydraw's own measurement on this same board.
+//
+// This only ever inserts *positions* between the real samples; it does not
+// touch MIN composition, radii, or the pen model; each sub-span is still one
+// more draw_capsule call.
+static void draw_quad_midpoint(uint16_t *fb,
+                                float p0x, float p0y, float p0r,
+                                float p1x, float p1y, float p1r,
+                                float p2x, float p2y, float p2r,
+                                int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    float ax = (p0x + p1x) * 0.5f, ay = (p0y + p1y) * 0.5f, ar = (p0r + p1r) * 0.5f;
+    float dx = (p1x + p2x) * 0.5f, dy = (p1y + p2y) * 0.5f, dr = (p1r + p2r) * 0.5f;
+
+    // Estimate the curve's length from its control polygon (A->p1->D), an
+    // upper bound that is cheap and good enough to pick a subdivision count;
+    // an exact arc length needs the curve itself, which is circular.
+    float arm1 = sqrtf((p1x - ax) * (p1x - ax) + (p1y - ay) * (p1y - ay));
+    float arm2 = sqrtf((dx - p1x) * (dx - p1x) + (dy - p1y) * (dy - p1y));
+    int steps = (int)((arm1 + arm2) / CURVE_SEG_PX + 0.5f);
+    if (steps < 1) steps = 1;
+    if (steps > CURVE_MAX_STEPS) steps = CURVE_MAX_STEPS;
+#if PROFILE
+    pf_subsegs += (uint32_t)steps;
+#endif
+
+    float prevX = ax, prevY = ay, prevR = ar;
+    for (int i = 1; i <= steps; i++) {
+        float t = (float)i / (float)steps;
+        float omt = 1.0f - t;
+        // Standard quadratic Bezier position; radius is interpolated
+        // linearly in t alongside it, the same way draw_capsule already
+        // interpolates r0->r1 linearly across a single straight span.
+        float bx = omt * omt * ax + 2.0f * omt * t * p1x + t * t * dx;
+        float by = omt * omt * ay + 2.0f * omt * t * p1y + t * t * dy;
+        float br = ar + (dr - ar) * t;
+        draw_capsule(fb, prevX, prevY, prevR, bx, by, br, dMinX, dMinY, dMaxX, dMaxY);
+        prevX = bx; prevY = by; prevR = br;
+    }
 }
 
 // Row length granularity, in pixels. Bisected on hardware: a window whose row
@@ -349,6 +426,15 @@ static float g_arcLen;        // accumulated arc length, for the start taper
 static float g_radius;        // radius at (g_sx, g_sy)
 static float g_dirX, g_dirY;  // last travel direction, for the end taper
 
+// History for draw_quad_midpoint: the smoothed point from *two* samples ago
+// (the one before g_sx/g_sy's predecessor). g_haveH0 is false until a stroke
+// has at least two stroke_sample() calls behind it, which is also true right
+// after a bridged dropout (see stroke_sample): a curve drawn across a gap
+// would bow toward a control point that predates the gap, so bridges fall
+// back to a straight segment and the curve resumes on the sample after.
+static float g_h0x, g_h0y, g_h0r;
+static bool g_haveH0;
+
 static float ease_out_sine(float t) {
     return sinf(t * (float)M_PI / 2.0f);
 }
@@ -373,6 +459,7 @@ static void stroke_begin(uint16_t *fb, int x, int y,
     g_dirX = 0.0f;
     g_dirY = 0.0f;
     g_radius = pressure_to_radius(g_pressure) * 0.35f; // start-taper factor at arc==0
+    g_haveH0 = false; // not enough history yet for a curve
     draw_capsule(fb, g_sx, g_sy, g_radius, g_sx, g_sy, g_radius, dMinX, dMinY, dMaxX, dMaxY);
 }
 
@@ -407,7 +494,23 @@ static void stroke_sample(uint16_t *fb, int x, int y, bool bridge,
         r *= (0.35f + 0.65f * (g_arcLen / START_TAPER_LEN));
     }
 
-    draw_capsule(fb, prevX, prevY, prevR, g_sx, g_sy, r, dMinX, dMinY, dMaxX, dMaxY);
+    if (bridge) {
+        // A curve here would bow toward whatever was drawn before the
+        // dropout, which is stale by definition; fill the reconnection
+        // straight, same as before curve-fitting existed.
+        draw_capsule(fb, prevX, prevY, prevR, g_sx, g_sy, r, dMinX, dMinY, dMaxX, dMaxY);
+        g_haveH0 = false; // don't curve the *next* segment across this gap either
+    } else if (g_haveH0) {
+        draw_quad_midpoint(fb, g_h0x, g_h0y, g_h0r, prevX, prevY, prevR, g_sx, g_sy, r,
+                            dMinX, dMinY, dMaxX, dMaxY);
+    } else {
+        // First real sample of the stroke (or the one right after a bridge):
+        // not enough history for a curve yet, so draw the plain straight
+        // span, same as the pre-curve code always did.
+        draw_capsule(fb, prevX, prevY, prevR, g_sx, g_sy, r, dMinX, dMinY, dMaxX, dMaxY);
+    }
+    g_h0x = prevX; g_h0y = prevY; g_h0r = prevR;
+    g_haveH0 = true;
 
     g_radius = r;
     g_dirX = (nx - prevX) / dist;
@@ -415,6 +518,17 @@ static void stroke_sample(uint16_t *fb, int x, int y, bool bridge,
 }
 
 static void stroke_end(uint16_t *fb, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    if (g_haveH0) {
+        // By construction, the last curve segment drawn in stroke_sample
+        // stopped at midpoint(g_h0, current) rather than at the current
+        // point itself - that's what lets consecutive curve segments meet
+        // smoothly. Draw the remaining half straight, or the stroke visibly
+        // falls short of where the finger actually lifted.
+        float mx = (g_h0x + g_sx) * 0.5f, my = (g_h0y + g_sy) * 0.5f;
+        float mr = (g_h0r + g_radius) * 0.5f;
+        draw_capsule(fb, mx, my, mr, g_sx, g_sy, g_radius, dMinX, dMinY, dMaxX, dMaxY);
+    }
+
     static const float scales[3] = {0.7f, 0.45f, 0.25f};
     float curX = g_sx, curY = g_sy, curR = g_radius;
     for (int i = 0; i < 3; i++) {
@@ -429,45 +543,17 @@ static void stroke_end(uint16_t *fb, int *dMinX, int *dMinY, int *dMaxX, int *dM
 /* ---------------------------------------------------------------------
  * Shake-to-erase.
  *
- * QMI8658_read_xyz gives acceleration in mg; at rest |acc| ~= 1000 (1 g).
- * A single sample far from that is a "jolt" but is indistinguishable from
- * a bump or a firm tap, so we require several jolts inside a short
- * rolling window before treating it as an intentional shake, and then
- * enforce a cooldown so the same shake cannot be counted twice.
+ * QMI8658 gives acceleration in mg; at rest |acc| ~= 1000 (1 g). A single
+ * sample far from that is a "jolt" but is indistinguishable from a bump or a
+ * firm tap, so we require several jolts inside a short rolling window before
+ * treating it as an intentional shake, and then enforce a cooldown so the
+ * same shake cannot be counted twice.
+ *
+ * This used to poll the IMU itself from the main loop. It now runs on core1
+ * (imu_poll_core1(), below core1_entry()), since the IMU shares i2c1 with
+ * touch and the PMIC; only wipe_erase() (framebuffer + QSPI, no I2C) stays
+ * here on core0.
  * ------------------------------------------------------------------- */
-static bool shake_poll_and_check(bool fingerDown) {
-    static uint32_t lastPollMs = 0;
-    static uint32_t joltTimes[JOLT_MAX];
-    static int joltCount = 0;
-    static uint32_t cooldownUntilMs = 0;
-
-    uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-    if (nowMs - lastPollMs < IMU_POLL_MS) return false;
-    lastPollMs = nowMs;
-
-    float acc[3], gyro[3];
-    unsigned int tim = 0;
-    QMI8658_read_xyz(acc, gyro, &tim);
-
-    float mag = sqrtf(acc[0] * acc[0] + acc[1] * acc[1] + acc[2] * acc[2]);
-    float dev = fabsf(mag - 1000.0f);
-    if (dev > JOLT_DEV_MG) {
-        int w = 0;
-        for (int i = 0; i < joltCount; i++) {
-            if (nowMs - joltTimes[i] <= JOLT_WINDOW_MS) joltTimes[w++] = joltTimes[i];
-        }
-        joltCount = w;
-        if (joltCount < JOLT_MAX) joltTimes[joltCount++] = nowMs;
-    }
-
-    if (joltCount >= JOLT_MIN_COUNT && nowMs >= cooldownUntilMs && !fingerDown) {
-        cooldownUntilMs = nowMs + ERASE_COOLDOWN_MS;
-        joltCount = 0;
-        return true;
-    }
-    return false;
-}
-
 static void wipe_erase(uint16_t *fb) {
     const int bands = 16;
     const int bandH = PANEL_H / bands;
@@ -508,7 +594,7 @@ static void draw_test_pattern(uint16_t *fb) {
 }
 
 /* ---------------------------------------------------------------------
- * Touch power state and stall recovery.
+ * Touch power state.
  *
  * FT3168_Init writes 0x01 to REG_POWER_MODE (0xA5), which is MONITOR in the
  * driver's own Device_Mode enum, not ACTIVE. Monitor is the low-power scan
@@ -527,6 +613,10 @@ static void draw_test_pattern(uint16_t *fb) {
 #define FT3168_REG_PERIOD_ACTIVE 0x88
 #define FT3168_PERIOD_MS         10
 
+// Runs once, on core0, before multicore_launch_core1() - i.e. before any
+// contention over i2c1 can exist. Never call this after core1 has started;
+// touch_set_active_to() (below core1_entry()) is the timeout-guarded
+// equivalent for use once core1 owns the bus.
 static void touch_set_active(void) {
     // Register 0x00 is DEVICE_MODE. 0 is normal working mode; the chip will not
     // report points in factory/test mode, and nothing in the vendor init ever
@@ -559,7 +649,8 @@ static void touch_set_active(void) {
 // The pin sweep and the periodic snapshot were how the button was found. They
 // are off now that it is known (PWR is the lower of the two side buttons,
 // wired to the PMIC's PWRON pin, seen here only as an AXP2101 interrupt on
-// GPIO2). Power-key events themselves stay on; they are a feature now.
+// GPIO2). Power-key events themselves stay on; they are a feature now, and
+// live in pmic_poll_core1() below, since register 0x49 is on i2c1.
 #define DEBUG_PIN_SWEEP 0
 
 static const uint8_t probePins[] = { 0, 1, 2, 3, 16, 19, 25, 26, 27, 28, 29 };
@@ -581,7 +672,9 @@ static void buttons_init(void) {
 
     // Only the middle interrupt register is enabled. That is where the power
     // key events land; enabling all three also produced battery and charger
-    // events, which are noise for this purpose.
+    // events, which are noise for this purpose. This is one-time setup and
+    // runs on core0 before multicore_launch_core1(), so touching i2c1 here is
+    // still safe.
     DEV_I2C_Write_Byte(AXP2101_ADDR, 0x40, 0x00);
     DEV_I2C_Write_Byte(AXP2101_ADDR, 0x41, 0xFF);
     DEV_I2C_Write_Byte(AXP2101_ADDR, 0x42, 0x00);
@@ -593,8 +686,14 @@ static void buttons_init(void) {
            (unsigned)sizeof(probePins));
 }
 
-// Set by buttons_poll, consumed by the main loop, which is where the
-// framebuffer lives. Bits are REG 0x49's: 3 short press, 2 long press.
+// Set by pmic_poll_core1() (core1), consumed by the main loop (core0), which
+// is where the framebuffer lives. Bits are REG 0x49's: 3 short press, 2 long
+// press. A plain volatile byte is enough synchronisation for this: it is
+// only ever read-and-cleared once per outer loop on core0, a stale or
+// slightly-late read costs at most one loop iteration of a button gesture
+// that is measured in hundreds of milliseconds, and there is no queue of
+// events to lose since the PMIC itself already debounces press/release in
+// hardware.
 static volatile uint8_t g_keyEvent;
 
 // Flashes a filled square in the top-left corner without disturbing the
@@ -622,15 +721,21 @@ static void flash_marker(uint16_t *fb, int size, int holdMs) {
     AMOLED_1IN8_DisplayWindows(0, 0, size, size, fb);
 }
 
-static void buttons_poll(void) {
+// GPIO-only half of the old buttons_poll(): the PMIC I2C poll that used to
+// live here moved to pmic_poll_core1(), since register reads against
+// AXP2101_ADDR are i2c1 traffic and core0 must not touch i2c1 once core1 has
+// started (see core1_entry()). What is left compiles to nothing unless
+// DEBUG_PIN_SWEEP is flipped on, same as before; the periodic AXP register
+// snapshot that used to accompany the pin scan is gone; the pin edges alone
+// are what actually found the button (see README.md's bring-up log).
+static void buttons_poll_gpio(void) {
+#if DEBUG_PIN_SWEEP
     uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-
     // Report a pin only once its new level has held for 30ms. GPIO16 turned
     // out to toggle continuously at roughly the panel refresh rate, which is a
     // real periodic signal (the display tearing-effect line, most likely) and
     // not a button; without debouncing it buries everything else. No human
     // press is shorter than 30ms, so nothing real is lost.
-#if DEBUG_PIN_SWEEP
     for (size_t i = 0; i < sizeof(probePins); i++) {
         uint8_t v = (uint8_t)gpio_get(probePins[i]);
         if (v != probeCand[i]) {
@@ -642,60 +747,13 @@ static void buttons_poll(void) {
                    (unsigned)v, (unsigned long)nowMs);
         }
     }
-
-    // A periodic snapshot of everything, so a press can be found by diffing
-    // two lines even if it never produces a clean edge.
-    static uint32_t snapMs = 0;
-    if (nowMs - snapMs >= 2000) {
-        snapMs = nowMs;
-        printf("snap pins");
-        for (size_t i = 0; i < sizeof(probePins); i++) {
-            printf(" %u=%u", (unsigned)probePins[i], (unsigned)probePrev[i]);
-        }
-        printf(" | axp");
-        for (uint8_t r = 0x00; r <= 0x03; r++) {
-            printf(" %02x=%02x", r, DEV_I2C_Read_Byte(AXP2101_ADDR, r));
-        }
-        printf(" | sysout=%d\r\n", gpio_get(SYS_OUT));
-    }
 #endif
-
-    // The PMIC is on the same I2C bus as touch, so poll it gently.
-    static uint32_t lastMs = 0;
-    if (nowMs - lastMs < 40) return;
-    lastMs = nowMs;
-
-    uint8_t s0 = DEV_I2C_Read_Byte(AXP2101_ADDR, 0x48);
-    uint8_t s1 = DEV_I2C_Read_Byte(AXP2101_ADDR, 0x49);
-    uint8_t s2 = DEV_I2C_Read_Byte(AXP2101_ADDR, 0x4A);
-    if (s0 || s1 || s2) {
-        // Bit names are from the AXP2101 datasheet, REG 49H (IRQ Status 1):
-        // bit0 POWERON positive edge, bit1 negative edge, bit2 long press,
-        // bit3 short press. The observed 0x02-then-0x09 pattern matches, so
-        // press and release are both accounted for.
-        //
-        // REG 27H sets the two thresholds that matter here: the long-press IRQ
-        // fires at 1.5s by default, and the PMIC cuts power at 6s. That gap is
-        // what makes a hold usable as a gesture, with 4.5s of margin.
-        printf("KEY raw=%02x %02x %02x t=%lu%s%s%s%s\r\n",
-               s0, s1, s2, (unsigned long)nowMs,
-               (s1 & 0x02) ? " down" : "",
-               (s1 & 0x01) ? " up" : "",
-               (s1 & 0x08) ? " SHORT" : "",
-               (s1 & 0x04) ? " LONG" : "");
-        if (s1 & 0x0C) g_keyEvent = s1 & 0x0C;
-        // Write-1-to-clear, so the next event is distinguishable from this one.
-        DEV_I2C_Write_Byte(AXP2101_ADDR, 0x48, s0);
-        DEV_I2C_Write_Byte(AXP2101_ADDR, 0x49, s1);
-        DEV_I2C_Write_Byte(AXP2101_ADDR, 0x4A, s2);
-    }
 }
 
-// Scans the I2C bus by address. This exists because the vendor helpers discard
-// every return code: DEV_I2C_Read_Byte reads into an uninitialised local and
-// returns it regardless of whether the device acknowledged, so a chip that is
-// absent or powered down reads as plausible-looking data rather than as an
-// error. Anything printed here is a real ACK from a real device.
+// Scans the I2C bus by address. RETIRED from the hot path along with
+// touch_selftest() below: both hit i2c1 directly and core0 must not once
+// core1 owns the bus. Kept for reference; would need to run before
+// multicore_launch_core1() (like buttons_init()) to be safe again.
 static void i2c_scan(void) {
     printf("i2c scan:");
     int found = 0;
@@ -774,11 +832,328 @@ static void touch_selftest(void) {
     printf(" | int=%d\r\n", gpio_get(Touch_INT_PIN));
 }
 
-static void touch_recover(void) {
-    FT3168_Reset();
-    touch_set_active();
-    sleep_ms(10);
-    printf("touch recover (id=0x%02x)\r\n", FT3168_ReadID());
+/* =========================================================================
+ * Core 1: the sole owner of i2c1.
+ *
+ * i2c1 is shared by the touch controller, the IMU and the PMIC (AGENTS.md).
+ * From the moment multicore_launch_core1() runs (see main(), at the bottom
+ * of this file) core1 is the ONLY code in this firmware allowed to touch
+ * i2c1: no DEV_I2C_*, no i2c_*_blocking or i2c_*_timeout_us against
+ * I2C_PORT, and no call into the FT3168 or QMI8658 drivers (they call
+ * DEV_I2C_* internally) from core0. Everything core0 still does with a GPIO
+ * - SYS_OUT, Touch_INT_PIN, the boot-select pad, the probe pins - is fine
+ * from either core; GPIO input registers are just memory, reading them from
+ * both cores at once is not a race. I2C transactions are not: two cores
+ * issuing them concurrently could interleave on the wire.
+ *
+ * Every read or write in this section uses the SDK's *_timeout_us calls,
+ * never the plain _blocking ones. The plain ones have no timeout at all, so
+ * a wedged bus would hang core1 forever with nothing core0 could do about
+ * it short of a physical power cycle - which is exactly the failure mode
+ * this board has already produced more than once today for other reasons.
+ * A timeout failure here is counted, not retried in a loop.
+ * ========================================================================= */
+
+// 2ms against a transaction that normally costs a few hundred microseconds
+// (695us measured for the worst case, touch's finger-count-then-XY-burst
+// pair) gives comfortable margin without turning a single real stall into a
+// multi-second one.
+#define I2C_TIMEOUT_US 2000
+
+static inline bool i2c1_write_to(uint8_t addr, const uint8_t *data, size_t len) {
+    return i2c_write_timeout_us(I2C_PORT, addr, data, len, false, I2C_TIMEOUT_US) == (int)len;
+}
+
+static inline bool i2c1_write_reg_to(uint8_t addr, uint8_t reg, uint8_t val) {
+    uint8_t b[2] = { reg, val };
+    return i2c1_write_to(addr, b, 2);
+}
+
+// Register-pointer write (repeated START, no STOP) followed by a bounded
+// read, same transaction shape DEV_I2C_Read_nByte uses, just with a timeout
+// on both halves.
+static inline bool i2c1_read_reg_n_to(uint8_t addr, uint8_t reg, uint8_t *out, size_t len) {
+    if (i2c_write_timeout_us(I2C_PORT, addr, &reg, 1, true, I2C_TIMEOUT_US) != 1) return false;
+    return i2c_read_timeout_us(I2C_PORT, addr, out, len, false, I2C_TIMEOUT_US) == (int)len;
+}
+
+/* ---- touch: read helpers, gated on Touch_INT_PIN ---------------------- */
+
+static inline bool touch_read_fingers_to(uint8_t *out) {
+    uint8_t v = 0;
+    if (!i2c1_read_reg_n_to(FT3168_I2C_ADDR, REG_FINGER_NUM, &v, 1)) return false;
+    *out = v;
+    return true;
+}
+
+// One burst for both axes, same as the single-core version used to do: the
+// vendor path reads X (0x03,0x04) and Y (0x05,0x06) as two separate
+// transactions, so a report landing between them yields a point built from
+// the new X and the old Y - a coordinate the finger never visited, off the
+// line at right angles. Auto-increment across these four registers is
+// already relied on by the vendor's own 2-byte reads, so this is the same
+// access widened, not a new assumption.
+static inline bool touch_read_xy_to(uint16_t *x, uint16_t *y) {
+    uint8_t b[4];
+    if (!i2c1_read_reg_n_to(FT3168_I2C_ADDR, REG_X1_H, b, 4)) return false;
+    *x = ((uint16_t)(b[0] & 0x0F) << 8) | b[1];
+    *y = ((uint16_t)(b[2] & 0x0F) << 8) | b[3];
+    return true;
+}
+
+// Timeout-guarded equivalent of touch_set_active() (above), for use after
+// multicore_launch_core1(). Never call the plain touch_set_active() past
+// that point.
+static bool touch_set_active_to(void) {
+    bool ok = true;
+    ok = i2c1_write_reg_to(FT3168_I2C_ADDR, 0x00, 0x00) && ok;
+    ok = i2c1_write_reg_to(FT3168_I2C_ADDR, REG_POWER_MODE, (uint8_t)FT3168_POWER_ACTIVE) && ok;
+    ok = i2c1_write_reg_to(FT3168_I2C_ADDR, FT3168_REG_PERIOD_ACTIVE, FT3168_PERIOD_MS) && ok;
+    return ok;
+}
+
+/* ---- the touch queue: core1 (producer) -> core0 (consumer) ------------
+ *
+ * A single-producer/single-reader ring, power-of-two sized so the index
+ * wrap is a mask instead of a modulo. head is only ever written by core0,
+ * tail only ever written by core1; each core only *reads* the other's
+ * index. That split, plus a memory barrier around the point where the new
+ * element becomes visible, is what makes this safe without a mutex or a
+ * spinlock:
+ *   - a spinlock held across an I2C transaction is exactly what the vendor
+ *     demo's own touch/IMU locking bug looked like (see AGENTS.md's "Do not
+ *     move either onto an interrupt" note) - so this deliberately never
+ *     takes a lock around anything that can block;
+ *   - the producer writes the sample into touchQ[tail] *then* publishes the
+ *     new tail with __dmb() in between, so a consumer that observes the new
+ *     tail is guaranteed to observe a fully-written sample, not a torn one;
+ *   - the consumer's __dmb() before copying out the sample is the mirror of
+ *     that: it stops the compiler or core from reading the sample data
+ *     ahead of reading the tail index that guards it.
+ * The queue can never appear to have more than one writer or reader because
+ * only core1 calls touch_q_push() and only core0 calls touch_q_pop().
+ */
+#define TOUCH_Q_CAP 64
+_Static_assert((TOUCH_Q_CAP & (TOUCH_Q_CAP - 1)) == 0, "TOUCH_Q_CAP must be a power of two");
+
+typedef struct {
+    uint32_t tMs;    // to_ms_since_boot() at the moment core1 took this reading
+    uint8_t  fingers;
+    uint16_t x, y;   // raw (unclamped) touch registers; core0 clamps on dequeue
+} touch_sample_t;
+
+static volatile touch_sample_t g_touchQ[TOUCH_Q_CAP];
+static volatile uint32_t g_touchHead = 0; // core0-owned (consumer index)
+static volatile uint32_t g_touchTail = 0; // core1-owned (producer index)
+
+static inline bool touch_q_push(const touch_sample_t *s) {
+    uint32_t tail = g_touchTail;
+    uint32_t next = (tail + 1) & (TOUCH_Q_CAP - 1);
+    if (next == g_touchHead) return false; // full: core0 is behind, drop and count it
+    g_touchQ[tail] = *s;
+    __dmb();
+    g_touchTail = next;
+    return true;
+}
+
+static inline bool touch_q_pop(touch_sample_t *out) {
+    uint32_t head = g_touchHead;
+    if (head == g_touchTail) return false; // empty
+    __dmb();
+    *out = g_touchQ[head];
+    g_touchHead = (head + 1) & (TOUCH_Q_CAP - 1);
+    return true;
+}
+
+// How often to push a synthetic "no finger" sample while Touch_INT_PIN is
+// high, so core0's lift-debounce and stall-watchdog timing (both wall-clock
+// based, see LIFT_DEBOUNCE_MS / TOUCH_STALL_MS) keep getting fresh
+// timestamps without core1 spending any I2C time to produce them. Well
+// under LIFT_DEBOUNCE_MS (80ms), so a real lift is still noticed promptly;
+// the transition itself is also pushed immediately (see core1_entry), so
+// this interval only governs the steady idle state, not the edge.
+#define TOUCH_IDLE_HEARTBEAT_MS 5
+
+/* ---- cross-core published state, other than the touch queue -----------
+ *
+ * All of these are single, plain-old-data words: each is written by
+ * exactly one core and only ever read by the other, so an aligned 32-bit
+ * (or bool-sized) load/store is already atomic on Cortex-M33 and no barrier
+ * is needed for correctness - the worst case is the reader seeing last
+ * loop's value for one more iteration, which for a button gesture, a shake
+ * flag or a diagnostic counter is nowhere near visible.
+ */
+static volatile bool g_fingerDownShared; // core0 -> core1: suppress shake while drawing
+static volatile uint32_t g_eraseSeq;     // core1 -> core0: bumped once per accepted shake
+
+// Diagnostics, core1-increment-only, core0-read-only (via the profiler).
+static volatile uint32_t g_touchReads;
+static volatile uint32_t g_touchTimeouts;
+static volatile uint32_t g_touchQueueDrops;
+static volatile uint32_t g_touchRecoveries;
+static volatile uint32_t g_imuTimeouts;
+static volatile uint32_t g_pmicTimeouts;
+
+/* ---- touch stall recovery, core1 side ---------------------------------- */
+
+static void touch_recover_core1(void) {
+    FT3168_Reset();          // RST pin toggle + sleep_ms only, no I2C: safe as-is.
+    if (!touch_set_active_to()) g_touchTimeouts++;
+    g_touchRecoveries++;
+}
+
+/* ---- IMU: shake-to-erase, core1 side ------------------------------------
+ *
+ * QMI8658_init() (called once on core0, before multicore_launch_core1())
+ * leaves the part at QMI8658AccRange_8g, which is what fixes the raw-to-mg
+ * scale factor below: acc_lsb_div = 1<<12 = 4096 for that range (see
+ * QMI8658.c's QMI8658_config_acc()). That divisor is a private static in
+ * the vendor driver with no getter, so it is re-derived here rather than
+ * read back; if QMI8658_init()'s accRange is ever changed, this constant
+ * has to change with it.
+ */
+#define QMI8658_I2C_ADDR    0x6B  // confirmed on this board by i2c_scan(); QMI8658_init()
+                                  // itself probes 0x6A then 0x6B and only 0x6B acks here.
+#define QMI8658_ACC_LSB_DIV 4096.0f
+
+static void imu_poll_core1(uint32_t nowMs) {
+    static uint32_t lastMs = 0;
+    static uint32_t joltTimes[JOLT_MAX];
+    static int joltCount = 0;
+    static uint32_t cooldownUntilMs = 0;
+
+    if (nowMs - lastMs < IMU_POLL_MS) return;
+    lastMs = nowMs;
+
+    uint8_t buf[6];
+    if (!i2c1_read_reg_n_to(QMI8658_I2C_ADDR, QMI8658Register_Ax_L, buf, 6)) {
+        g_imuTimeouts++;
+        return;
+    }
+    short rawX = (short)((uint16_t)(buf[1] << 8) | buf[0]);
+    short rawY = (short)((uint16_t)(buf[3] << 8) | buf[2]);
+    short rawZ = (short)((uint16_t)(buf[5] << 8) | buf[4]);
+    float ax = ((float)rawX * 1000.0f) / QMI8658_ACC_LSB_DIV;
+    float ay = ((float)rawY * 1000.0f) / QMI8658_ACC_LSB_DIV;
+    float az = ((float)rawZ * 1000.0f) / QMI8658_ACC_LSB_DIV;
+
+    float mag = sqrtf(ax * ax + ay * ay + az * az);
+    float dev = fabsf(mag - 1000.0f);
+    if (dev > JOLT_DEV_MG) {
+        int w = 0;
+        for (int i = 0; i < joltCount; i++) {
+            if (nowMs - joltTimes[i] <= JOLT_WINDOW_MS) joltTimes[w++] = joltTimes[i];
+        }
+        joltCount = w;
+        if (joltCount < JOLT_MAX) joltTimes[joltCount++] = nowMs;
+    }
+
+    if (joltCount >= JOLT_MIN_COUNT && nowMs >= cooldownUntilMs && !g_fingerDownShared) {
+        cooldownUntilMs = nowMs + ERASE_COOLDOWN_MS;
+        joltCount = 0;
+        g_eraseSeq++;
+    }
+}
+
+/* ---- PMIC: power key events, core1 side --------------------------------
+ *
+ * Same three status registers the old buttons_poll() read on core0, just
+ * timeout-guarded and printf-free (core1 must not printf; see the section
+ * banner above). The verbose "KEY raw=.. down/up/SHORT/LONG" trace that used
+ * to print here is gone with it - g_keyEvent and the short/long-press
+ * actions in main() are unaffected, only the raw diagnostic line is lost.
+ * Deliberately NOT batched into one 3-byte burst read from 0x48, even though
+ * the registers are consecutive: unlike the touch and IMU bursts above, that
+ * pattern is not something the existing, hardware-proven code already does
+ * for this chip, and there is no hardware here tonight to check it against.
+ */
+static void pmic_poll_core1(uint32_t nowMs) {
+    static uint32_t lastMs = 0;
+    if (nowMs - lastMs < 40) return;
+    lastMs = nowMs;
+
+    uint8_t s0 = 0, s1 = 0, s2 = 0;
+    bool ok = i2c1_read_reg_n_to(AXP2101_ADDR, 0x48, &s0, 1) &&
+              i2c1_read_reg_n_to(AXP2101_ADDR, 0x49, &s1, 1) &&
+              i2c1_read_reg_n_to(AXP2101_ADDR, 0x4A, &s2, 1);
+    if (!ok) {
+        g_pmicTimeouts++;
+        return;
+    }
+    if (s0 || s1 || s2) {
+        // Bit names are from the AXP2101 datasheet, REG 49H (IRQ Status 1):
+        // bit0 POWERON positive edge, bit1 negative edge, bit2 long press,
+        // bit3 short press.
+        if (s1 & 0x0C) g_keyEvent = s1 & 0x0C;
+        // Write-1-to-clear, so the next event is distinguishable from this one.
+        i2c1_write_reg_to(AXP2101_ADDR, 0x48, s0);
+        i2c1_write_reg_to(AXP2101_ADDR, 0x49, s1);
+        i2c1_write_reg_to(AXP2101_ADDR, 0x4A, s2);
+    }
+}
+
+/* ---- core1 entry point --------------------------------------------------
+ *
+ * Touch is gated on Touch_INT_PIN (active low, already configured as an
+ * input with a pull-up in main() before this core starts): skip the I2C
+ * read while the line is high, which is most of the time when no finger is
+ * down, and that is where the 695us-per-loop cost measured on this board
+ * (98% of frame time) actually went. aliceisjustplaying/tinydraw's own
+ * writeup on this same board warns that reading *only* on the falling
+ * edge - i.e. one read, then wait for the next edge - was jittery and had
+ * to be reverted; this does not do that. The gate is on the *level*, so
+ * every pass through this loop re-checks it: while the line is low the read
+ * repeats continuously, same as the old single-core hot loop did, and it
+ * only stops once the line is actually back high.
+ */
+static void core1_entry(void) {
+    uint32_t lastFingerMs = to_ms_since_boot(get_absolute_time());
+    uint32_t lastIdleHeartbeatMs = 0;
+    bool wasTouchLow = false;
+
+    while (true) {
+        uint32_t nowMs = to_ms_since_boot(get_absolute_time());
+
+        int intLow = (gpio_get(Touch_INT_PIN) == 0);
+        if (intLow) {
+            uint8_t fingers = 0;
+            bool ok = touch_read_fingers_to(&fingers);
+            g_touchReads++;
+            uint16_t x = 0, y = 0;
+            if (ok && fingers != 0) {
+                ok = touch_read_xy_to(&x, &y);
+                g_touchReads++;
+            }
+            if (!ok) {
+                g_touchTimeouts++;
+            } else {
+                touch_sample_t s = { nowMs, fingers, x, y };
+                if (!touch_q_push(&s)) g_touchQueueDrops++;
+                if (fingers != 0) lastFingerMs = nowMs;
+            }
+            wasTouchLow = true;
+        } else {
+            // Push immediately on the low->high edge (a lift should be seen
+            // right away), then keep a light heartbeat afterward so core0's
+            // wall-clock timers (lift debounce, stall watchdog) keep getting
+            // fresh "still no finger" timestamps without any I2C cost.
+            bool edge = wasTouchLow;
+            wasTouchLow = false;
+            if (edge || nowMs - lastIdleHeartbeatMs >= TOUCH_IDLE_HEARTBEAT_MS) {
+                lastIdleHeartbeatMs = nowMs;
+                touch_sample_t s = { nowMs, 0, 0, 0 };
+                if (!touch_q_push(&s)) g_touchQueueDrops++;
+            }
+        }
+
+        if (nowMs - lastFingerMs >= TOUCH_STALL_MS) {
+            lastFingerMs = nowMs;
+            touch_recover_core1();
+        }
+
+        imu_poll_core1(nowMs);
+        pmic_poll_core1(nowMs);
+    }
 }
 
 int main(void) {
@@ -797,6 +1172,11 @@ int main(void) {
     gpio_pull_up(Touch_INT_PIN);
     touch_set_active();
     buttons_init();
+    // Everything above touches i2c1 (QMI8658_init, FT3168_Init,
+    // touch_set_active, buttons_init) and runs single-threaded on core0, so
+    // there is no ownership question yet. That changes the moment core1
+    // launches, below: from here on only core1 may touch i2c1 (see the
+    // banner comment above core1_entry()).
 
     uint16_t *fb = (uint16_t *)malloc((size_t)PANEL_W * PANEL_H * 2);
     if (fb == NULL) {
@@ -811,14 +1191,16 @@ int main(void) {
     AMOLED_1IN8_Display(fb);
     // Read the scan period back rather than assuming the write took. If this
     // does not read as FT3168_PERIOD_MS the controller is still at its 60Hz
-    // default and the reports-per-second figure below is the proof.
+    // default and the reports-per-second figure below is the proof. This is
+    // still on core0, still before multicore_launch_core1(), so still safe.
     printf("sketchpad ready (touch period reg=%u ms)\r\n",
            DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_PERIOD_ACTIVE));
+
+    multicore_launch_core1(core1_entry);
 
     bool fingerDown = false;
     bool patternShown = false;
     int lastRawX = 0, lastRawY = 0;
-    int glitchRun = 0;
     uint32_t glitches = 0;
     uint32_t lastSampleMs = 0;
     uint32_t dropouts = 0;
@@ -830,84 +1212,18 @@ int main(void) {
     int lastReportX = -1, lastReportY = -1;
     uint32_t strays = 0;
     uint32_t splits = 0;
+    uint32_t lastEraseSeqSeen = 0;
 
-    // Touch diagnostics: the boot-time WhoAmI print from FT3168_Init is lost
-    // because USB CDC drops output until a host opens the port, so re-report
-    // it here on a timer along with the raw register reads.
-    uint32_t dbgLastMs = 0;
-    uint32_t dbgLoops = 0;
-    uint32_t lastFingerMs = to_ms_since_boot(get_absolute_time());
+    // Snapshots for turning core1's monotonic counters into per-second
+    // deltas in the profiler print, below.
+    uint32_t lastTouchReads = 0, lastTouchTimeouts = 0, lastTouchDrops = 0;
+    uint32_t lastTouchRecoveries = 0, lastImuTimeouts = 0, lastPmicTimeouts = 0;
 
     while (true) {
         int dMinX = PANEL_W, dMinY = PANEL_H, dMaxX = -1, dMaxY = -1;
 
-        uint32_t pf_t = PF_NOW();
-
-        // Touch read, exactly the vendor sequence. This is the only variant
-        // observed to work reliably on this hardware.
-        //
-        // Two "obvious" optimisations were tried and both broke touch:
-        //   - one 5-byte burst from 0x02, on the assumption the controller
-        //     auto-increments from the finger-count register into the
-        //     coordinate registers;
-        //   - dropping the redundant finger-count read that FT3168_Get_Point
-        //     performs internally, and reading 0x03/0x05 directly instead.
-        // The second failing is the informative one: it suggests the read of
-        // the count register is not redundant at all, and is what latches a
-        // fresh coordinate report. Cost is ~380us per finger-present loop,
-        // which the profiling showed is ~98% of the frame. Worth revisiting
-        // only with a datasheet in hand, not by guessing.
-        uint8_t fingers = (uint8_t)FT3168_ReadState(FT3168_FINGER_NUMBER);
-        int rawX = 0, rawY = 0;
-        if (fingers != 0) {
-            // One burst for both axes. The vendor path reads X (0x03,0x04) and
-            // Y (0x05,0x06) as two separate I2C transactions, so a report that
-            // lands between them yields a point built from the new X and the
-            // old Y: a coordinate that the finger never visited, off the line
-            // at right angles. At speed that draws visible spurs and smudges.
-            // Auto-increment across these four registers is already relied on
-            // by the vendor's own 2-byte reads, so this is the same access
-            // widened, not a new assumption.
-            //
-            // The finger-count read above is deliberately left untouched.
-            // Removing it broke touch entirely once before, which suggests it
-            // is what latches a fresh report rather than being redundant.
-            uint8_t b[4];
-            DEV_I2C_Read_nByte(FT3168_I2C_ADDR, REG_X1_H, b, 4);
-            rawX = ((int)(b[0] & 0x0F) << 8) | b[1];
-            rawY = ((int)(b[2] & 0x0F) << 8) | b[3];
-            FT3168.x_point = (uint16_t)rawX;
-            FT3168.y_point = (uint16_t)rawY;
-        }
-
-        // The interrupt line is the controller's own opinion about whether a
-        // finger is present, formed before any register read. Logging its edges
-        // separates "the panel senses nothing" from "the panel senses it and we
-        // read it wrong", which no amount of register polling can distinguish.
-        {
-            static int prevInt = 1;
-            static bool selfTested = false;
-            int lvl = gpio_get(Touch_INT_PIN);
-            uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-            if (lvl != prevInt) {
-                prevInt = lvl;
-                printf("INT %s t=%lu fingers=%u\r\n", lvl ? "high" : "LOW",
-                       (unsigned long)nowMs, fingers);
-            }
-            // Once, late enough that a host is certainly attached and reading.
-            if (!selfTested && nowMs > 6000) {
-                selfTested = true;
-                touch_selftest();
-            }
-        }
-
         // PWR button, reported by the AXP2101 on SYS_OUT rather than wired to
-        // the MCU directly. The vendor demo treats it as active high and does
-        // nothing but reboot on it. Logging both edges and the hold duration
-        // answers three things at once: which of the two side buttons is PWR
-        // (BOOT produces nothing at all at runtime), whether the line stays
-        // asserted while held or merely pulses, and therefore whether a
-        // long-press app switch is implementable at all.
+        // the MCU directly. GPIO-only (no I2C), so still fine on core0.
         {
             static int prevPwr = 0;
             static uint32_t pwrDownMs = 0;
@@ -930,7 +1246,7 @@ int main(void) {
             }
         }
 
-        buttons_poll();
+        buttons_poll_gpio();
 
         // BOOT is deliberately NOT polled here. Reading it takes the flash
         // chip select away for a few microseconds with interrupts off, and
@@ -942,10 +1258,9 @@ int main(void) {
         // the app hung with a white screen and no input, which is exactly what
         // a corrupted instruction fetch looks like.
 
-        // Visible acknowledgement of a power-key press. A small square for a
-        // short press, a large one for a long press, so which physical button
-        // is PWR (and whether the PMIC's 1.5s long-press threshold is being
-        // reached) can both be read straight off the screen.
+        // Visible acknowledgement of a power-key press. g_keyEvent is now set
+        // by pmic_poll_core1() on core1 instead of buttons_poll() here, but
+        // the read-and-clear-once-per-loop contract is unchanged.
         if (g_keyEvent) {
             uint8_t ev = g_keyEvent;
             g_keyEvent = 0;
@@ -954,13 +1269,6 @@ int main(void) {
                 // 1.5s long-press threshold, with BOOT down at that instant.
                 // That is one BOOT read per long press and none in the hot
                 // loop, which is the difference that makes it safe.
-                //
-                // An earlier note here claimed reading BOOT was not worth the
-                // risk because it had hung the board twice. That was a wrong
-                // reading of the evidence: the hangs came from a flash probe
-                // inside appswitch, and from flashes that silently never
-                // landed while the app was already hung, so every "fix" under
-                // test was actually the same old binary. BOOT reads reliably.
                 if (bootbtn_pressed()) {
                     appswitch_go_other();
                     // Only reached when there is no other app to switch to.
@@ -968,200 +1276,188 @@ int main(void) {
                 }
             } else {
                 // Short press repaints the whole screen from the framebuffer.
-                // This is a test, and a decisive one: the log reports zero
-                // splits, glitches and strays, so the firmware believes it
-                // drew continuous strokes, yet some strokes appear as dashes.
-                // Either the framebuffer really has gaps, in which case a full
-                // repaint changes nothing, or the partial-refresh path is
-                // losing pixels on the way to the panel, in which case the
-                // missing ink reappears. One press tells us which.
                 AMOLED_1IN8_Display(fb);
                 printf("full refresh\r\n");
             }
         }
 
-        // Stall watchdog. Only the finger count can arm it, so a working
-        // controller never triggers it while in use, and an idle one pays one
-        // reset per TOUCH_STALL_MS with nothing on screen to disturb.
-        {
-            uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-            if (fingers != 0) {
-                lastFingerMs = nowMs;
-            } else if (nowMs - lastFingerMs >= TOUCH_STALL_MS) {
-                lastFingerMs = nowMs;
-                touch_recover();
-            }
-        }
-
-#if DEBUG_TOUCH
-        dbgLoops++;
-        {
-            uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-            if (nowMs - dbgLastMs >= 250) {
-                dbgLastMs = nowMs;
-                uint16_t id = FT3168_ReadID();
-                uint16_t rx = FT3168_ReadState(FT3168_COORDINATE_X);
-                uint16_t ry = FT3168_ReadState(FT3168_COORDINATE_Y);
-                uint8_t pwr = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, REG_POWER_MODE);
-                uint8_t mode = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, 0x00);
-                uint8_t ev = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, REG_X1_H);
-                printf("dbg t=%lu loops=%lu id=0x%02x mode=0x%02x pwr=0x%02x int=%d "
-                       "fingers=%u ev=0x%02x raw=(%u,%u) struct=(%u,%u)\r\n",
-                       (unsigned long)nowMs, (unsigned long)dbgLoops,
-                       id, mode, pwr, gpio_get(Touch_INT_PIN),
-                       fingers, ev, rx, ry, FT3168.x_point, FT3168.y_point);
-                dbgLoops = 0;
-            }
-        }
-#endif
-
-        int x = 0, y = 0;
-        bool haveTouch = false;
-        if (fingers != 0) {
-            x = rawX; y = rawY;
-            if (x < 0) x = 0; else if (x > PANEL_W - 1) x = PANEL_W - 1;
-            if (y < 0) y = 0; else if (y > PANEL_H - 1) y = PANEL_H - 1;
-            haveTouch = true;
+        // Drain everything core1 has queued since the last pass. Multiple
+        // samples routinely arrive between two core0 iterations now that
+        // core0 is not blocked on I2C at all; draining the whole backlog
+        // before pushing means one push per outer loop still covers however
+        // many samples landed, rather than growing the number of pushes.
+        touch_sample_t smp;
+        for (;;) {
+            uint32_t pf_t = PF_NOW();
+            bool got = touch_q_pop(&smp);
+            PF_ADD(pf_touch_us, pf_t);
+            if (!got) break;
 #if PROFILE
-            // Count only genuinely new readings. The gap between this and the
-            // poll rate is how much of the I2C traffic is re-reading the same
-            // point, and its ceiling is the panel's real report rate, which is
-            // the floor on input latency no matter how fast we poll.
-            if (x != pf_lastX || y != pf_lastY) { pf_reports++; pf_lastX = x; pf_lastY = y; }
-#endif
-        }
-        PF_ADD(pf_touch_us, pf_t);
-
-        uint32_t pf_r = PF_NOW();
-        if (haveTouch && patternShown) {
-            // First touch wipes the test pattern; do not draw with it.
-            patternShown = false;
-            for (int i = 0; i < PANEL_W * PANEL_H; i++) fb[i] = 0xFFFF;
-            AMOLED_1IN8_Display(fb);
-            printf("pattern cleared\r\n");
-        } else if (haveTouch) {
-            uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-
-            // Only act on genuinely new coordinates. The loop runs about 5000
-            // times a second while the controller reports at 60, so most
-            // iterations re-read a report that was already handled. Filtering
-            // here rather than inside stroke_sample matters twice over: the
-            // jump allowance is derived from the interval between accepted
-            // samples, and counting repeats collapsed that interval to ~3ms,
-            // which made every fast stroke look like an impossible jump and
-            // split it into dots; and the stroke-start check counts reports,
-            // which repeats turned into two loop iterations 0.2ms apart, so it
-            // was not really checking anything.
-            bool newReport = (x != lastReportX) || (y != lastReportY);
-            lastReportX = x;
-            lastReportY = y;
-
-            if (!newReport) {
-                // Nothing new from the controller: leave all stroke state be.
-            } else if (!fingerDown) {
-                // A stroke starts only once contact has persisted for two
-                // reports, so a one-report blip leaves nothing behind.
-                // What makes a stray a stray is that it does not persist, not
-                // that it is far away. Requiring the two reports to agree on
-                // position instead broke fast strokes: consecutive reports of
-                // a quick flick are further apart than the agreement radius,
-                // so the stroke kept failing to start and left isolated dots
-                // where it briefly succeeded. Persistence alone is the test.
-                if (!pendingStart) {
-                    pendingStart = true;
-                    pendX = x; pendY = y;
-                } else {
-                    pendingStart = false;
-                    fingerDown = true;
-                    haveCand = false;
-                    lastSampleMs = nowMs;
-                    // Begin at the first report and immediately extend to this
-                    // one, so no travel is lost to the confirmation.
-                    stroke_begin(fb, pendX, pendY, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                    lastRawX = x; lastRawY = y;
-                    stroke_sample(fb, x, y, false, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                    printf("stroke start (%d,%d) t=%lu\r\n",
-                           pendX, pendY, (unsigned long)nowMs);
-                }
-            } else {
-                float jx = (float)(x - lastRawX), jy = (float)(y - lastRawY);
-                float dtMs = (float)(nowMs - lastSampleMs);
-                float allow = MAX_SPEED_PX_PER_MS * dtMs;
-                if (allow < MIN_JUMP_ALLOW_PX) allow = MIN_JUMP_ALLOW_PX;
-                if (allow > MAX_JUMP_PX) allow = MAX_JUMP_PX;
-
-                float jumpSq = jx * jx + jy * jy;
-                bool confirmed = haveCand &&
-                    ((float)(x - candX) * (float)(x - candX) +
-                     (float)(y - candY) * (float)(y - candY) <= CONFIRM_PX * CONFIRM_PX);
-
-                if (jumpSq <= allow * allow) {
-                    haveCand = false;
-                    lastRawX = x; lastRawY = y;
-                    lastSampleMs = nowMs;
-                    stroke_sample(fb, x, y, bridging, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                    bridging = false;
-                } else if (confirmed) {
-                    // The finger really is over there. Too far to be a dropout
-                    // in one stroke, so close this stroke and open a new one
-                    // instead of drawing a line across the gap.
-                    haveCand = false;
-                    stroke_end(fb, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                    stroke_begin(fb, x, y, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                    lastRawX = x; lastRawY = y;
-                    lastSampleMs = nowMs;
-                    bridging = false;
-                    splits++;
-                    printf("stroke split at (%d,%d) gap=%dpx dt=%dms\r\n",
-                           x, y, (int)sqrtf(jumpSq), (int)dtMs);
-                } else {
-                    candX = x; candY = y;
-                    haveCand = true;
-                    glitches++;
-                }
+            pf_drained++;
+            {
+                uint32_t depth = (g_touchTail - g_touchHead) & (TOUCH_Q_CAP - 1);
+                if (depth > pf_qDepthPeak) pf_qDepthPeak = depth;
             }
-#if PROFILE
-            pf_samples++;
 #endif
-        } else if (pendingStart && !fingerDown) {
-            // Contact appeared for a single report and vanished. Nothing was
-            // drawn, which is the whole point of waiting for confirmation.
-            pendingStart = false;
-            lastReportX = -1; lastReportY = -1;
-            strays++;
-        } else if (fingerDown) {
-            // No contact reported. This is either a real lift or the controller
-            // briefly losing a fast-moving finger, and the two are
-            // indistinguishable at this instant, so wait before believing it.
-            uint32_t nowMs = to_ms_since_boot(get_absolute_time());
-            if (nowMs - lastSampleMs >= LIFT_DEBOUNCE_MS) {
-                fingerDown = false;
-                bridging = false;
-                // Forget the last coordinates, so touching down again on the
-                // exact same pixel still counts as a new report.
+            uint32_t pf_r = PF_NOW();
+
+            int x = 0, y = 0;
+            bool haveTouch = (smp.fingers != 0);
+            if (haveTouch) {
+                x = smp.x; y = smp.y;
+                if (x < 0) x = 0; else if (x > PANEL_W - 1) x = PANEL_W - 1;
+                if (y < 0) y = 0; else if (y > PANEL_H - 1) y = PANEL_H - 1;
+#if PROFILE
+                // Count only genuinely new readings. core1 re-reads
+                // continuously while Touch_INT_PIN is low (about 1.4kHz,
+                // bounded by the I2C transaction cost) while the controller
+                // itself only reports at ~60-68Hz, so most drained samples
+                // repeat the last coordinate; this is the same dedup the
+                // single-core version did, just now over drained samples
+                // instead of raw loop iterations.
+                if (x != pf_lastX || y != pf_lastY) { pf_reports++; pf_lastX = x; pf_lastY = y; }
+#endif
+            }
+
+            if (haveTouch && patternShown) {
+                // First touch wipes the test pattern; do not draw with it.
+                patternShown = false;
+                for (int i = 0; i < PANEL_W * PANEL_H; i++) fb[i] = 0xFFFF;
+                AMOLED_1IN8_Display(fb);
+                printf("pattern cleared\r\n");
+            } else if (haveTouch) {
+                uint32_t nowMs = smp.tMs;
+
+                // Only act on genuinely new coordinates. See the pf_reports
+                // comment above for why counting repeats would corrupt both
+                // the jump allowance (derived from inter-sample interval)
+                // and the stroke-start persistence check.
+                bool newReport = (x != lastReportX) || (y != lastReportY);
+                lastReportX = x;
+                lastReportY = y;
+
+                if (!newReport) {
+                    // Nothing new from the controller: leave all stroke state be.
+                } else if (!fingerDown) {
+                    // A stroke starts only once contact has persisted for two
+                    // reports, so a one-report blip leaves nothing behind.
+                    // What makes a stray a stray is that it does not persist, not
+                    // that it is far away. Requiring the two reports to agree on
+                    // position instead broke fast strokes: consecutive reports of
+                    // a quick flick are further apart than the agreement radius,
+                    // so the stroke kept failing to start and left isolated dots
+                    // where it briefly succeeded. Persistence alone is the test.
+                    if (!pendingStart) {
+                        pendingStart = true;
+                        pendX = x; pendY = y;
+                    } else {
+                        pendingStart = false;
+                        fingerDown = true;
+                        haveCand = false;
+                        lastSampleMs = nowMs;
+                        // Begin at the first report and immediately extend to this
+                        // one, so no travel is lost to the confirmation.
+                        stroke_begin(fb, pendX, pendY, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                        lastRawX = x; lastRawY = y;
+                        stroke_sample(fb, x, y, false, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                        printf("stroke start (%d,%d) t=%lu\r\n",
+                               pendX, pendY, (unsigned long)nowMs);
+                    }
+                } else {
+                    float jx = (float)(x - lastRawX), jy = (float)(y - lastRawY);
+                    float dtMs = (float)(nowMs - lastSampleMs);
+                    float allow = MAX_SPEED_PX_PER_MS * dtMs;
+                    if (allow < MIN_JUMP_ALLOW_PX) allow = MIN_JUMP_ALLOW_PX;
+                    if (allow > MAX_JUMP_PX) allow = MAX_JUMP_PX;
+
+                    float jumpSq = jx * jx + jy * jy;
+                    bool confirmed = haveCand &&
+                        ((float)(x - candX) * (float)(x - candX) +
+                         (float)(y - candY) * (float)(y - candY) <= CONFIRM_PX * CONFIRM_PX);
+
+                    if (jumpSq <= allow * allow) {
+                        haveCand = false;
+                        lastRawX = x; lastRawY = y;
+                        lastSampleMs = nowMs;
+                        stroke_sample(fb, x, y, bridging, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                        bridging = false;
+                    } else if (confirmed) {
+                        // The finger really is over there. Too far to be a dropout
+                        // in one stroke, so close this stroke and open a new one
+                        // instead of drawing a line across the gap.
+                        haveCand = false;
+                        stroke_end(fb, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                        stroke_begin(fb, x, y, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                        lastRawX = x; lastRawY = y;
+                        lastSampleMs = nowMs;
+                        bridging = false;
+                        splits++;
+                        printf("stroke split at (%d,%d) gap=%dpx dt=%dms\r\n",
+                               x, y, (int)sqrtf(jumpSq), (int)dtMs);
+                    } else {
+                        candX = x; candY = y;
+                        haveCand = true;
+                        glitches++;
+                    }
+                }
+#if PROFILE
+                pf_samples++;
+#endif
+            } else if (pendingStart && !fingerDown) {
+                // Contact appeared for a single report and vanished. Nothing was
+                // drawn, which is the whole point of waiting for confirmation.
+                pendingStart = false;
                 lastReportX = -1; lastReportY = -1;
-                stroke_end(fb, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                printf("stroke end t=%lu\r\n", (unsigned long)nowMs);
-            } else {
-                // Still inside the grace window: keep the stroke open, and mark
-                // the next real sample as the one that has to bridge the gap.
-                // Counted once per episode, not once per loop iteration, which
-                // at ~8700 loops/sec would otherwise be meaningless.
-                if (!bridging) dropouts++;
-                bridging = true;
+                strays++;
+            } else if (fingerDown) {
+                // No contact reported. This is either a real lift or the controller
+                // briefly losing a fast-moving finger, and the two are
+                // indistinguishable at this instant, so wait before believing it.
+                uint32_t nowMs = smp.tMs;
+                if (nowMs - lastSampleMs >= LIFT_DEBOUNCE_MS) {
+                    fingerDown = false;
+                    bridging = false;
+                    // Forget the last coordinates, so touching down again on the
+                    // exact same pixel still counts as a new report.
+                    lastReportX = -1; lastReportY = -1;
+                    stroke_end(fb, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                    printf("stroke end t=%lu\r\n", (unsigned long)nowMs);
+                } else {
+                    // Still inside the grace window: keep the stroke open, and mark
+                    // the next real sample as the one that has to bridge the gap.
+                    // Counted once per episode, not once per drained sample, which
+                    // at the queue's drain rate would otherwise be meaningless.
+                    if (!bridging) dropouts++;
+                    bridging = true;
+                }
             }
+            PF_ADD(pf_raster_us, pf_r);
         }
-        PF_ADD(pf_raster_us, pf_r);
 
-        if (shake_poll_and_check(fingerDown)) {
-            wipe_erase(fb);
-            g_pressure = 0.5f;
-            g_arcLen = 0.0f;
-            g_radius = 0.0f;
-            g_dirX = 0.0f;
-            g_dirY = 0.0f;
-            printf("erase (shake)\r\n");
-            dMinX = PANEL_W; dMinY = PANEL_H; dMaxX = -1; dMaxY = -1;
+        // Published every pass so core1's shake check (imu_poll_core1) sees a
+        // reasonably fresh value; see g_fingerDownShared's declaration for why
+        // a plain volatile bool is enough here.
+        g_fingerDownShared = fingerDown;
+
+        // Shake-to-erase: core1 bumps g_eraseSeq once per accepted shake
+        // (jolt count, cooldown and the finger-down suppression all live in
+        // imu_poll_core1() now); core0 just watches for the sequence number
+        // to move and does the actual erase, since that touches the
+        // framebuffer and QSPI, not i2c1.
+        {
+            uint32_t seq = g_eraseSeq;
+            if (seq != lastEraseSeqSeen) {
+                lastEraseSeqSeen = seq;
+                wipe_erase(fb);
+                g_pressure = 0.5f;
+                g_arcLen = 0.0f;
+                g_radius = 0.0f;
+                g_dirX = 0.0f;
+                g_dirY = 0.0f;
+                g_haveH0 = false;
+                printf("erase (shake)\r\n");
+                dMinX = PANEL_W; dMinY = PANEL_H; dMaxX = -1; dMaxY = -1;
+            }
         }
 
         uint32_t pf_p = PF_NOW();
@@ -1180,24 +1476,53 @@ int main(void) {
                 uint32_t d = pf_loops ? pf_loops : 1;
                 uint32_t s = pf_samples ? pf_samples : 1;
                 uint32_t p = pf_pushes ? pf_pushes : 1;
+
+                uint32_t curTouchReads = g_touchReads;
+                uint32_t curTouchTimeouts = g_touchTimeouts;
+                uint32_t curTouchDrops = g_touchQueueDrops;
+                uint32_t curTouchRecoveries = g_touchRecoveries;
+                uint32_t curImuTimeouts = g_imuTimeouts;
+                uint32_t curPmicTimeouts = g_pmicTimeouts;
+                uint32_t qDepthNow = (g_touchTail - g_touchHead) & (TOUCH_Q_CAP - 1);
+
                 // Stay quiet unless something was actually drawn this second.
                 // Idle lines say nothing and made it impossible to tell a
                 // capture that missed the drawing from one that measured it.
-                if (pf_samples > 0)
-                printf("prof loops=%lu samples=%lu reports=%lu glitches=%lu dropouts=%lu strays=%lu splits=%lu | touch %luus/loop "
-                       "| raster %luus/sample | push %luus/push avg %lupx | total %luus/loop\r\n",
-                       pf_loops, pf_samples, pf_reports,
-                       (unsigned long)glitches, (unsigned long)dropouts,
-                       (unsigned long)strays, (unsigned long)splits,
-                       pf_touch_us / d, pf_raster_us / s,
-                       pf_push_us / p, pf_pushPx / p,
-                       (pf_touch_us + pf_raster_us + pf_push_us) / d);
+                if (pf_samples > 0) {
+                    printf("prof loops=%lu samples=%lu reports=%lu glitches=%lu dropouts=%lu strays=%lu splits=%lu "
+                           "| touch %luus/loop | raster %luus/sample | push %luus/push avg %lupx | total %luus/loop\r\n",
+                           pf_loops, pf_samples, pf_reports,
+                           (unsigned long)glitches, (unsigned long)dropouts,
+                           (unsigned long)strays, (unsigned long)splits,
+                           pf_touch_us / d, pf_raster_us / s,
+                           pf_push_us / p, pf_pushPx / p,
+                           (pf_touch_us + pf_raster_us + pf_push_us) / d);
+                    printf("prof2 drained=%lu/s subsegs=%lu/s qdepth=%lu peak=%lu "
+                           "| core1: reads=%lu/s timeouts=%lu/s drops=%lu/s recoveries=%lu "
+                           "| imu timeouts=%lu/s pmic timeouts=%lu/s\r\n",
+                           (unsigned long)pf_drained, (unsigned long)pf_subsegs,
+                           (unsigned long)qDepthNow, (unsigned long)pf_qDepthPeak,
+                           (unsigned long)(curTouchReads - lastTouchReads),
+                           (unsigned long)(curTouchTimeouts - lastTouchTimeouts),
+                           (unsigned long)(curTouchDrops - lastTouchDrops),
+                           (unsigned long)(curTouchRecoveries - lastTouchRecoveries),
+                           (unsigned long)(curImuTimeouts - lastImuTimeouts),
+                           (unsigned long)(curPmicTimeouts - lastPmicTimeouts));
+                }
+
                 pf_touch_us = pf_raster_us = pf_push_us = 0;
                 pf_loops = pf_samples = pf_pushes = pf_pushPx = pf_reports = 0;
+                pf_drained = pf_subsegs = pf_qDepthPeak = 0;
                 glitches = 0;
                 dropouts = 0;
                 strays = 0;
                 splits = 0;
+                lastTouchReads = curTouchReads;
+                lastTouchTimeouts = curTouchTimeouts;
+                lastTouchDrops = curTouchDrops;
+                lastTouchRecoveries = curTouchRecoveries;
+                lastImuTimeouts = curImuTimeouts;
+                lastPmicTimeouts = curPmicTimeouts;
                 pf_lastMs = nowMs;
             }
         }

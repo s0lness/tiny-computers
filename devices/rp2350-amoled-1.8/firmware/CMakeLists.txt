@@ -56,6 +56,15 @@ target_link_libraries(main PRIVATE
     # hardware_watchdog/watchdog.c, not just the header-only rom_*() bootrom
     # wrappers it used before. pico_stdlib does not pull this in on its own.
     hardware_watchdog
+    # main.c now runs the touch/IMU/PMIC polling on core1 (see core1_entry()
+    # in main.c), so it can drain the shared i2c1 bus without blocking the
+    # rasteriser and the panel push on core0.
+    pico_multicore
+    # For __dmb() (hardware/sync.h), used by the lock-free touch queue
+    # between the two cores. Very likely already pulled in transitively by
+    # the hardware_* libraries above, but named explicitly since main.c
+    # depends on it directly now.
+    hardware_sync
 )
 
 # enable usb output, disable uart output
