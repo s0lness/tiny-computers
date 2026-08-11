@@ -153,6 +153,32 @@ Useful flags: `--font` (any `.jhf` in `tools/fonts`), `--size` (glyph height),
   stroke *direction*: the horizontal bottom of a U was clean while both
   vertical sides were shredded, in the same stroke, from the same code. Touch
   sampling has no reason to care about direction. Window aspect ratio does.
+- **`picotool partition create <json> <out.uf2> <bootloader.elf>` does not write a
+  UF2.** Given a bootloader argument it writes a raw ELF, whatever you called
+  the output file and regardless of `-t uf2`, and it does so silently. The
+  resulting file starts with the ELF magic, so `picotool info` reads those
+  bytes as a UF2 family ID, reports something absurd like `0x00000034`, and
+  says "does not contain a valid RP2 executable image". The SDK's own CMake
+  passes the same ELF as both output and bootloader, modifying it in place,
+  which is the clue that this command was never meant to emit a UF2.
+  The right way is to let the build embed the table: `pico_embed_pt_in_binary()`
+  plus `pico_set_uf2_family()`, both **before** `pico_add_extra_outputs()`,
+  which the SDK enforces with a hard error. Then a normal build produces a
+  bootloader UF2 with the table inside it and installing is one `picotool load`.
+- **Always confirm an artifact offline before flashing it.** `picotool info -a`
+  on the file will show the image def and, for a bootloader, the embedded
+  partition table with `hash: verified`. Flashing an unverified artifact cost
+  three physical power-cycle recoveries in one evening, because a board that
+  will not boot cannot be reflashed over USB (see the recovery note below).
+- **Recovering a board that will not boot.** Replugging USB does NOT reset this
+  board: the PMIC holds the rails up, so a hung app keeps running and holding
+  BOOT at plug-in does nothing, because BOOT is only sampled at reset. Unplug,
+  hold PWR for 10 seconds until the screen goes black (the PMIC's power-off
+  threshold is 6s), then hold BOOT while plugging the cable back in.
+  Related: while an app is hung, `picotool` cannot reboot it into the
+  bootloader either, since that request is serviced by the running app's USB
+  interface. Loads appear to succeed and silently do nothing. Read flash back
+  and check which build is actually there before concluding a fix did not work.
 - **Serial needs DTR.** Opening the CDC port without asserting DTR reads as a
   dead device. `$p.DtrEnable = $true` before `Open()`, or you will conclude the
   firmware crashed when it is running fine.
