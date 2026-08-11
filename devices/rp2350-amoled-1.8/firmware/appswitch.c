@@ -105,3 +105,27 @@ void appswitch_go_other(void) {
     // is nothing to lose by saying so if it happens.
     printf("appswitch: reboot did not happen\r\n");
 }
+
+void appswitch_go_next(void) {
+    printf("appswitch: entered (next)\r\n");
+
+    appswitch_slot_t slot = appswitch_current_slot();
+    if (slot == APPSWITCH_SLOT_UNKNOWN) {
+        printf("appswitch: not running from a slot, staying put\r\n");
+        return;
+    }
+
+    // Cycle. Which of the next slots actually holds an image is not knowable
+    // from here: reading another partition's flash directly is what faulted
+    // and hung the board once already, because the bootrom maps the booted
+    // partition to 0x10000000 and the others are not reliably addressable from
+    // a running app. So ask for the next one and let the bootloader, which has
+    // the partition table and the bootrom's own validation, skip the empties.
+    uint8_t next = (uint8_t)((slot + 1) % APPSWITCH_SLOT_COUNT);
+    printf("appswitch: %u -> %u, rebooting\r\n", (unsigned)slot, (unsigned)next);
+
+    bootreq_write(next);
+    watchdog_reboot(0, 0, 0);
+
+    printf("appswitch: reboot refused\r\n");
+}

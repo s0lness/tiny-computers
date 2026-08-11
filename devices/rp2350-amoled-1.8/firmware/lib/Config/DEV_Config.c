@@ -146,7 +146,13 @@ Info:
 ******************************************************************************/
 UBYTE DEV_Module_Init(void)
 {
-    DEV_Delay_ms(100);
+    // Upstream waits 100ms here before even setting the clock, and another
+    // 100ms after stdio_init_all(), for no stated reason. Both are on the
+    // critical path every time an app starts, and app switching reboots the
+    // chip, so they are 200ms of every switch. Trimmed rather than removed,
+    // since rails settling at power-on is a real thing even if 100ms is not
+    // a number anything in the datasheets asks for.
+    DEV_Delay_ms(5);
     set_sys_clock_khz(150 * 1000, true);
     clock_configure(
         clk_peri,
@@ -157,7 +163,7 @@ UBYTE DEV_Module_Init(void)
     );
 
     stdio_init_all();   
-    sleep_ms(100);
+    sleep_ms(5);
     
     //GPIO
     DEV_GPIO_Init();

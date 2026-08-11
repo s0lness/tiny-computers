@@ -48,4 +48,17 @@ appswitch_slot_t appswitch_current_slot(void);
 // so the caller can carry on rather than bricking the session.
 void appswitch_go_other(void);
 
+// Number of app slots the partition table defines. The RP2350 bootrom caps a
+// partition table at 16 partitions total (datasheet 5.1.2), and one of ours is
+// the manifest, so 15 apps is the ceiling for this board. Raise this when
+// store/partitions.json gains slots; the bootloader skips any that are empty,
+// so an optimistic value here is safe.
+#define APPSWITCH_SLOT_COUNT 2
+
+// Hands over to the next slot, wrapping. Empty slots are skipped by the
+// bootloader rather than by this function, which cannot safely read another
+// partition's flash. Does not return on success.
+void appswitch_go_next(void);
+
+
 #endif // APPSWITCH_H

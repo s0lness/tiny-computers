@@ -97,7 +97,13 @@ parameter:
 static void AMOLED_1IN8_InitReg(){
     QSPI_Select(qspi); 
     QSPI_REGISTER_Write(qspi, 0x11);
-    sleep_ms(120);
+    // 150ms, not upstream 120ms. The SH8601 datasheet is explicit: "There is
+    // needed 150ms after sleep out command, when there is changing from Sleep
+    // in mode to sleep out mode". Upstream is UNDER spec on the one delay this
+    // driver actually has to honour, while being wildly over-generous on the
+    // reset pulses above. A marginal panel would show this as an unreliable
+    // wake, the kind of intermittent fault nobody traces to a missing 30ms.
+    sleep_ms(150);
     QSPI_Deselect(qspi);
 
     QSPI_Select(qspi);
@@ -144,12 +150,22 @@ parameter:
         qspi    ：  qspi structure
 ********************************************************************************/
 static void AMOLED_1IN8_Reset(){
+    // Timings from the SH8601 datasheet rather than upstream guesses. This
+    // sequence is most of the time it takes an app to appear, and switching
+    // apps reboots the chip, so it is on the critical path.
+    //
+    // Datasheet: reset low pulse width (tRW) minimum is 10 MICROseconds, and
+    // secure reset completion (tSRT) is 5ms when reset happens in Sleep In
+    // mode, which is the case at power-up. Upstream waits 50ms, 50ms and
+    // 300ms: the low pulse alone is five thousand times longer than required
+    // and the function costs 400ms. 1ms and 10ms keep a wide margin over the
+    // datasheet while giving nearly all of that back.
     gpio_put(qspi.pin_rst,1);
-    DEV_Delay_ms(50);
+    DEV_Delay_ms(1);
     gpio_put(qspi.pin_rst,0);
-    DEV_Delay_ms(50);
+    DEV_Delay_ms(1);
     gpio_put(qspi.pin_rst,1);
-    DEV_Delay_ms(300);
+    DEV_Delay_ms(10);
 }
 
 /********************************************************************************

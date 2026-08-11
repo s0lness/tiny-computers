@@ -179,6 +179,16 @@ Useful flags: `--font` (any `.jhf` in `tools/fonts`), `--size` (glyph height),
   bootloader either, since that request is serviced by the running app's USB
   interface. Loads appear to succeed and silently do nothing. Read flash back
   and check which build is actually there before concluding a fix did not work.
+- **Boot delays are patched down from 775ms to 182ms, using the SH8601
+  datasheet.** This matters because switching apps reboots the chip, so the
+  init path IS the switch latency. Upstream waits 50ms for a reset pulse the
+  datasheet specifies as 10 MICROseconds (tRW), and 300ms for a reset
+  completion specified at 5ms (tSRT). It also waits two unexplained 100ms in
+  `DEV_Module_Init`. **In the other direction it is UNDER spec**: the
+  datasheet requires 150ms after Sleep Out (`11h`) and upstream waits 120ms,
+  which we raised. Do not "optimise" that 150ms away; it is the one delay
+  here the panel actually demands, and being short would show up as an
+  unreliable wake rather than as an obvious failure.
 - **Serial needs DTR.** Opening the CDC port without asserting DTR reads as a
   dead device. `$p.DtrEnable = $true` before `Open()`, or you will conclude the
   firmware crashed when it is running fine.
