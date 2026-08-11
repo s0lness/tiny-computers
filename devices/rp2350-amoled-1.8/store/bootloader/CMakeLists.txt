@@ -12,8 +12,11 @@
 # Unlike apps/chrono and firmware/, this is NOT built per-slot. It is not a
 # partition at all: it links at the SDK default ORIGIN 0x10000000, which
 # lands it in the unpartitioned space below slot_a's 0x00100000 start (see
-# ../partitions.json), and gets embedded into the partition table UF2 by
-# `picotool partition create <json> <out> <this-elf>` (see ../README.md).
+# ../partitions.json). ../partitions.json is embedded into THIS build's own
+# bootloader.elf/.uf2 by pico_embed_pt_in_binary() below, not by a separate
+# post-build `picotool partition create` step (see ../README.md, "Installing:
+# the picotool invocation that actually works", for why that separate-step
+# form silently produced an invalid file).
 
 set(PICO_BOARD pico2 CACHE STRING "Board type")
 cmake_minimum_required(VERSION 3.27)
@@ -44,6 +47,26 @@ target_link_libraries(bootloader PRIVATE
 # enumerate.
 pico_enable_stdio_usb(bootloader 1)
 pico_enable_stdio_uart(bootloader 1)
+
+# Embed ../partitions.json in this binary's own block loop (RP2350 datasheet
+# 5.1.14, "Partition-Table-in-Image boot"; 5.10.6, "Custom bootloader"). This
+# is the SDK-native equivalent of running
+#   picotool partition create ../partitions.json bootloader.elf bootloader.elf
+# as a manual post-build step: pico_add_extra_outputs() below calls
+# picotool_postprocess_binary(), which (tools/CMakeLists.txt) issues exactly
+# that in-place `picotool partition create` command as a POST_BUILD step,
+# before its own `picotool uf2 convert` step produces bootloader.uf2 — so the
+# family (rp2350-arm-s, set explicitly below rather than relying on the
+# PICO_PLATFORM default) is baked into the .uf2 picotool actually writes, not
+# bolted on afterwards. Both pico_embed_pt_in_binary() and
+# pico_set_uf2_family() MUST be called before pico_add_extra_outputs()
+# (tools/CMakeLists.txt's picotool_check_configurable() is a hard
+# FATAL_ERROR otherwise) — see ../README.md ("Installing: the picotool
+# invocation that actually works") for why a manual, after-the-fact
+# `picotool partition create <json> <out>.uf2 <elf>` (naming the output
+# .uf2) is NOT equivalent and silently writes a raw ELF under that name.
+pico_embed_pt_in_binary(bootloader ${CMAKE_CURRENT_LIST_DIR}/../partitions.json)
+pico_set_uf2_family(bootloader rp2350-arm-s)
 
 pico_add_extra_outputs(bootloader)
 

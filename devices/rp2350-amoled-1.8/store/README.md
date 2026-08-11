@@ -356,6 +356,193 @@ based on its documented flag syntax (`picotool help load/save/erase/reboot`,
 run offline) and its source for the load/partition semantics above, but the
 first real install/uninstall should be watched by hand.
 
+## Installing: the picotool invocation that actually works
+
+**This section replaces an earlier, broken instruction.** The original
+documented install step was
+
+```
+picotool partition create store/partitions.json store/partitions.uf2 store/bootloader/build/bootloader.elf
+```
+
+which "succeeds" (exit 0, writes a 652047-byte file) but `picotool info
+store/partitions.uf2` then rejects the result: `family ID 0x00000034` /
+`ERROR: UF2 file does not contain a valid RP2 executable image`. This was
+run once against real hardware on that broken assumption (flashing the
+standalone `store/partitions.uf2` output) and the board stopped booting.
+That command is gone from this repo; do not reintroduce it.
+
+### What was actually wrong
+
+`picotool partition create --help`'s synopsis has **two separate `-t
+<type>`** slots:
+
+```
+picotool partition create <infile> <outfile> [-t <type>] [[-o <offset>] [--family <family_id>]] [<bootloader>] [-t <type>] ...
+```
+
+The first `-t` (after `<outfile>`) reads as "choose the outfile's format
+(uf2 | elf | bin)". It is **not** honored once a `<bootloader>` argument is
+also given. Verified empirically (`--verbose` output, offline, no device):
+
+```
+> picotool partition create --verbose store/partitions.json test.uf2 -t uf2 store/bootloader/build/bootloader.elf -t elf
+read_ph ph offset 52 #entries 8
+read_sh sh offset 650332 #entries 38
+segment 3 contains physical address 1000773c
+new segment .pt paddr 10007750 vaddr 10007750 size 98
+append_segment sig offset 0009ec5f num sections 39
+Writing 652047 bytes to file
+```
+
+That trace (`read_ph`/`read_sh`/`append_segment`, and a written size
+matching the *ELF's* size almost exactly, not a UF2's) is ELF program/section
+-header surgery, not UF2 block generation — `-t uf2` on the outfile is
+ignored in this mode. Checked the raw bytes of the file named `...uf2`:
+first four bytes `7f 45 4c 46` — the ELF magic number. So the "family ID
+0x00000034" error was `picotool info` trying to parse an ELF file as a UF2
+(reading the first four ELF-header bytes as if they were a UF2 block's
+family-ID field): the file was never a UF2 at all, just an ELF wearing a
+`.uf2` name. This is confirmed by `pico-sdk`'s **own** use of this exact
+command (`tools/CMakeLists.txt`, `picotool_postprocess_binary()`):
+
+```
+picotool partition create --quiet ${picotool_embed_pt} $<TARGET_FILE:${TARGET}> $<TARGET_FILE:${TARGET}>
+```
+
+— infile is the JSON, and **outfile and bootloader are the same ELF file**,
+modified in place. The SDK never asks this command for a UF2; it always
+treats the outfile as ELF and does a second, separate step
+(`picotool uf2 convert`) afterwards to get a `.uf2`. Naming the outfile
+`partitions.uf2` was the mistake: it produced valid ELF content under a
+misleading name, not an invalid UF2.
+
+### The fix: let the SDK do it (`pico_embed_pt_in_binary`)
+
+`pico-sdk/tools/CMakeLists.txt` defines exactly this two-step pattern as a
+build-time CMake helper (`pico_embed_pt_in_binary(TARGET PTFILE)` +
+`pico_set_uf2_family(TARGET FAMILY)`), which `store/bootloader/CMakeLists.txt`
+now calls, right before `pico_add_extra_outputs(bootloader)` (both **must**
+precede it — `tools/CMakeLists.txt`'s `picotool_check_configurable()` is a
+hard `FATAL_ERROR` otherwise, which is itself confirmation this is the
+sanctioned order):
+
+```cmake
+pico_embed_pt_in_binary(bootloader ${CMAKE_CURRENT_LIST_DIR}/../partitions.json)
+pico_set_uf2_family(bootloader rp2350-arm-s)
+
+pico_add_extra_outputs(bootloader)
+```
+
+`pico_add_extra_outputs()` then does, in order (verified by reading
+`src/cmake/on_device.cmake` and `tools/CMakeLists.txt`): (1)
+`picotool_postprocess_binary()`, which runs the in-place
+`picotool partition create --quiet <json> <elf> <elf>` shown above as a
+`POST_BUILD` step on the raw linker output, then (2) `pico_add_uf2_output()`,
+which runs `picotool uf2 convert <elf> <out>.uf2 --family rp2350-arm-s` on
+the now-PT-embedded ELF. A plain `cmake --build store/bootloader/build`
+therefore now produces a correct `bootloader.elf` **and** `bootloader.uf2`
+directly — no manual `picotool partition create` invocation needed at all,
+which also removes the only place the earlier mistake could be made.
+
+(`rp2350-arm-s` matches this image's own `picotool info` "image type: ARM
+Secure" and is also `PICO_PLATFORM`'s default for this board, confirmed by
+the `cmake -S` configure log: `Defaulting platform (PICO_PLATFORM) to
+'rp2350-arm-s' based on PICO_BOARD setting.` — `pico_set_uf2_family` is set
+explicitly anyway, matching the pattern from the reflash-erasure issue
+below, rather than relying on that default silently continuing to match.)
+
+### Offline proof
+
+Both build outputs pass `picotool info -a` (target chip, image type, and
+the full embedded partition table, offline, no device):
+
+```
+> picotool info -a store/bootloader/build/bootloader.uf2
+File store/bootloader/build/bootloader.uf2 family ID 'rp2350-arm-s':
+
+Program Information
+ name:                  bootloader
+ features:              UART stdin / stdout
+                        USB stdin / stdout
+ binary start:          0x10000000
+ binary end:            0x10007750
+ target chip:           RP2350
+ image type:            ARM Secure
+...
+Metadata Block 3
+ address:               0x10007750
+ next block address:    0x10000138
+ block type:            partition table
+ partition table:       non-singleton
+ un-partitioned space:  S(rw) NSBOOT(rw) NS(rw), uf2 { 'absolute' }
+ partition 0 (A):       00100000->00800000 S(rw) NSBOOT(rw) NS(rw), id=0000000000000000, "slot_a", uf2 { 'rp2350-arm-s' }, arm_boot 1, riscv_boot 1
+ partition 1 (A):       00800000->00f00000 S(rw) NSBOOT(rw) NS(rw), id=0000000000000001, "slot_b", uf2 { 'rp2350-arm-s' }, arm_boot 1, riscv_boot 1
+ partition 2 (A):       00f00000->00f01000 S(rw) NSBOOT(rw) NS(rw), id=0000000000000002, "manifest", uf2 { 'data' }, arm_boot 1, riscv_boot 1
+ version:               1.0
+ load map entry 0:      Load 0x10000000->0x10000000
+ hash:                  verified
+ hash value:            6E8A2850DADF1010BD6B95974309C5A5BA6FDCC5CF28E3BA7DD010F513E591C6
+```
+
+`family ID 'rp2350-arm-s'` (a resolved name, not a raw hex number picotool
+can't place) and `hash: verified` are the two lines that were impossible to
+get out of the old invocation — that's the concrete difference between this
+output and the original bug report's `family ID 0x00000034` /
+`ERROR: UF2 file does not contain a valid RP2 executable image`. The same
+`Metadata Block 3` partition table (all three partitions, correct offsets,
+correct families) is also present verbatim in `picotool info -a
+store/bootloader/build/bootloader.elf` — both outputs of the one `cmake
+--build` are valid, not just the UF2.
+
+**Fallback, if the CMake integration is ever bypassed** (e.g. embedding a
+partition table into some other prebuilt ELF without rebuilding it): the
+same two picotool steps the SDK runs internally, by hand —
+
+```powershell
+& "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" partition create `
+  store/partitions.json store/bootloader/build/bootloader.elf store/bootloader/build/bootloader.elf
+& "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" uf2 convert `
+  store/bootloader/build/bootloader.elf -t elf store/bootloader/build/bootloader.uf2 -t uf2 --family rp2350-arm-s
+```
+
+Note the outfile of `partition create` here is the **ELF**, written in
+place (matching the SDK's own invocation above) — never name it `.uf2`,
+which is exactly the mistake that produced `family ID 0x00000034`. Also
+verified offline (`picotool info -a` on both outputs, same partition table
+and `hash: verified` as above); not the recommended path since the CMake
+integration above makes it unnecessary and removes the chance to get the
+outfile argument wrong again, but kept here because it is what
+`pico_embed_pt_in_binary()` is doing under the hood, should this ever need
+reproducing without a rebuild.
+
+### Why this doesn't hit `pico-sdk#1882` ("partition table erased when flashed")
+
+[raspberrypi/pico-sdk#1882](https://github.com/raspberrypi/pico-sdk/issues/1882)
+is a real, closed upstream bug: a partition table embedded in a binary gets
+overwritten by that *same* binary's own next reflash, if one of the
+partitions' (default, unspecified) `start` address falls inside the
+binary+partition-table block loop itself — flip-flopping between "boots"
+and "no partition table, BOOTSEL" on every other reflash. Root cause per
+the maintainer's own comment on that issue: partitions with no explicit
+`"start"` in the JSON default their start address to `0x2000`, which can
+land inside a small binary's own footprint.
+
+`store/partitions.json` already gives **every** partition (`slot_a`,
+`slot_b`, `manifest`) an explicit `start` (documented above, under
+"Partition layout", before this session touched the file) — `slot_a` starts
+at `0x00100000` (1 MiB in), nowhere near `0x2000`. The bootloader's own
+`picotool info -a` output above shows its block loop ends at
+`next block address: 0x10000138` / partition table at `0x10007750` — under
+32 KiB total, so its own reflash writes stay entirely inside the
+unpartitioned region below `0x00100000` and never touch `slot_a`. Reflashing
+the bootloader is therefore idempotent (same bytes, same address range,
+every time), which is the condition #1882's fix ("give every partition an
+explicit `start`") exists to guarantee. This was true of the layout before
+this session for an unrelated reason (documented under "Partition layout":
+auto-sizing without explicit `start` was already known to make partitions
+collide); it also happens to be exactly what avoids #1882.
+
 ## Building and installing everything
 
 Same environment as every other build in this repo (`../AGENTS.md`,
@@ -368,7 +555,10 @@ $env:PATH = "C:\Users\sylve\.espressif\tools\cmake\3.30.2\bin;C:\Users\sylve\.es
 ```
 
 **1. Build the bootloader** (once; it isn't per-slot, it's the thing that
-reads the slots):
+reads the slots). The partition table is now embedded **during this build**,
+not as a separate `picotool` step afterwards — see "Installing: the picotool
+invocation that actually works" below for why that changed and how it was
+verified offline:
 
 ```powershell
 cmake -S store/bootloader -B store/bootloader/build -G Ninja `
@@ -377,20 +567,22 @@ cmake -S store/bootloader -B store/bootloader/build -G Ninja `
 cmake --build store/bootloader/build
 ```
 
-**2. Flash the partition table with the bootloader embedded**, so the device
-boots straight into it instead of whatever was there before:
+This alone produces `store/bootloader/build/bootloader.uf2` **with the
+partition table already embedded and hashed**, because
+`store/bootloader/CMakeLists.txt` now calls `pico_embed_pt_in_binary()` /
+`pico_set_uf2_family()` before `pico_add_extra_outputs()` (see below).
+
+**2. Flash it**, so the device boots straight into the bootloader instead of
+whatever was there before:
 
 ```powershell
-& "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" partition create `
-  store/partitions.json store/partitions.uf2 store/bootloader/build/bootloader.elf
-& "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" load store/partitions.uf2 -f -x
+& "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" load `
+  store/bootloader/build/bootloader.uf2 -f -x
 ```
 
-`partition create <json> <out> <bootloader-elf>` is the exact three-argument
-form the task brief specifies: the partition table JSON, an output UF2, and
-the ELF to embed as the image that runs before any partition does. It writes
-the partition table block *and* the bootloader into the unpartitioned region
-in one file, so this one `load` puts both down together.
+One file, one `load`. No standalone `store/partitions.uf2` and no manual
+`picotool partition create` invocation are needed any more — both were the
+source of the original failure (below).
 
 **3. Build and load each app into its slot.** Every app needs a per-slot
 build — see "The picotool finding" above for why `picotool load -p` alone is
@@ -541,6 +733,17 @@ here (no device access this session).
   `load`/`save`/`partition create` behaviour against picotool's own source;
   the actual install/uninstall/build flow has not been exercised
   end-to-end.
+- **The bootloader's partition-table embedding is now proven offline, not
+  just documented.** `picotool info -a` on `store/bootloader/build/
+  bootloader.uf2` and `.elf` (both rebuilt this session with the
+  `pico_embed_pt_in_binary` fix — see "Installing" above) show a valid RP2350
+  image, resolved `family ID 'rp2350-arm-s'`, `hash: verified`, and all
+  three partitions at their expected offsets. What's still **not** proven
+  without hardware: that `picotool load store/bootloader/build/bootloader.uf2
+  -f -x` actually flashes and boots on a real device, and that the bootrom
+  really performs partition-table-in-image boot (datasheet 5.1.14) into this
+  specific image the way the file's own metadata claims — `picotool info`
+  validates the file's structure and hash, not silicon behavior.
 - **Power-cycle behaviour is now a property of the hardware, not an
   assumption about bootrom preference.** The retired launcher (and the
   first version of `appswitch.c`) relied on
