@@ -10,6 +10,7 @@
 #include "QMI8658.h"
 #include "appswitch.h"
 #include "bootbtn.h"
+#include "menu.h"
 
 #define PANEL_W AMOLED_1IN8_WIDTH
 #define PANEL_H AMOLED_1IN8_HEIGHT
@@ -114,6 +115,13 @@ static int pf_lastX = -1, pf_lastY = -1;
 // since the last observed finger, which is unaffected by whether core1 was
 // gating its I2C reads on Touch_INT_PIN at the time (see core1_entry()).
 #define TOUCH_STALL_MS 5000
+
+// How long a PWR short press stays "recent" for the long-double-press
+// gesture that opens the menu: press, release, press-and-hold within this
+// window. See main()'s g_keyEvent handler for how it is evaluated, and
+// menu.h for why the gesture is shaped this way (a stopwatch-style
+// start-then-stop is two SHORT presses and can never arm-and-hold into it).
+#define MENU_DOUBLE_WINDOW_MS 500
 
 // Shake-to-erase tuning. Polled from core1 now (imu_poll_core1()), since the
 // IMU shares i2c1 with touch and the PMIC; see the ownership comment above
@@ -1084,7 +1092,16 @@ static void pmic_poll_core1(uint32_t nowMs) {
         // Bit names are from the AXP2101 datasheet, REG 49H (IRQ Status 1):
         // bit0 POWERON positive edge, bit1 negative edge, bit2 long press,
         // bit3 short press.
-        if (s1 & 0x0C) g_keyEvent = s1 & 0x0C;
+        //
+        // Long press (0x04) and short-press verdict (0x08) drive this app's
+        // own actions, same as always. The press edge (0x02) is newly
+        // captured too: the menu's long-double-press-to-open gesture (see
+        // main()'s event handler) needs to time this press against the
+        // previous one, which only the edge - not the eventual verdict -
+        // can tell it. main()'s own handler still only acts on 0x04 (chord
+        // and menu-open) and 0x08 (full refresh), so this does not change
+        // this app's own behaviour by itself.
+        if (s1 & 0x0E) g_keyEvent = s1 & 0x0E;
         // Write-1-to-clear, so the next event is distinguishable from this one.
         i2c1_write_reg_to(AXP2101_ADDR, 0x48, s0);
         i2c1_write_reg_to(AXP2101_ADDR, 0x49, s1);
@@ -1156,6 +1173,20 @@ static void core1_entry(void) {
     }
 }
 
+// Callback for menu_run() (see menu.h). Never touches i2c1: core1's
+// pmic_poll_core1() keeps servicing the PMIC on its own the entire time
+// core0 is blocked inside menu_run() (it does not know or care what core0 is
+// doing), so this only ever needs to drain the cross-core g_keyEvent byte,
+// exactly like this file's own handler in main() does. Touching i2c1 from
+// here (core0) would violate the ownership rule in core1_entry()'s banner
+// comment above - this function is the reason that rule is safe to keep:
+// nothing in menu.c ever needs to.
+static uint8_t sketchpad_menu_poll_pwr(void) {
+    uint8_t ev = g_keyEvent;
+    g_keyEvent = 0;
+    return ev;
+}
+
 int main(void) {
     DEV_Module_Init();
     QSPI_GPIO_Init(qspi);
@@ -1213,6 +1244,14 @@ int main(void) {
     uint32_t strays = 0;
     uint32_t splits = 0;
     uint32_t lastEraseSeqSeen = 0;
+
+    // Long-double-press-opens-the-menu state (see MENU_DOUBLE_WINDOW_MS and
+    // sketchpad_menu_poll_pwr() above). Recomputed on every 0x02 press edge,
+    // not set-and-forget, so it always answers "was the press right before
+    // this one within the window" - see chrono's identical pattern in
+    // apps/chrono/main.c for the fuller reasoning.
+    uint32_t lastPwrPressMs = 0;
+    bool menuDoubleArmed = false;
 
     // Snapshots for turning core1's monotonic counters into per-second
     // deltas in the profiler print, below.
@@ -1273,11 +1312,37 @@ int main(void) {
                     appswitch_go_other();
                     // Only reached when there is no other app to switch to.
                     flash_marker(fb, 128, 250);
+                } else if (menuDoubleArmed) {
+                    // Long double press (short press, then a second press
+                    // held past the long-press threshold within
+                    // MENU_DOUBLE_WINDOW_MS of the first): open the menu.
+                    // See menu.h for why this shape was chosen and
+                    // sketchpad_menu_poll_pwr() for how the menu gets PWR
+                    // events without touching i2c1 from core0.
+                    int chosen = menu_run(fb, sketchpad_menu_poll_pwr);
+                    (void)chosen; // a real launch reboots and never returns
+                                  // here; reaching this line means cancel,
+                                  // or a launch request that could not be
+                                  // issued.
+                    // menu_run() has already restored the small strip it
+                    // drew into (see menu.h): that IS this app's repaint,
+                    // since a stroke has no representation other than the
+                    // live framebuffer to redraw from. Nothing further to do.
+                    printf("menu: closed (chosen=%d)\r\n", chosen);
                 }
-            } else {
-                // Short press repaints the whole screen from the framebuffer.
+                menuDoubleArmed = false;
+            } else if (ev & 0x08) {
+                // Confirmed short press (verdict bit, latches on release).
+                // Repaints the whole screen from the framebuffer.
                 AMOLED_1IN8_Display(fb);
                 printf("full refresh\r\n");
+            }
+            if (ev & 0x02) {
+                // Press edge: only ever used to time the long-double-press
+                // gesture above, never to trigger an action by itself.
+                uint32_t nowMs2 = to_ms_since_boot(get_absolute_time());
+                menuDoubleArmed = (nowMs2 - lastPwrPressMs <= MENU_DOUBLE_WINDOW_MS);
+                lastPwrPressMs = nowMs2;
             }
         }
 

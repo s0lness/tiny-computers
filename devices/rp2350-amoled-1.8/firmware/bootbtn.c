@@ -102,6 +102,17 @@ bool bootbtn_poll_clicked(void) {
     return true;
 }
 
+bool bootbtn_poll_level(bool *level) {
+    static uint32_t lastSampleMs = 0;
+
+    uint32_t nowMs = to_ms_since_boot(get_absolute_time());
+    if (nowMs - lastSampleMs < SAMPLE_INTERVAL_MS) return false;
+    lastSampleMs = nowMs;
+
+    *level = read_cs_low();
+    return true;
+}
+
 void bootbtn_selftest_poll(void) {
     static uint32_t lastMs = 0;
     static int prev = -1;

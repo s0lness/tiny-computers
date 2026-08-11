@@ -42,6 +42,18 @@ void bootbtn_consume_next_click(void);
 // Returns true exactly once per press, on release.
 bool bootbtn_poll_clicked(void);
 
+// Rate-limited raw level sample, same SAMPLE_INTERVAL_MS gate as
+// bootbtn_poll_clicked() (its own independent timer, so calling both from
+// the same loop is still safe and does not double the sampling rate against
+// either one alone) and safe to call every main-loop iteration for the same
+// reason. Unlike bootbtn_poll_clicked(), which collapses a press into a
+// single "click" event on release, this reports every sample taken, so a
+// caller can measure how long the button has been held - which is what
+// menu.c needs to tell a quick "previous" click from a held "cancel".
+// Returns true (and sets *level) only on iterations where a sample was
+// actually taken; false (leaving *level untouched) otherwise.
+bool bootbtn_poll_level(bool *level);
+
 // Logs the raw level whenever it changes, so it can be established on real
 // hardware whether this button is readable here at all.
 void bootbtn_selftest_poll(void);

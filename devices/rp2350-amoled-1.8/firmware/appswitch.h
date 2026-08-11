@@ -60,5 +60,16 @@ void appswitch_go_other(void);
 // partition's flash. Does not return on success.
 void appswitch_go_next(void);
 
+// Reboots directly into `slot`, regardless of which slot is currently
+// running or which one would be "next". Added for menu.c: the in-app
+// launcher lets the user land on any highlighted slot directly, not just
+// step to the adjacent one the way appswitch_go_other()/appswitch_go_next()
+// do. Same watchdog-scratch handoff as those two (see bootreq.h) and the
+// same caveat: the target slot's image is validated by the bootloader via
+// chain_image(), not here, for the reason documented in appswitch.c. Does
+// not return on success; returns if the request could not be issued (e.g.
+// appswitch_current_slot() reads back APPSWITCH_SLOT_UNKNOWN), so the caller
+// can carry on rather than assuming a reboot that did not happen.
+void appswitch_go_to(uint8_t slot);
 
 #endif // APPSWITCH_H

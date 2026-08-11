@@ -29,6 +29,7 @@ target_sources(main PRIVATE
     main.c
     ${CMAKE_CURRENT_LIST_DIR}/../../firmware/appswitch.c
     ${CMAKE_CURRENT_LIST_DIR}/../../firmware/bootbtn.c
+    ${CMAKE_CURRENT_LIST_DIR}/../../firmware/menu.c
 )
 
 # Shared app-level modules live with the sketchpad rather than being copied.

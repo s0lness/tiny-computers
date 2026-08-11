@@ -29,6 +29,7 @@
 #include "AMOLED_1in8.h"
 #include "appswitch.h"
 #include "bootbtn.h"
+#include "menu.h"
 #include "qspi_pio.h"
 
 #define PANEL_W AMOLED_1IN8_WIDTH
@@ -111,53 +112,6 @@ static void push_dirty(uint16_t *fb, int minX, int minY, int maxX, int maxY) {
 }
 
 /* ---------------------------------------------------------------------
- * Landscape-to-panel rotation. The framebuffer stays in the panel's native
- * portrait layout (368 wide x 448 tall) exactly as before; only the layout
- * and the digit drawing think in landscape (448 wide x 368 tall). This is a
- * fixed 90 degree rotation, not a reconfiguration of the panel or a second
- * buffer.
- *
- * Mapping: landscape (lx, ly), lx in [0, LAND_W), ly in [0, LAND_H), maps to
- * panel (px, py) = (ly, PANEL_H - 1 - lx).
- *
- * Checked against the four corners of a landscape rectangle (lx, ly, w, h):
- *   (lx,       ly      ) -> (ly,       PANEL_H-1-lx        )
- *   (lx+w-1,   ly      ) -> (ly,       PANEL_H-1-(lx+w-1)  )
- *   (lx,       ly+h-1  ) -> (ly+h-1,   PANEL_H-1-lx        )
- *   (lx+w-1,   ly+h-1  ) -> (ly+h-1,   PANEL_H-1-(lx+w-1)  )
- * px spans [ly, ly+h-1], a run of length h. py spans
- * [PANEL_H-1-(lx+w-1), PANEL_H-1-lx], a run of length w. So the panel
- * rectangle is (px=ly, py=PANEL_H-1-(lx+w-1), width=h, height=w): width and
- * height swap, which is exactly what a 90 degree rotation should do, and
- * px/py both land inside [0, PANEL_W) / [0, PANEL_H) whenever lx/ly/w/h were
- * inside the landscape canvas, since LAND_W == PANEL_H and LAND_H == PANEL_W.
- * ------------------------------------------------------------------- */
-_Static_assert(LAND_W == PANEL_H && LAND_H == PANEL_W,
-               "landscape canvas must be the panel's dimensions swapped");
-
-// Rotated the opposite way to the first attempt, which came out upside down on
-// the real device: the wanted orientation is buttons along the top edge.
-// Mapping: landscape (lx, ly) -> panel (px, py) = (PANEL_W - 1 - ly, lx).
-//
-// Corners of a landscape rectangle (lx, ly, w, h) under that map:
-//   (lx,     ly    ) -> (PANEL_W-1-ly,       lx      )
-//   (lx+w-1, ly    ) -> (PANEL_W-1-ly,       lx+w-1  )
-//   (lx,     ly+h-1) -> (PANEL_W-1-(ly+h-1), lx      )
-//   (lx+w-1, ly+h-1) -> (PANEL_W-1-(ly+h-1), lx+w-1  )
-// px spans [PANEL_W-(ly+h), PANEL_W-1-ly], a run of length h.
-// py spans [lx, lx+w-1], a run of length w.
-// So the panel rectangle is (px = PANEL_W-(ly+h), py = lx, width = h,
-// height = w): width and height still swap, as any 90 degree rotation must,
-// and this is the previous mapping turned through 180 degrees.
-static void land_to_panel_rect(int lx, int ly, int w, int h,
-                                int *px, int *py, int *pw, int *ph) {
-    *px = PANEL_W - (ly + h);
-    *py = lx;
-    *pw = h;
-    *ph = w;
-}
-
-/* ---------------------------------------------------------------------
  * Seven-segment digits, drawn as filled rectangles. No font, no
  * anti-aliasing (axis-aligned rectangles don't need it). Segment bits,
  * standard layout: a=top, b=top-right, c=bottom-right, d=bottom,
@@ -175,25 +129,13 @@ static void fill_rect(uint16_t *fb, int x, int y, int w, int h, uint16_t colorPx
     }
 }
 
-// Same as fill_rect, but (x, y, w, h) are landscape coordinates: converted
-// to a panel rectangle via land_to_panel_rect() before filling. Every digit
-// segment is drawn through this, never through fill_rect directly, so the
-// whole layout only has to be reasoned about in landscape space.
-static void fill_rect_land(uint16_t *fb, int lx, int ly, int w, int h, uint16_t colorPx) {
-    int px, py, pw, ph;
-    land_to_panel_rect(lx, ly, w, h, &px, &py, &pw, &ph);
-    fill_rect(fb, px, py, pw, ph, colorPx);
-}
-
-// Converts a landscape cell rectangle to panel space and pushes it, same
-// rounding as push_dirty above (it calls push_dirty, it does not re-implement
-// it), so the 8-pixel row-length rule still applies, now to the rotated
-// (panel-space) width.
-static void push_dirty_land(uint16_t *fb, int lx, int ly, int w, int h) {
-    int px, py, pw, ph;
-    land_to_panel_rect(lx, ly, w, h, &px, &py, &pw, &ph);
-    push_dirty(fb, px, py, px + pw - 1, py + ph - 1);
-}
+// land_to_panel_rect() / fill_rect_land() / push_dirty_land() now live in
+// rot.h, shared with menu.c. See rot.h's header comment for the contract
+// (this file's PANEL_W/PANEL_H/LAND_W/LAND_H, fill_rect() and push_dirty()
+// above already satisfy it). Every digit segment is drawn through
+// fill_rect_land, never through fill_rect directly, so the whole layout only
+// has to be reasoned about in landscape space.
+#include "rot.h"
 
 static const uint8_t SEVEN_SEG[10] = {
     0x3F, // 0: a b c d e f
@@ -326,6 +268,14 @@ static const int DIGIT_X[6] = { X_MM_TENS, X_MM_UNITS, X_SS_TENS, X_SS_UNITS, X_
 #define AXP2101_ADDR 0x34
 #define AXP_IRQ_PIN  2
 
+// How long a PWR short press stays "recent" for the long-double-press
+// gesture that opens the menu: press, release, press-and-hold within this
+// window. Kept well above ordinary human reaction/re-press time (so a
+// deliberate double-tap always qualifies) and well below anything that
+// would feel like two unrelated presses. See the main loop's use of
+// menuDoubleArmed for how the window is actually evaluated.
+#define MENU_DOUBLE_WINDOW_MS 500
+
 static void buttons_init(void) {
     gpio_init(AXP_IRQ_PIN);
     gpio_set_dir(AXP_IRQ_PIN, GPIO_IN);
@@ -352,15 +302,34 @@ static void buttons_poll(void) {
     if (s1) {
         DEV_I2C_Write_Byte(AXP2101_ADDR, 0x49, s1); // write-1-to-clear whatever we saw
     }
-    // Only the press (0x02) and long-press (0x04) bits drive an action here.
-    // The release bit (0x01) and the PMIC's short-press verdict (0x08, which
-    // only latches once the finger lifts) are cleared above and otherwise
-    // ignored, on purpose: see the main loop's event handler for why acting
-    // on 0x08 would double the toggle.
-    if (s1 & 0x06) {
-        g_keyEvent = s1 & 0x06;
+    // The press (0x02) and long-press (0x04) bits drive the start/stop
+    // toggle and the app-switch chord, same as before. The short-press
+    // verdict (0x08, which only latches once the finger lifts) used to be
+    // dropped here because nothing needed it; the menu's "PWR = next" now
+    // does, since acting on the raw 0x02 edge there would move the cursor on
+    // every long press too (a long press always begins as a press) and
+    // launch whatever ends up highlighted instead of what was meant. The
+    // main loop's own handler still only ever acts on 0x02/0x04, so this
+    // widened mask does not change chrono's own behaviour, only what
+    // reaches the menu while it is open.
+    if (s1 & 0x0E) {
+        g_keyEvent = s1 & 0x0E;
         g_keyIrqUs = irqUs;
     }
+}
+
+// Callback for menu_run() (see menu.h): chrono is single-core, so nothing
+// else services the PMIC while this app's own main loop is blocked inside
+// menu_run(). buttons_poll() is the same i2c1-touching call chrono's main
+// loop already makes every iteration; here it is made from inside the
+// menu's loop instead, which is safe only because chrono has no second core
+// to share i2c1 with. menu.c itself never calls this or anything like it
+// directly - see menu.h for why that split exists.
+static uint8_t chrono_menu_poll_pwr(void) {
+    buttons_poll();
+    uint8_t ev = g_keyEvent;
+    g_keyEvent = 0;
+    return ev;
 }
 
 /* ---------------------------------------------------------------------
@@ -423,6 +392,15 @@ int main(void) {
     uint64_t elapsedUs = 0;   // accumulated across all completed run segments
     uint64_t runStartUs = 0;  // time_us_64() at the start of the current segment
 
+    // Long-double-press-opens-the-menu state. See MENU_DOUBLE_WINDOW_MS
+    // below for the gesture itself; menuDoubleArmed is recomputed on every
+    // 0x02 press edge (not just set-and-forget), so it always reflects
+    // whether the press CURRENTLY being held was itself preceded by another
+    // press within the window, and is cleared again after every long-press
+    // event regardless of what it was used for.
+    uint32_t lastPwrPressMs = 0;
+    bool menuDoubleArmed = false;
+
 #if PROFILE
     uint32_t pf_pushes = 0, pf_pushPx = 0;
     uint32_t pf_lastMs = to_ms_since_boot(get_absolute_time());
@@ -470,7 +448,21 @@ int main(void) {
                 if (bootbtn_pressed()) {
                     bootbtn_consume_next_click();  // do not also reset on release
                     appswitch_go_other();
+                } else if (menuDoubleArmed) {
+                    // Long double press: a short press followed within
+                    // MENU_DOUBLE_WINDOW_MS by a second press that is then
+                    // held to this long-press threshold. Chosen precisely
+                    // because a stopwatch's start-then-stop is two SHORT
+                    // presses (both released quickly), so it can never
+                    // arm-and-hold its way into this gesture by accident.
+                    int chosen = menu_run(fb, chrono_menu_poll_pwr);
+                    (void)chosen; // menu_run() already rebooted us on a real
+                                  // launch; reaching here means cancel, or a
+                                  // launch request that could not be issued.
+                    AMOLED_1IN8_Display(fb); // repaint over whatever the menu drew
+                    printf("chrono: menu closed (chosen=%d)\r\n", chosen);
                 }
+                menuDoubleArmed = false;
             } else if (ev & 0x02) {
                 // Toggle on the PRESS (bit 0x02), sampled the instant GPIO2
                 // asserted in buttons_poll(), not on the PMIC's short-press
@@ -480,6 +472,20 @@ int main(void) {
                 // printing, so the recorded stop time is not polluted by the
                 // redraw that follows in this same iteration.
                 uint64_t nowUs = time_us_64();
+
+                // Recompute the double-press arming on every press edge (not
+                // just once): this always answers "was the press immediately
+                // before this one within the window", which is exactly what
+                // the eventual long-press branch above needs to know about
+                // THIS press, not some earlier one. The plain double-press
+                // that used to switch apps from here is gone: the long
+                // double press (see above) replaces it, and a plain quick
+                // double-press now does exactly what it looks like it
+                // does - starts, then immediately stops.
+                uint32_t nowMs = to_ms_since_boot(get_absolute_time());
+                menuDoubleArmed = (nowMs - lastPwrPressMs <= MENU_DOUBLE_WINDOW_MS);
+                lastPwrPressMs = nowMs;
+
                 if (running) {
                     elapsedUs += nowUs - runStartUs;
                     running = false;

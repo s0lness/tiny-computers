@@ -22,6 +22,7 @@ target_sources(main PRIVATE
     devlink.c
     appswitch.c
     bootbtn.c
+    menu.c
 )
 
 # Add compilation subdirectory

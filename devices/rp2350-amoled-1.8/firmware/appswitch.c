@@ -129,3 +129,24 @@ void appswitch_go_next(void) {
 
     printf("appswitch: reboot refused\r\n");
 }
+
+void appswitch_go_to(uint8_t slot) {
+    printf("appswitch: entered (go_to %u)\r\n", (unsigned)slot);
+
+    // Same reasoning as appswitch_go_other(): staying put if we cannot even
+    // tell what slot we're running from, rather than requesting a reboot
+    // whose "current" side is unknown.
+    appswitch_slot_t cur = appswitch_current_slot();
+    if (cur == APPSWITCH_SLOT_UNKNOWN) {
+        printf("appswitch: not running from a slot, staying put\r\n");
+        return;
+    }
+
+    printf("appswitch: %u -> %u, requesting via watchdog scratch and rebooting\r\n",
+           (unsigned)cur, (unsigned)slot);
+
+    bootreq_write(slot);
+    watchdog_reboot(0, 0, 0);
+
+    printf("appswitch: reboot did not happen\r\n");
+}
