@@ -6,6 +6,7 @@
 #include "qspi_pio.h"
 #include "FT3168.h"
 #include "QMI8658.h"
+#include "appswitch.h"
 
 #define PANEL_W AMOLED_1IN8_WIDTH
 #define PANEL_H AMOLED_1IN8_HEIGHT
@@ -938,7 +939,15 @@ int main(void) {
             uint8_t ev = g_keyEvent;
             g_keyEvent = 0;
             if (ev & 0x04) {
-                push_bisect_test(fb);
+                // Long press: hand over to the other app slot. Returns only if
+                // there is nothing to hand over to, in which case flash the
+                // marker so the press is at least acknowledged.
+                //
+                // push_bisect_test() was bound here while the display defect
+                // was being chased. It is kept in the source for the next time
+                // the push path changes, but it is no longer reachable.
+                appswitch_go_other();
+                flash_marker(fb, 128, 250);
             } else {
                 // Short press repaints the whole screen from the framebuffer.
                 // This is a test, and a decisive one: the log reports zero
