@@ -1,0 +1,12 @@
+{
+    "version": 1,
+    "apps": [
+        {
+            "id": "sketchpad",
+            "name": "Sketchpad",
+            "description": "Draw on the touchscreen with a finger, anti-aliased tldraw-style ink. Shake the puck to erase.",
+            "sourceDir": "firmware",
+            "target": "main"
+        }
+    ]
+}

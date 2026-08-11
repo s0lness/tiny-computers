@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": false,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "types": ["bun-types"],
+    "paths": {
+      "@tldraw/editor": ["./tools/tldraw-editor-shim.ts"]
+    }
+  }
+}

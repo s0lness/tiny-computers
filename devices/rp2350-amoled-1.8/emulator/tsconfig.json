@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext", "DOM"],
+    "strict": true,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "noEmit": true,
+    "types": ["bun-types"]
+  },
+  "include": ["src/**/*.ts", "server.ts", "build.ts", "scripts/**/*.ts"]
+}

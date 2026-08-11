@@ -1,0 +1,228 @@
+/*
+  family-budget design system
+  Source of truth: finance-report (family-expenses) web/public/index.html.
+  Aesthetic: warm paper ground, monospace UI, terracotta accent, soft taupe borders,
+  muted jewel-tone categoricals. Fixed light "paper" identity (not dark-mode-adaptive).
+  Drop-in: link this file, then use the CSS vars and component classes below.
+  Taste + design process for these UIs: see guides/ui-taste.md (hierarchy, alignment, subtraction).
+  Last synced with the app's post-"big update" palette (positive green, text hierarchy,
+  unified chips, filled buttons, sidebar/tabs, income/expense tints, status chips).
+*/
+
+:root {
+  /* --- surfaces --- */
+  --paper: #f3efe0;        /* page background */
+  --card: #fffdf7;         /* raised card / active tab / nav-active */
+  --surface: #fff;         /* inputs, popovers, controls */
+  --sidebar: #ece7d6;      /* left nav rail */
+  --tab-idle: #e6e0cf;     /* inactive tab / neutral chrome */
+
+  /* --- text (dark -> light) --- */
+  --ink: #111;             /* primary */
+  --ink-soft: #5b5647;     /* nav labels, secondary-strong body */
+  --muted: #6b6655;        /* secondary text, labels */
+  --hint: #8a8472;         /* discreet help / sub-text */
+  --faint: #a39c87;        /* placeholder, crumbs, meta */
+
+  /* --- accent (terracotta) --- */
+  --accent: #c4621f;
+  --accent-dark: #a8480f;  /* accent text on light, hover */
+  --accent-bg: #fff7ef;    /* selected/focused row tint */
+  --accent-chip-bg: #f3e3cf;
+
+  /* --- positive / income (green) --- */
+  --positive: #1a7f37;     /* income, under-budget, success text */
+  --positive-dark: #356048;
+  --positive-bg: #edf7f0;
+  --positive-bg-hover: #e3f1e7;
+
+  /* --- danger / expense / over-budget (red) --- */
+  --danger: #b3261e;
+  --danger-bg: #fdeeec;
+  --danger-bg-hover: #f9e3e0;
+
+  /* --- borders (strong -> fine) --- */
+  --border: #d9d4c4;       /* default hairline */
+  --border-soft: #e4e4dd;  /* card / subtle divider */
+  --border-divider: #ece8d8;
+  --border-fine: #f0ecdd;
+  --border-dashed: #c9c2ad;
+  --border-popover: #cfc8b6;
+
+  /* --- chips / tags (base metric shared; only color varies) --- */
+  --chip-bg: #ece8d8;      --chip-text: #6b6655;   /* neutral */
+  --chip-a-bg: #e2e0f2;    --chip-a-text: #534a8c; /* purple (e.g. account A / Credit Mutuel / planned) */
+  --chip-b-bg: #d8e8df;    --chip-b-text: #356048; /* green (e.g. account B / Fortuneo / recurring) */
+  --chip-perso-bg: #e6e0cf; --chip-perso-text: #6b6655;
+
+  /* --- row states --- */
+  --row-hover: #faf7ec;
+  --row-focus: #fdf0dd;
+  --row-selected: #e7f0fb;
+  --row-coming: #fbf3e8;
+
+  /* --- type + shape --- */
+  --font: 13px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --radius-control: 6px;
+  --radius-chip: 7px;      /* chips + inputs + buttons */
+  --radius-tab: 8px;
+  --radius-popover: 10px;
+  --radius-card: 12px;
+
+  /* --- categorical palette (chart segments / category colors, PIE_COLORS) --- */
+  --cat-1:  #c4621f;  --cat-2:  #6b8e9e;  --cat-3:  #7d6b9e;  --cat-4:  #9e6b7d;
+  --cat-5:  #5b9e6b;  --cat-6:  #b08a3c;  --cat-7:  #5b8c9e;  --cat-8:  #9e5b8c;
+  --cat-9:  #7a9e5b;  --cat-10: #8c6b9e;  --cat-11: #b07a52;  --cat-12: #6b6655;
+
+  /* --- chart series --- */
+  --chart-income: #5b9e6b;    --chart-income-hover: #2c6b3d;
+  --chart-expense: #c96b6b;   --chart-expense-hover: #b25050;
+  --chart-baseline: #1a1a1a;  --chart-trend: #c4621f;
+}
+
+/* ---------- base ---------- */
+* { box-sizing: border-box; }
+html { scrollbar-gutter: stable; }
+body {
+  font: var(--font);
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* section headings: lowercase, tracked, muted */
+h3 {
+  font-size: 12px;
+  text-transform: lowercase;
+  letter-spacing: .07em;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+/* form controls */
+select, input, .control {
+  font: inherit;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-chip);
+  padding: 5px 9px;
+}
+select:focus, input:focus, .control:focus { outline: none; border-color: var(--accent); }
+
+/* amount inputs: never spinner arrows, identical rendering everywhere (standing rule) */
+input[type=number] { -moz-appearance: textfield; appearance: textfield; }
+input[type=number]::-webkit-outer-spin-button,
+input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+td.amt, th.amt { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* semantic amount text */
+.pos, .in { color: var(--positive); }
+.neg, .out, .over { color: var(--danger); }
+.muted { color: var(--muted); }
+.hint  { color: var(--hint); font-size: 12px; }
+
+/* ---------- cards ---------- */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  padding: 9px 15px;
+  min-width: 115px;
+  color: var(--muted);
+}
+.card b { display: block; font-size: 18px; margin-top: 3px; color: var(--ink); letter-spacing: -.02em; }
+
+/* ---------- buttons ---------- */
+/* primary: filled terracotta */
+.btn {
+  font: inherit;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-chip);
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.btn.sec { background: var(--surface); color: var(--ink-soft); border: 1px solid var(--border); }
+.btn.danger { background: var(--danger); color: #fff; }
+.btn.sm { padding: 4px 9px; font-size: 12px; }
+
+/* control button: idle outline that lights up terracotta (e.g. category picker cell) */
+.ctrlbtn {
+  font: inherit; font-size: 12px;
+  display: flex; gap: 6px; align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  padding: 4px 8px; cursor: pointer; color: var(--ink);
+}
+.ctrlbtn:hover, .ctrlbtn:focus { border-color: var(--accent); background: var(--accent-bg); outline: none; }
+
+/* delete X: faint, arms to red */
+.delx { background: none; border: none; color: var(--border-dashed); cursor: pointer; font-size: 15px; line-height: 1; padding: 2px; }
+.delx:hover { color: var(--danger); }
+.delx.armed { background: var(--danger); color: #fff; border-radius: var(--radius-control); padding: 2px 8px; font-size: 12px; font-weight: 600; }
+
+/* ---------- chips / tags (shared metric) ---------- */
+.pill, .diffb, .tag, .status {
+  font-size: 11px; padding: 1px 7px; border-radius: var(--radius-chip); white-space: nowrap;
+}
+.pill { background: var(--chip-bg); color: var(--chip-text); }
+.pill-a { background: var(--chip-a-bg); color: var(--chip-a-text); }
+.pill-b { background: var(--chip-b-bg); color: var(--chip-b-text); }
+.tag   { background: var(--chip-perso-bg); color: var(--chip-perso-text); }
+.diffb { color: var(--accent-dark); background: var(--accent-chip-bg); }
+
+/* status chips */
+.status.ok       { background: #dceee1; color: var(--positive); }
+.status.partial  { background: #f3e2c4; color: #8a5a1f; }
+.status.pending  { background: var(--chip-perso-bg); color: var(--muted); }
+.status.expired  { background: #f3d6c4; color: var(--accent-dark); }
+.status.cancelled{ background: #eee; color: #999; text-decoration: line-through; }
+
+/* ---------- table row states ---------- */
+tbody tr:hover { background: var(--row-hover); }
+tr.rowfocus td { background: var(--row-focus) !important; box-shadow: inset 0 0 0 9999px rgba(196,98,31,.04); }
+tr.rowfocus td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+tr.rowsel td { background: var(--row-selected) !important; }
+tr.coming { background: var(--row-coming); }
+/* income / expense row tints */
+tr.rowin td { background: var(--positive-bg); }
+tr.rowin:hover td { background: var(--positive-bg-hover); }
+tr.rowout td { background: var(--danger-bg); }
+tr.rowout:hover td { background: var(--danger-bg-hover); }
+
+/* ---------- app chrome: sidebar / nav / tabs ---------- */
+.side { width: 210px; background: var(--sidebar); border-right: 1px solid #ddd6c3; padding: 16px 12px; }
+.navlink { display: flex; justify-content: space-between; align-items: center; padding: 8px 11px; border-radius: var(--radius-tab); color: var(--ink-soft); text-decoration: none; cursor: pointer; }
+.navlink:hover { background: #e0dac6; }
+.navlink.active { background: var(--card); color: var(--ink); font-weight: 700; }
+.badge { background: var(--accent); color: #fff; font-size: 11px; border-radius: 10px; padding: 0 7px; min-width: 18px; text-align: center; }
+
+.tab { padding: 6px 12px; border-radius: var(--radius-tab) var(--radius-tab) 0 0; background: var(--tab-idle); color: var(--muted); cursor: pointer; border: 1px solid transparent; border-bottom: none; }
+.tab.active { background: var(--card); color: var(--ink); font-weight: 700; border-color: var(--border-soft); }
+
+/* segmented toggle */
+.segtog { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius-tab); overflow: hidden; }
+.segtog button { border: none; background: var(--surface); color: var(--muted); padding: 4px 13px; cursor: pointer; font: inherit; }
+.segtog button + button { border-left: 1px solid var(--border); }
+.segtog button.active { background: var(--accent); color: #fff; }
+
+/* ---------- floating layers ---------- */
+.popover {
+  position: fixed; z-index: 1000;
+  background: var(--surface);
+  border: 1px solid var(--border-popover);
+  border-radius: var(--radius-popover);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .20);
+  overflow: hidden;
+}
+.modalov { position: fixed; inset: 0; background: rgba(20,18,12,.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modalbox { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-card); padding: 18px 20px; max-width: 390px; box-shadow: 0 10px 34px rgba(0,0,0,.22); }
+
+/* ---------- chart legend ---------- */
+.legchip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ink-soft); cursor: pointer; user-select: none; }
+.legchip i, .swatch { width: 11px; height: 11px; border-radius: 2px; display: inline-block; flex: none; }
+.legchip.off { opacity: .38; text-decoration: line-through; }

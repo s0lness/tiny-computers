@@ -1,0 +1,12 @@
+{
+  "//": "Deliberately overrides the repo root tsconfig. The root aliases @tldraw/editor to our shim so the vendored freehand sources resolve; here we need the REAL package, since this app runs actual tldraw.",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": false,
+    "skipLibCheck": true,
+    "paths": {}
+  }
+}

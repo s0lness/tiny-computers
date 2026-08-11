@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Handwriting capture</title>
+    <style>
+      html, body, #root { margin: 0; height: 100%; }
+      .capture-bar {
+        position: fixed; z-index: 1000; top: 0; left: 0; right: 0;
+        display: flex; gap: 10px; align-items: center;
+        padding: 8px 12px; background: #111; color: #eee;
+        font: 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .capture-bar button {
+        font: inherit; padding: 5px 12px; border: 0; border-radius: 6px;
+        background: #eee; color: #111; cursor: pointer;
+      }
+      .capture-bar button:hover { background: #fff; }
+      /* Aspect guide for the 368x448 panel, so what you draw is what fits. */
+      .panel-guide {
+        position: fixed; z-index: 999; pointer-events: none;
+        top: 50%; left: 50%; transform: translate(-50%, -50%);
+        width: min(46vh, 90vw); aspect-ratio: 368 / 448;
+        border: 1px dashed rgba(0,0,0,.35); border-radius: 4px;
+      }
+    </style>
+    <link rel="stylesheet" href="/app.css" />
+    <!--
+      tldraw's build leaves a few bare `process.env.X` reads in its shipped ESM
+      (TLDRAW_ENV, GC_API_KEY and friends). In a browser `process` is undefined,
+      so the module throws on evaluation and the page renders nothing at all.
+      Defining them at bundle time is whack-a-mole; a stub is the durable fix.
+    -->
+    <script>
+      window.process = window.process || { env: { NODE_ENV: "production" } };
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="boot-error" style="position:fixed;z-index:2000;left:0;right:0;bottom:0;padding:10px 12px;background:#7f1d1d;color:#fff;font:12px ui-monospace,monospace;display:none;white-space:pre-wrap"></div>
+    <script>
+      // Surface load failures instead of showing a blank canvas.
+      addEventListener("error", (e) => {
+        const el = document.getElementById("boot-error");
+        el.style.display = "block";
+        el.textContent = "Load error: " + (e.message || e.error) + "\n" + (e.filename || "");
+      });
+    </script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

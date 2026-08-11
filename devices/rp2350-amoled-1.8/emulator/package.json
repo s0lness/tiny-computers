@@ -1,0 +1,16 @@
+{
+  "name": "rp2350-amoled-1.8-emulator",
+  "private": true,
+  "scripts": {
+    "dev": "bun run server.ts",
+    "build": "bun run build.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "bun run scripts/verify.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "bun-types": "^1.3.14",
+    "puppeteer-core": "^25.5.0",
+    "typescript": "^5.7.0"
+  }
+}

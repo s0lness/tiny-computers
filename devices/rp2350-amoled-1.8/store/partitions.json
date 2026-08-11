@@ -1,0 +1,60 @@
+{
+    "version": [
+        1,
+        0
+    ],
+    "unpartitioned": {
+        "families": [
+            "absolute"
+        ],
+        "permissions": {
+            "secure": "rw",
+            "nonsecure": "rw",
+            "bootloader": "rw"
+        }
+    },
+    "partitions": [
+        {
+            "name": "slot_a",
+            "id": 0,
+            "start": 1048576,
+            "size": 7340032,
+            "families": [
+                "rp2350-arm-s"
+            ],
+            "permissions": {
+                "secure": "rw",
+                "nonsecure": "rw",
+                "bootloader": "rw"
+            }
+        },
+        {
+            "name": "slot_b",
+            "id": 1,
+            "start": 8388608,
+            "size": 7340032,
+            "families": [
+                "rp2350-arm-s"
+            ],
+            "permissions": {
+                "secure": "rw",
+                "nonsecure": "rw",
+                "bootloader": "rw"
+            }
+        },
+        {
+            "name": "manifest",
+            "id": 2,
+            "start": 15728640,
+            "size": 4096,
+            "families": [
+                "data"
+            ],
+            "permissions": {
+                "secure": "rw",
+                "nonsecure": "rw",
+                "bootloader": "rw"
+            }
+        }
+    ]
+}

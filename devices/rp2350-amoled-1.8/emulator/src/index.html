@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>rp2350-amoled-1.8 emulator</title>
+    <!-- No <link rel="icon">: Bun's HTML bundler tries to resolve it as a
+         build asset and fails the whole page. The browser auto-requests
+         /favicon.ico, unhandled here on purpose (this is a dev tool, not a
+         desktop app with a taskbar icon to wire). -->
+    <link rel="stylesheet" href="./family-budget.css" />
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div id="root">
+      <div class="topbar">
+        <b>rp2350-amoled-1.8</b> <span class="muted">device emulator</span>
+        <span class="spacer"></span>
+        <button id="btnPng" class="btn sec sm">save png</button>
+        <button id="btnDefines" class="btn sec sm">copy #defines</button>
+        <button id="btnQuit" class="btn danger sm">quit</button>
+      </div>
+
+      <div class="layout">
+        <div id="stage" class="stage">
+          <div id="deviceWrap" class="device-wrap">
+            <div id="bezel" class="bezel">
+              <canvas id="panel" width="368" height="448" class="panel"></canvas>
+              <div id="pwrBtn" class="side-btn pwr" title="PWR (short press / hold 1.5s / hold 6s)"></div>
+              <div id="bootBtn" class="side-btn boot" title="BOOT (not wired at runtime)"></div>
+              <div id="offOverlay" class="off-overlay hidden">off</div>
+            </div>
+          </div>
+          <div class="stage-controls">
+            <label class="rotlabel">rotate
+              <input id="rotate" type="range" min="-25" max="25" step="1" value="0" />
+            </label>
+            <button id="btnShake" class="btn sec sm">shake (erase)</button>
+            <span id="pwrEvent" class="pill hint"></span>
+          </div>
+          <div id="stats" class="stats"></div>
+        </div>
+
+        <div class="side controls">
+          <h3>touch controller</h3>
+          <div id="touchControls"></div>
+
+          <h3>pen</h3>
+          <div id="penSliders"></div>
+
+          <h3>touch robustness</h3>
+          <div id="touchSliders"></div>
+
+          <button id="btnReset" class="btn sec sm" style="margin-top:10px">reset to firmware defaults</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

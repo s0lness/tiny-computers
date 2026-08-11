@@ -1,0 +1,25 @@
+# Build output
+build/
+dist/
+*.elf
+*.bin
+*.dis
+*.elf.map
+
+# Dependencies
+node_modules/
+
+# Vendor demo downloads. These are tens of megabytes of zip and extracted
+# examples, re-downloadable from the Waveshare wiki. What we actually need
+# tracked is the driver baseline we diff our patches against, which is copied
+# to devices/*/vendor-baseline/ and is a few hundred kilobytes.
+vendor/
+
+# Working captures: video frames, serial logs, screenshots
+capture/frames/
+*.MOV
+*.mp4
+
+# Secrets, per the house convention
+.secrets.env
+*.secrets.env
