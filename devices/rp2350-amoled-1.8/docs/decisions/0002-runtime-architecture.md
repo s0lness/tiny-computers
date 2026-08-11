@@ -195,7 +195,47 @@ conclusion.
 - AMOLED burn-in is real (see `AGENTS.md`); anything static needs to move,
   dim, or sleep.
 
-## Budgets
+## The apps, and what each one proves
+
+The app list is not a wish list: each early app is chosen to exercise a
+different part of the runtime, so the abstractions are shaped by real use
+rather than by guesswork.
+
+| App | Exercises | Input |
+|---|---|---|
+| stopwatch | widgets, per-widget diffing, precise timing | PWR start/stop, BOOT reset |
+| sketchpad | the canvas surface, dirty rects, opt-in shake | touch |
+| **timer** | **setting a value by touch, and the alarm path: sound, animation, and an interruption the child must be able to dismiss** | drag to set, PWR start/pause |
+| bubble level | sensor signals at frame rate | none, it just responds |
+| dice | shake as a non-destructive verb | shake |
+
+### The timer, in detail
+
+A countdown is the first app that has to ask the child for a *value*, and the
+first that interrupts her. Both are new problems.
+
+**Setting it: drag a ring, do not type a number.** A child cannot be asked to
+enter minutes and seconds on two buttons, and should not have to read a form.
+The affordance already exists in the world and is older than she is: the
+kitchen egg timer you twist. A ring that fills as the finger drags around it,
+with the time shown large in the middle, is the same gesture and needs no
+explanation. Snap to sensible steps (30s below 5 minutes, a minute above) so a
+small imprecise finger still lands somewhere round.
+
+**Running: the ring empties.** The remaining time is a shrinking arc, legible
+across a room without reading the digits, which matters because a child will
+glance at it from wherever she has left it. PWR pauses and resumes. BOOT resets
+to the value that was set, not to zero, so "again" is one press.
+
+**The alarm is an interruption, and interruptions on a toy have rules.** It must
+be noticeable without being frightening: the screen animates, and it beeps once
+the sound service exists (section 7). It must stop on *any* input, not a
+specific one, because a child reaching for a beeping object should not have to
+remember which button. And it must stop by itself after a while rather than
+beeping until the battery dies.
+
+This app is why the sound service is reserved now rather than retrofitted: a
+timer with no sound is a timer that has to be watched, which defeats it.
 
 End-to-end, phrased as a child would notice them rather than as frame counts.
 
