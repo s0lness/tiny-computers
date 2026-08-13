@@ -419,6 +419,8 @@ void sensors_stats(sensors_stats_t *out) {
     out->pmicTimeouts = 0;
     out->poweroffCmds = 0; // no PMIC to send a real command to; see
                             // sensors_request_poweroff() above
+    out->poweroffRegBefore = 0xFFFFFFFFu; // no register 0x10 to read back either
+    out->poweroffRegAfter = 0xFFFFFFFFu;
 }
 
 // sensors_init()/sensors_start() are deliberately NOT implemented here:

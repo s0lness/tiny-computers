@@ -123,6 +123,10 @@ target_link_libraries(main PRIVATE
     # __dmb(), for the lock-free single-producer/single-consumer touch queue
     # between the cores.
     hardware_sync
+    # TEMPORARY: core1 fault capture (sensors.c's core1_install_fault_
+    # handlers()), added while investigating core1 dying about a second
+    # after boot. Remove alongside that code once the investigation closes.
+    hardware_exception
 )
 
 pico_enable_stdio_usb(main 1)

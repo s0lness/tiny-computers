@@ -181,20 +181,20 @@ void sensors_inject_key(uint8_t bits);
 
 /* ---- power off -----------------------------------------------------------
  *
- * Requests that the AXP2101 cut power to the board (register 0x10, bit 0 -
- * "software configuration as POWEROFF source"; every rail drops except
- * VRTC). This bit did not extract as readable text from the datasheet PDF
- * (tried, got PDF structure noise back), so it is corroborated instead
- * against lewisxhe/XPowersLib (github.com/lewisxhe/XPowersLib,
- * src/REG/AXP2101Constants.h's XPOWERS_AXP2101_COMMON_CONFIG = 0x10 and
- * src/XPowersAXP2101.hpp's shutdown(), which sets bit 0 of that same
- * register), a widely used open AXP2101 driver whose OTHER register
- * addresses this file already relies on match exactly and were
- * independently confirmed on this board's own hardware: slave address
- * 0x34, register 0x27 (IRQLEVEL/OFFLEVEL/ONLEVEL), and 0x48/0x49/0x4A (IRQ
- * status 1/2/3, this file's own PWR key bits). That agreement on every
- * other register this codebase already trusts is why this one is trusted
- * too, not a guess.
+ * Requests that the AXP2101 cut power to the board (register 0x10 bit 0,
+ * "Soft PWROFF"; every rail drops except VRTC). Confirmed straight from the
+ * datasheet text: a first attempt to WebFetch the PDF got structure noise
+ * back and fell through to corroborating this against lewisxhe/XPowersLib
+ * instead (an open AXP2101 driver whose other register addresses already
+ * matched this file's own hardware-confirmed ones exactly - slave 0x34,
+ * register 0x27, 0x48/0x49/0x4A). Downloading the PDF and running
+ * `pdftotext -layout` on it locally DOES extract the register tables as
+ * readable text (a few Chinese-font glyphs elsewhere in the document fail
+ * to decode; the tables that matter are unaffected) - section 7.5.4.3
+ * "Power Off" lists `Write "1" to REG10H[0]` as one of six power-off
+ * sources, and register 0x10's own bitfield table names bit 0 "Soft
+ * PWROFF". XPowersLib was right; this is now the primary source, not a
+ * corroborated guess. See sensors.c for the exact quotes.
  *
  * Core0-owned request, core1-owned execution, the same pattern
  * g_fingerDownShared (sensors.c) already uses: the DECISION - has PWR been
@@ -263,9 +263,85 @@ typedef struct {
     // sensors_inject_key()'s HONESTY REQUIREMENT comment already insists on
     // elsewhere in this file.
     uint32_t poweroffCmds;
+    // Register 0x10 read back immediately before and after the shutdown
+    // write (sensors.c's pmic_poweroff_poll_core1()), so a live incident
+    // can tell "the i2c write never reached the chip" from "the chip took
+    // it and ignored it" without needing a logic analyser. 0xFFFFFFFF: no
+    // shutdown attempted yet this boot. 0x000000FF specifically for
+    // poweroffRegAfter: the readback transaction itself failed (distinct
+    // from an actual 0xFF register value, which this register cannot hold -
+    // bits 7:6 are hard reserved-0).
+    uint32_t poweroffRegBefore;
+    uint32_t poweroffRegAfter;
 } sensors_stats_t;
 
 void sensors_stats(sensors_stats_t *out);
+
+// TEMPORARY diagnostic, added while investigating whether core1 is actually
+// iterating during a live incident (recoveries/reg10h readback not moving).
+// Remove alongside its definition and core1_entry()'s g_core1Loops once
+// that investigation is closed.
+uint32_t sensors_debug_core1_loops(void);
+
+// TEMPORARY diagnostic, added alongside sensors_debug_core1_loops() to show
+// not just THAT core1 stopped but WHERE in one loop iteration it stopped.
+// Returns one of sensors.c's PHASE_* constants (see g_core1Phase's comment
+// there for what each number means); 0 before core1's first iteration ever
+// writes it. Remove alongside its definition once the investigation is
+// closed.
+uint32_t sensors_debug_core1_phase(void);
+
+// TEMPORARY diagnostics: core1 fault capture. fault_kind is the IPSR
+// exception number that fired (0 = no fault seen this boot; 3 = HardFault,
+// 4 = MemManage, 5 = BusFault, 6 = UsageFault, 7 = SecureFault - see
+// hardware/exception.h's enum exception_number). fault_pc/fault_lr are the
+// faulting instruction address and link register, read off the exception
+// stack frame. fault_cfsr is SCB->CFSR, which sub-reason (bit layout: ARMv8-M
+// architecture reference manual, section on CFSR). fault_phase is
+// sensors_debug_core1_phase()'s value at the instant of the fault. Remove
+// all of these alongside sensors.c's core1_fault_handler_c() once the
+// investigation is closed.
+uint32_t sensors_debug_core1_fault_kind(void);
+uint32_t sensors_debug_core1_fault_pc(void);
+uint32_t sensors_debug_core1_fault_lr(void);
+uint32_t sensors_debug_core1_fault_cfsr(void);
+uint32_t sensors_debug_core1_fault_phase(void);
+
+// TEMPORARY diagnostics: LOCKUP check and stack high-water mark, added
+// chasing the hypothesis that core1 is entering Cortex-M LOCKUP (a fault
+// that cannot itself be entered) rather than blocking or faulting normally
+// - see sensors.c's core1 LOCKUP/stack section for the full argument.
+// halted() reads SYSCFG_PROC_CONFIG.PROC1_HALTED, a shared (not core-
+// private) register, so it is answerable even if core1 cannot execute
+// anything at all. stack_headroom() returns bytes of core1's 2KB stack
+// never touched below the deepest point reached (0 = the whole stack was
+// used at least once) - a canary painted before multicore_launch_core1(),
+// so this is meaningful any time after boot, dead core1 or not.
+bool sensors_debug_core1_halted(void);
+uint32_t sensors_debug_core1_stack_headroom(void);
+
+// TEMPORARY diagnostic: i2c1's hardware status, read live from core0 - see
+// sensors.c's sensors_debug_i2c1_live() for the full argument and the ONE
+// CAVEAT (tx_abrt_source is clear-on-read; only call this once core1 is
+// already observed dead, never while it might still be alive).
+void sensors_debug_i2c1_live(uint32_t *enable, uint32_t *enableStatus, uint32_t *status,
+                              uint32_t *rawIntrStat, uint32_t *txAbrtSource,
+                              uint32_t *txflr, uint32_t *rxflr);
+
+// TEMPORARY diagnostics: which wait loop core1's bounded i2c1 write is
+// currently in (0=none, 1=TX_EMPTY wait, 2=STOP_DET wait) and how many
+// passes it has made through the CURRENT entry to that loop - see
+// i2c1_write_bytes_bounded()'s comment in sensors.c. Answerable at any
+// time, including while core1 might still be alive (these do not touch
+// i2c1 itself, just report where core1's own bounded write function is).
+uint32_t sensors_debug_core1_write_wait_kind(void);
+uint32_t sensors_debug_core1_write_wait_spins(void);
+
+// TEMPORARY diagnostic: SDA/SCL sampled as plain GPIO levels, bypassing
+// the i2c peripheral - see sensors.c's sensors_debug_i2c1_pins() for why
+// this is the electrical truth on the wire and the classic "a slave is
+// holding the bus" check. Safe from core0 at any time.
+void sensors_debug_i2c1_pins(bool *sda, bool *scl);
 
 /* ---- FT3168 has no pressure signal, measured -----------------------------
  *
@@ -354,5 +430,27 @@ void sensors_init(void);
 
 // Launches core1. After this returns, the ownership rule above is in force.
 void sensors_start(void);
+
+/* ---- core1 restart: the guard's recovery half --------------------------
+ *
+ * PERMANENT. Call only from core0, and only once core1 has been observed
+ * dead for long enough to be sure (see runtime.c's core1-liveness guard) -
+ * never speculatively, since this forcibly resets core1's CPU state and
+ * bit-bangs the i2c1 pins, both of which are only safe when core1
+ * genuinely is not running. Performs, in order: a hardware reset of core1
+ * (works regardless of what core1 was doing - a wedged i2c1 wait or a
+ * genuine LOCKUP, this does not depend on core1's cooperation), an i2c1
+ * bus recovery (release SDA, clock SCL by hand, issue a STOP, reinit the
+ * peripheral - the fix for a slave caught holding the bus mid-byte), and a
+ * fresh multicore_launch_core1(). See sensors.c's i2c1_bus_recover() for
+ * the full argument.
+ */
+void sensors_restart_core1(void);
+
+// PERMANENT diagnostic: how many times sensors_restart_core1() has run
+// this boot - part of the standing guard's own visibility, not a
+// temporary investigation artifact. A bus that wedges constantly should be
+// visible, not silently and endlessly papered over.
+uint32_t sensors_debug_i2c1_recoveries(void);
 
 #endif // SENSORS_H

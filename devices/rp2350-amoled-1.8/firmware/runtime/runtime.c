@@ -209,6 +209,42 @@ static bool devlink_hook_app_switch(int index) {
 // close.
 #define RUNTIME_WATCHDOG_MS 4000
 
+// How long core1 may go without advancing its loop counter before core0
+// treats it as dead and acts - see the core1-liveness guard at the
+// watchdog_update() call site for the full argument. Comfortably under
+// RUNTIME_WATCHDOG_MS: core1's loop runs above 1M/s in normal operation,
+// so any stall past a handful of milliseconds is already anomalous, and
+// this leaves margin before the watchdog's own independent timer expires.
+#define CORE1_STALL_MS 1500
+
+// RECOVERY_HOLD_MS / RECOVERY_MAX_ATTEMPTS and the s_recoveryAttempts /
+// s_recoverySuccessMs state they governed are DELETED here, not just
+// unused: the in-place recovery path they belonged to
+// (sensors_restart_core1(), called RECOVERY_MAX_ATTEMPTS times before
+// falling back to a reboot) is not being called from this file any more -
+// see the guard's own comment at the watchdog_update() call site for why.
+// Leaving dead constants and dead state sitting next to the code that no
+// longer reads them is exactly the kind of thing that survives a rewrite
+// by accident and confuses the next person chasing this; deleting them is
+// cheaper than a comment explaining they do nothing. sensors_restart_
+// core1() itself stays in sensors.c, callable, pending the investigation
+// the coordinator asked for.
+
+// PERMANENT: takes the panel over the instant core1 is confirmed dead - see
+// the guard's own comment at the watchdog_update() call site for why this
+// does not violate decision 0002 section 4b. A solid, unmistakable colour
+// no app on this device uses (every app here is white paper with black or
+// coloured ink on it, never a full-bleed fill), pushed once. Deliberately
+// no text: this device has no font renderer (digits.c draws seven-bar
+// numerals, not general text), and a colour that cannot be mistaken for
+// anything an app would ever draw is enough to answer the one question
+// that matters - "is this device broken or just idle" - without needing to
+// be read.
+static void runtime_show_dead_screen(void) {
+    gfx_fill_rect(0, 0, PANEL_W, PANEL_H, px_swap(0xF800)); // RGB565 red
+    gfx_push_all();
+}
+
 /* ---- profiler --------------------------------------------------------
  *
  * Loop count and sensors_stats() deltas, once a second, modelled on
@@ -221,6 +257,13 @@ static bool devlink_hook_app_switch(int index) {
  */
 #define PROFILE 1
 
+// PERMANENT: state for the core1-liveness watchdog guard - see its comment
+// at the watchdog_update() call site. Declared outside #if PROFILE
+// deliberately: this is a safety mechanism, not a diagnostic, and must not
+// depend on that flag.
+static uint32_t s_core1LastLoops = 0;
+static uint32_t s_core1LastChangeMs = 0;
+
 #if PROFILE
 static uint32_t g_profLoops = 0;
 static uint32_t g_profLastMs = 0;
@@ -228,6 +271,13 @@ static sensors_stats_t g_profLastStats;
 // TEMPORARY diagnostic: see sensors.h's sensors_debug_core1_loops() comment.
 // Remove alongside it once closed.
 static uint32_t g_profLastCore1Loops = 0;
+// TEMPORARY diagnostic: i2c1 hardware status captured right after
+// sound_init(), before sensors_start() - see main()'s comment there for why
+// this is captured into globals instead of printf'd on the spot. Printed
+// once, the first time the PROFILE block runs.
+static uint32_t g_i2c1PostSoundEnable, g_i2c1PostSoundEnableStatus, g_i2c1PostSoundStatus,
+                g_i2c1PostSoundRawIntrStat, g_i2c1PostSoundTxAbrtSource,
+                g_i2c1PostSoundTxflr, g_i2c1PostSoundRxflr;
 #endif
 
 int main(void) {
@@ -252,7 +302,62 @@ int main(void) {
     // rather than folded into sensors.c/sensors.h so the sound service never
     // has to touch the file that owns the i2c1 ownership rule itself - see
     // sound.h's header comment for the full argument.
-    sound_init();
+    // TEMPORARILY DISABLED, 2026-08-13, and this is a product decision rather
+    // than a diagnosis. With sound_init() active, core1 freezes at
+    // PHASE_PMIC_CLR within a few seconds of every boot, which kills touch,
+    // the IMU and BOTH BUTTONS. The owner has been picking up an unusable
+    // device all day because of it.
+    //
+    // A toy that responds to nothing is worse than a toy that does not chime,
+    // so the chime goes away until the race below is actually understood. The
+    // code stays, the call does not. Re-enable it the moment the cause is
+    // known: the owner explicitly likes this chime and it is not the thing at
+    // fault, only the thing that reveals the fault.
+    // sound_init();
+    // BISECT RESULT (coordinator's hypothesis): with sound_init() skipped
+    // and core1_install_fault_handlers() also disabled (the fast ~3.5s
+    // repro configuration), core1 ran clean for 25s straight - no freeze,
+    // raw loops 18.3M -> 51.1M, phase cycling normally the whole time, where
+    // the same config with sound_init() active froze at PHASE_PMIC_CLR
+    // within ~3.5s, twice. That correlates the freeze with sound_init()
+    // running.
+    //
+    // NOT YET a clean causal proof, and this comment previously overclaimed
+    // one: sound_init() itself costs real boot time (es8311_bring_up()'s own
+    // sleep_ms(20) plus roughly twenty i2c1 register writes, ~20+ms total),
+    // and this same investigation has separately shown the race is
+    // sensitive to far smaller perturbations than that - reading four i2c1
+    // hardware registers with no sleep and no printf (see below) was ALSO
+    // enough to stop the freeze reproducing, in a run where sound_init() was
+    // fully active. So "removing sound_init() removes ~20ms of boot delay"
+    // and "removing sound_init() removes whatever i2c1 corruption it
+    // causes" are BOTH still consistent with everything observed so far.
+    // The test that would separate them - replace sound_init() with a
+    // sleep_ms() of matched duration and no i2c1 traffic, see if the freeze
+    // stays away regardless - has not been run yet.
+    // TEMPORARY diagnostic: capture i2c1's own hardware status right after
+    // sound_init() returns and before sensors_start() hands the bus to
+    // core1 - the coordinator's cheapest next check. Still single-threaded
+    // core0 here, so this is a plain register read, not a transaction, and
+    // does not touch the ownership rule.
+    //
+    // Captured into globals and printed LATER (see PROFILE block below),
+    // deliberately NOT printf'd here: a printf this early, before any host
+    // has connected to drain stdio_usb, can itself cost up to ~2ms PER
+    // CHARACTER (the SDK's own per-write timeout - see f360ccd's commit
+    // message on why that number is 2ms and not the old 500ms), so a ~150
+    // character line here could silently add up to hundreds of
+    // milliseconds of exactly the boot delay this whole investigation is
+    // about - discovered by watching this exact printf make the freeze stop
+    // reproducing. Reading four registers into four words costs nothing
+    // comparable.
+    g_i2c1PostSoundEnable = i2c_get_hw(I2C_PORT)->enable;
+    g_i2c1PostSoundEnableStatus = i2c_get_hw(I2C_PORT)->enable_status;
+    g_i2c1PostSoundStatus = i2c_get_hw(I2C_PORT)->status;
+    g_i2c1PostSoundRawIntrStat = i2c_get_hw(I2C_PORT)->raw_intr_stat;
+    g_i2c1PostSoundTxAbrtSource = i2c_get_hw(I2C_PORT)->tx_abrt_source;
+    g_i2c1PostSoundTxflr = i2c_get_hw(I2C_PORT)->txflr;
+    g_i2c1PostSoundRxflr = i2c_get_hw(I2C_PORT)->rxflr;
 
     if (!gfx_init()) {
         // gfx_init() already printed why (SRAM already spoken for). There is
@@ -326,13 +431,50 @@ int main(void) {
         // into something the watchdog below has to save it from.
         devlink_poll();
 
-        // Fed once per iteration. A hung app (or a wedged sensors_touch_next
-        // loop, though the ring is lock-free and single-producer/single-
-        // consumer so that should not happen) stops feeding this and the
-        // board reboots on its own; see the watchdog_enable() comment above
-        // for why that does not race appswitch.c/bootreq.h's own use of the
-        // watchdog peripheral.
-        watchdog_update();
+        // ONE recovery mechanism, deliberately alone. History, because it
+        // matters here: this block has been a forced full-chip reboot with
+        // a red-screen takeover (the red screen was a genuine win but its
+        // OWN trigger, tied to the same recovery path, produced a worse
+        // failure than the bug it revealed - a device stuck red is worse
+        // than one that silently misses a press); then a plain revert with
+        // no intervention at all (safe, but the first wedge is terminal
+        // again); this is the coordinator's explicit combination of the
+        // two: recovery stays, the red screen and the forced reboot do
+        // not. One mechanism at a time, so what recovery alone does is
+        // actually observable rather than folded into two other effects.
+        //
+        // sensors_restart_core1() (sensors.c): a hardware reset of core1
+        // plus an i2c1 bus recovery (release SDA, clock SCL by hand, issue
+        // a STOP, reinit the peripheral, clear the PMIC's own IRQ status
+        // registers) plus a fresh multicore_launch_core1(). Runs every
+        // time core1 is confirmed dead (CORE1_STALL_MS with no loop-count
+        // change), with no attempt limit and no fallback to a reboot: a
+        // wedge costs one invisible restart rather than a lost device, and
+        // - independently of whether recovery ever runs at all -
+        // pmic_poll_core1() now publishes a real press to g_keyEvent
+        // BEFORE attempting the clear write that can wedge, so the press
+        // itself survives even a wedge, not just core1's ability to keep
+        // running afterward.
+        {
+            uint32_t core1LoopsNow = sensors_debug_core1_loops();
+            if (core1LoopsNow != s_core1LastLoops) {
+                s_core1LastLoops = core1LoopsNow;
+                s_core1LastChangeMs = nowMs;
+            }
+
+            uint32_t deadMs = nowMs - s_core1LastChangeMs;
+            if (deadMs < CORE1_STALL_MS) {
+                watchdog_update();
+            } else {
+                sensors_restart_core1();
+                // Give the freshly-launched core1 its own full CORE1_STALL_MS
+                // before judging it again, rather than immediately
+                // re-triggering because the counter has not moved yet.
+                s_core1LastLoops = sensors_debug_core1_loops();
+                s_core1LastChangeMs = nowMs;
+                watchdog_update();
+            }
+        }
 
 #if PROFILE
         g_profLoops++;
@@ -341,11 +483,35 @@ int main(void) {
             sensors_stats_t cur;
             sensors_stats(&cur);
             const char *switchName = rtcore_last_switch_name();
-            printf("prof app=%s switch=%luus | loops=%lu/s | touch reads=%lu timeouts=%lu drops=%lu recoveries=%lu "
+            // core1 liveness: PERMANENT, part of the prof line itself, not a
+            // separate DBG line - a standing guard, not a temporary
+            // diagnostic (coordinator's instruction: "a dead core1 must
+            // never again be silently invisible", and a prior version of
+            // this printed it on its own DBG line, which is exactly the
+            // kind of thing that gets dropped or missed). core0 renders
+            // fine and looks perfectly healthy with core1 dead underneath
+            // it - that is the entire danger this counter exists to catch,
+            // so it lives in the one line nobody can miss. "DEAD" is
+            // printed literally, not just a 0, so a human skimming the log
+            // does not have to do arithmetic to notice.
+            uint32_t core1Loops = sensors_debug_core1_loops();
+            uint32_t core1LoopsPerSec = core1Loops - g_profLastCore1Loops;
+            printf("prof app=%s switch=%luus | loops=%lu/s | core1=%lu/s%s core1restarts=%lu | touch reads=%lu timeouts=%lu drops=%lu recoveries=%lu "
                    "| imu timeouts=%lu | pmic timeouts=%lu poweroff cmds=%lu reg10h=%02lx->%02lx | shot drops=%lu\r\n",
                    switchName ? switchName : "?",
                    (unsigned long)rtcore_last_switch_us(),
                    (unsigned long)g_profLoops,
+                   (unsigned long)core1LoopsPerSec,
+                   core1LoopsPerSec == 0 ? " DEAD" : "",
+                   // PERMANENT: how many times sensors_restart_core1() has
+                   // run this boot (sensors.c) - the guard's own recovery
+                   // count, not sensors_stats()'s touchRecoveries (below,
+                   // a pre-existing, different counter for the touch
+                   // controller's own stall recovery). A bus that wedges
+                   // constantly should be visible here, not silently and
+                   // endlessly papered over by a guard that just keeps
+                   // fixing it.
+                   (unsigned long)sensors_debug_i2c1_recoveries(),
                    (unsigned long)(cur.touchReads - g_profLastStats.touchReads),
                    (unsigned long)(cur.touchTimeouts - g_profLastStats.touchTimeouts),
                    (unsigned long)(cur.touchQueueDrops - g_profLastStats.touchQueueDrops),
@@ -371,13 +537,83 @@ int main(void) {
                    // is what proves a truncation happened rather than nothing
                    // running at all.
                    (unsigned long)devlink_dropped_shots());
-            // TEMPORARY diagnostic line, separate from the one above so it
-            // is trivially greppable and trivially removable. Remove
-            // alongside g_core1Loops/sensors_debug_core1_loops() once closed.
-            uint32_t core1Loops = sensors_debug_core1_loops();
-            printf("DBG core1 loops=%lu/s (raw=%lu)\r\n",
-                   (unsigned long)(core1Loops - g_profLastCore1Loops),
-                   (unsigned long)core1Loops);
+            // TEMPORARY diagnostic line: the DETAIL behind the permanent
+            // core1=.../s in the prof line above (raw count, phase, fault
+            // capture) - that summary is what stays forever; this line is
+            // what a live investigation still needs and can be dropped once
+            // the investigation closes. Reuses core1Loops/core1LoopsPerSec
+            // computed above rather than reading the counter twice.
+            printf("DBG core1 loops=%lu/s (raw=%lu) phase=%lu fault kind=%lu pc=%08lx lr=%08lx cfsr=%08lx faultphase=%lu "
+                   "halted=%d stackheadroom=%lu writewait=%lu writewaitspins=%lu\r\n",
+                   (unsigned long)core1LoopsPerSec,
+                   (unsigned long)core1Loops,
+                   (unsigned long)sensors_debug_core1_phase(),
+                   (unsigned long)sensors_debug_core1_fault_kind(),
+                   (unsigned long)sensors_debug_core1_fault_pc(),
+                   (unsigned long)sensors_debug_core1_fault_lr(),
+                   (unsigned long)sensors_debug_core1_fault_cfsr(),
+                   (unsigned long)sensors_debug_core1_fault_phase(),
+                   // SYSCFG_PROC_CONFIG.PROC1_HALTED and core1's stack
+                   // high-water mark - see sensors.h's comment. Both are
+                   // answerable regardless of whether core1 can execute.
+                   // Coordinator's LOCKUP hypothesis was tested and ruled
+                   // out with these (halted=0 during a live freeze); the
+                   // stack reading itself came back suspicious (2048/2048,
+                   // i.e. zero bytes ever touched, which is not credible
+                   // for a core making function calls) and should not be
+                   // trusted until that is explained - keeping it printed
+                   // so any fix to it is visible in the same place.
+                   (int)sensors_debug_core1_halted(),
+                   (unsigned long)sensors_debug_core1_stack_headroom(),
+                   // Which of i2c1_write_bytes_bounded()'s two wait loops
+                   // core1 is (or was, at death) inside, and how many passes
+                   // through THAT loop's current entry - see that function's
+                   // comment. A frozen (non-advancing across two readings a
+                   // second apart) spin count despite the loop's own
+                   // time_reached() check would mean the CPU is not looping
+                   // in software here at all, but stalled on the single
+                   // register load the while-condition evaluates.
+                   (unsigned long)sensors_debug_core1_write_wait_kind(),
+                   (unsigned long)sensors_debug_core1_write_wait_spins());
+            // TEMPORARY diagnostic: the i2c1 status captured once, right
+            // after sound_init() (main()'s comment). Printed every second
+            // (not just once) specifically so a host that connects late -
+            // as every capture during this investigation has - still sees
+            // it, instead of it being a one-shot line lost before anyone was
+            // listening.
+            printf("DBG i2c1 post-sound_init: enable=%lu enable_status=%08lx status=%08lx "
+                   "raw_intr_stat=%08lx tx_abrt_source=%08lx txflr=%lu rxflr=%lu\r\n",
+                   (unsigned long)g_i2c1PostSoundEnable, (unsigned long)g_i2c1PostSoundEnableStatus,
+                   (unsigned long)g_i2c1PostSoundStatus, (unsigned long)g_i2c1PostSoundRawIntrStat,
+                   (unsigned long)g_i2c1PostSoundTxAbrtSource, (unsigned long)g_i2c1PostSoundTxflr,
+                   (unsigned long)g_i2c1PostSoundRxflr);
+            // TEMPORARY diagnostic: i2c1's LIVE status, only once core1 is
+            // already observed dead this tick (core1LoopsPerSec == 0) - see
+            // sensors_debug_i2c1_live()'s ONE CAVEAT comment for why this
+            // gate is not optional (tx_abrt_source is clear-on-read and a
+            // live core1 depends on seeing it). This is the reading that
+            // matters: the bus state AT the hang, not at boot.
+            if (core1LoopsPerSec == 0) {
+                uint32_t en, enSt, st, ris, tas, txf, rxf;
+                sensors_debug_i2c1_live(&en, &enSt, &st, &ris, &tas, &txf, &rxf);
+                // Coordinator's decode of an earlier reading (status=0x27 =
+                // ACTIVITY+TFNF+TFE+MST_ACTIVITY, raw_intr_stat=0x510 =
+                // TX_EMPTY+ACTIVITY+START_DET with STOP_DET absent,
+                // tx_abrt_source=0): a START was issued, the TX FIFO ran
+                // dry, and no STOP ever followed - the master is still
+                // waiting for the bus to let it finish, which the
+                // peripheral itself does not consider an error. SDA/SCL
+                // below is the direct check that decode calls for: read as
+                // plain GPIO pad levels, bypassing the peripheral, the
+                // classic "a slave is holding the bus low" signature.
+                bool sda, scl;
+                sensors_debug_i2c1_pins(&sda, &scl);
+                printf("DBG i2c1 LIVE (core1 dead this tick): enable=%lu enable_status=%08lx status=%08lx "
+                       "raw_intr_stat=%08lx tx_abrt_source=%08lx txflr=%lu rxflr=%lu sda=%d scl=%d\r\n",
+                       (unsigned long)en, (unsigned long)enSt, (unsigned long)st,
+                       (unsigned long)ris, (unsigned long)tas, (unsigned long)txf, (unsigned long)rxf,
+                       (int)sda, (int)scl);
+            }
             g_profLastCore1Loops = core1Loops;
             g_profLastStats = cur;
             g_profLoops = 0;
