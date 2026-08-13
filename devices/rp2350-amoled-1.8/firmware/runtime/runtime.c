@@ -76,6 +76,29 @@ void rt_halt(void) {
     }
 }
 
+// See runtime_core.h for why this hook exists. AMOLED_1IN8_SetBrightness()
+// (firmware/lib/AMOLED/AMOLED_1in8.c) is a single QSPI register write
+// (command 0x51, one data byte), the same bus gfx_push() already drives
+// every frame - NOT i2c1, so calling it from core0 does not touch the
+// ownership rule sensors.h enforces (touch/IMU/PMIC are the i2c1 parts;
+// the panel is a separate bus entirely). Cost is the same order as one
+// gfx_push() call, a handful of microseconds of PIO/DMA time, not
+// milliseconds; runtime_core.c's power-off gesture only calls this when the
+// requested percentage actually changed (see set_brightness_if_changed()
+// there), so across the whole 3.5s dim ramp this fires at most a few dozen
+// times, not once a frame.
+//
+// AMOLED_1IN8_SetBrightness() already takes a 0-100 percent and clamps it
+// internally before scaling to the panel's 0-255 range, despite main()
+// below calling it with a literal 180 at boot - that 180 clamps down to 100
+// inside the function itself, so today's boot brightness is already this
+// panel's maximum, not some intermediate value (see runtime_core.c's
+// PWR_BASELINE_BRIGHTNESS_PCT, which relies on this). No second clamp is
+// needed here.
+void rt_set_brightness(uint8_t percent) {
+    AMOLED_1IN8_SetBrightness(percent);
+}
+
 /* ---- devlink wiring --------------------------------------------------
  *
  * devlink (../devlink.h) is the agent-facing screenshot and touch-injection
@@ -299,7 +322,7 @@ int main(void) {
             sensors_stats(&cur);
             const char *switchName = rtcore_last_switch_name();
             printf("prof app=%s switch=%luus | loops=%lu/s | touch reads=%lu timeouts=%lu drops=%lu recoveries=%lu "
-                   "| imu timeouts=%lu | pmic timeouts=%lu\r\n",
+                   "| imu timeouts=%lu | pmic timeouts=%lu poweroff cmds=%lu\r\n",
                    switchName ? switchName : "?",
                    (unsigned long)rtcore_last_switch_us(),
                    (unsigned long)g_profLoops,
@@ -308,7 +331,8 @@ int main(void) {
                    (unsigned long)(cur.touchQueueDrops - g_profLastStats.touchQueueDrops),
                    (unsigned long)(cur.touchRecoveries - g_profLastStats.touchRecoveries),
                    (unsigned long)(cur.imuTimeouts - g_profLastStats.imuTimeouts),
-                   (unsigned long)(cur.pmicTimeouts - g_profLastStats.pmicTimeouts));
+                   (unsigned long)(cur.pmicTimeouts - g_profLastStats.pmicTimeouts),
+                   (unsigned long)(cur.poweroffCmds - g_profLastStats.poweroffCmds));
             g_profLastStats = cur;
             g_profLoops = 0;
         }

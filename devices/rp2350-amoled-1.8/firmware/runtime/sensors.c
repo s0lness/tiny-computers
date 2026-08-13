@@ -132,6 +132,24 @@ static void pmic_raise_poweroff_threshold(void) {
     if ((after & AXP2101_OFFLEVEL_MASK) != AXP2101_OFFLEVEL_10S) {
         printf("PMIC reg 0x27: WRITE DID NOT TAKE, still not at 10s\r\n");
     }
+
+    // ONLEVEL (bits 1:0): how long POK must be held to power the board ON
+    // from off. This function's own read-modify-write only ever touches
+    // AXP2101_OFFLEVEL_MASK (bits 3:2, above), so `before`'s bottom two bits
+    // are exactly what ONLEVEL was already set to before this function ran,
+    // untouched by it - decoded and printed here (read-only, no write of
+    // its own) so that fact is legible in the boot log rather than left for
+    // someone to hand-decode a raw hex byte. Grepping this codebase's own
+    // history turns up no other write to register 0x27 at all, so whatever
+    // this prints is silicon's own POR value: the datasheet says 01b/512ms.
+    // Reported here because a small child pressing PWR to turn the device
+    // back ON is exactly the scenario this field governs, and 512ms is
+    // forgiving; if a future change ever needs to shorten or lengthen it,
+    // this is the log line that tells you what it was before you touched
+    // it.
+    static const uint16_t onlevel_ms[4] = { 128, 512, 1000, 2000 };
+    printf("PMIC reg 0x27 ONLEVEL (power-ON hold, bits 1:0, unmodified by this function) = %ums\r\n",
+           (unsigned)onlevel_ms[before & 0x03]);
 }
 
 // Set by pmic_poll_core1() (core1), consumed by sensors_key_take() (core0),
@@ -161,6 +179,41 @@ static uint8_t g_injectKeyEvent;
 // above, this needs no barrier: everything that touches these two is core0.
 static bool g_injectBootDown;
 static bool g_injectBootClickPending;
+
+/* ---------------------------------------------------------------------
+ * PMIC software power-off. See sensors.h's "power off" section for the
+ * full ownership argument (core0 requests, core1 executes) and for the
+ * source on register 0x10 bit 0 - the datasheet PDF did not extract as
+ * readable text, so this is corroborated against lewisxhe/XPowersLib
+ * instead, whose other AXP2101 register addresses already match this
+ * file's own hardware-confirmed ones exactly.
+ * ------------------------------------------------------------------- */
+#define AXP2101_REG_COMMON_CONFIG 0x10
+#define AXP2101_SHUTDOWN_BIT      0x01 // bit 0: "software configuration as
+                                       // POWEROFF source" (XPowersLib's enum
+                                       // comment on the equivalent constant)
+
+// core0-owned request, core1-owned execution: see sensors_request_poweroff()
+// in sensors.h. A plain volatile bool is enough synchronisation for the same
+// reason g_fingerDownShared is: one writer, one reader, and a one-iteration
+// delay before core1 notices is invisible for a gesture measured in seconds.
+static volatile bool g_poweroffRequested;
+
+// Set to 1 to verify the DECISION path (did firmware decide to power off)
+// without ever cutting real power: the i2c write in core1_entry() below is
+// skipped, but g_poweroffCmds still counts as though it had happened, so the
+// once-a-second profiler line can confirm the request was seen and would
+// have been acted on. MUST be 0 in anything actually shipped: this is what
+// turns "the counter went up" into "the screen actually went dark", and only
+// the second one is proof the button really works on real silicon. Mirrors
+// sensors_inject_key()'s "THE HONESTY REQUIREMENT" comment above: a dry run
+// proves the software decided correctly, it proves nothing about the AXP2101
+// actually obeying the command.
+#define POWEROFF_DRY_RUN 0
+
+void sensors_request_poweroff(void) {
+    g_poweroffRequested = true;
+}
 
 /* =========================================================================
  * Core 1: the sole owner of i2c1.
@@ -399,6 +452,7 @@ static volatile uint32_t g_touchQueueDrops;
 static volatile uint32_t g_touchRecoveries;
 static volatile uint32_t g_imuTimeouts;
 static volatile uint32_t g_pmicTimeouts;
+static volatile uint32_t g_poweroffCmds;
 
 /* ---- touch stall recovery, core1 side ---------------------------------- */
 
@@ -475,11 +529,21 @@ static void imu_poll_core1(uint32_t nowMs) {
 /* ---- PMIC: power key events, core1 side --------------------------------
  *
  * Register names are from the AXP2101 datasheet, REG 49H (IRQ Status 1):
- * bit0 POWERON positive edge, bit1 negative edge, bit2 long press, bit3
- * short press. Long press (0x04) and short-press verdict (0x08) drive the
- * app-level actions; the press edge (0x02) is captured too, for gestures
- * that need to time this press against the previous one (the eventual
- * verdict alone cannot tell a caller that).
+ * bit0 POWERON negative edge (release), bit1 positive edge (press), bit2
+ * long press, bit3 short press. Long press (0x04) and short-press verdict
+ * (0x08) drive the app-level actions; the press edge (0x02) is captured
+ * too, for gestures that need to time this press against the previous one
+ * (the eventual verdict alone cannot tell a caller that).
+ *
+ * The mask below was `s1 & 0x0E` (bits 1-3 only) for a while, deliberately
+ * excluding bit 0: nothing read it, so it was discarded before ever
+ * reaching g_keyEvent - see sensors.h's PWR key section, "KEY_RELEASE WAS
+ * DELETED FROM THIS FILE EARLIER, AND IS BACK", for the full story of why
+ * that was correct then and is not correct now. Widened to `0x0F` because
+ * runtime_core.c's power-off gesture (hold PWR alone for 5s) has to know
+ * when a hold ENDS, and the release edge is the only signal that says so;
+ * KEY_LONG is a one-shot verdict at 1.5s, not a level, and cannot stand in
+ * for it.
  *
  * Deliberately NOT batched into one 3-byte burst read from 0x48, even though
  * the registers are consecutive: unlike the touch and IMU bursts above, that
@@ -500,12 +564,47 @@ static void pmic_poll_core1(uint32_t nowMs) {
         return;
     }
     if (s0 || s1 || s2) {
-        if (s1 & 0x0E) g_keyEvent = s1 & 0x0E;
+        if (s1 & 0x0F) g_keyEvent = s1 & 0x0F;
         // Write-1-to-clear, so the next event is distinguishable from this one.
         i2c1_write_reg_to(AXP2101_ADDR, 0x48, s0);
         i2c1_write_reg_to(AXP2101_ADDR, 0x49, s1);
         i2c1_write_reg_to(AXP2101_ADDR, 0x4A, s2);
     }
+}
+
+/* ---- PMIC: software power-off, core1 side -------------------------------
+ *
+ * Checked every pass through core1_entry()'s loop - a volatile bool read,
+ * essentially free next to the i2c transactions the rest of this loop
+ * already does every iteration. See sensors.h's "power off" section and
+ * g_poweroffRequested's own comment above for the core0/core1 ownership
+ * argument; this function is the core1 half of it, the only half allowed to
+ * actually touch i2c1.
+ */
+static void pmic_poweroff_poll_core1(void) {
+    if (!g_poweroffRequested) return;
+    g_poweroffRequested = false;
+    g_poweroffCmds++;
+
+#if !POWEROFF_DRY_RUN
+    // Read-modify-write, not a literal, matching pmic_raise_poweroff_
+    // threshold()'s own style: register 0x10 has other configuration bits
+    // (reset, BATFET control, ...) this codebase has no reason to touch, and
+    // there is no reason to guess at their state just because the board is
+    // about to lose power anyway.
+    uint8_t cfg = 0;
+    bool ok = i2c1_read_reg_n_to(AXP2101_ADDR, AXP2101_REG_COMMON_CONFIG, &cfg, 1);
+    if (ok) {
+        cfg = (uint8_t)(cfg | AXP2101_SHUTDOWN_BIT);
+        ok = i2c1_write_reg_to(AXP2101_ADDR, AXP2101_REG_COMMON_CONFIG, cfg);
+    }
+    // Best-effort, not retried: if this specific transaction times out, the
+    // OFFLEVEL backstop (pmic_raise_poweroff_threshold(), 10s) still cuts
+    // power a few seconds later from PWRON continuing to be held - see that
+    // function's comment for why the backstop is not made redundant by this
+    // path existing.
+    if (!ok) g_pmicTimeouts++;
+#endif
 }
 
 /* ---- core1 entry point --------------------------------------------------
@@ -569,6 +668,7 @@ static void core1_entry(void) {
 
         imu_poll_core1(nowMs);
         pmic_poll_core1(nowMs);
+        pmic_poweroff_poll_core1();
     }
 }
 
@@ -660,6 +760,7 @@ void sensors_stats(sensors_stats_t *out) {
     out->touchRecoveries = g_touchRecoveries;
     out->imuTimeouts = g_imuTimeouts;
     out->pmicTimeouts = g_pmicTimeouts;
+    out->poweroffCmds = g_poweroffCmds;
 }
 
 void sensors_init(void) {

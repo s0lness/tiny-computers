@@ -220,6 +220,21 @@ void rt_halt(void) {
     __builtin_trap();
 }
 
+// See runtime_core.h for why this hook exists. No real panel to dim in a
+// browser tab, and emu_abi.h's exported surface has no "set brightness"
+// call the JS chrome could act on even if this file forwarded one - adding
+// one is outside what this change touches. A documented no-op, not a
+// simulated fade: the DECISION logic that drives this call
+// (runtime_core.c's PWR-hold gesture - whether and when the ramp runs,
+// whether the chord suppresses it, whether release restores it) is still
+// fully exercised here, through the rt_log() lines that logic already
+// writes at the moments that matter. Only the VISUAL result of dimming is
+// untested in the emulator, the same category of gap emu_abi.h already
+// documents for timing and input-device defects.
+void rt_set_brightness(uint8_t percent) {
+    (void)percent;
+}
+
 /* ===========================================================================
  * The panel: AMOLED_1IN8_Display / AMOLED_1IN8_DisplayWindows, per
  * shim/AMOLED_1in8.h. Record the pushed rectangle; the framebuffer itself
@@ -297,10 +312,19 @@ void sensors_set_finger_down(bool down) {
 /* ---- PWR key: bits latched like the real AXP2101 register 0x49 (see
  * sensors.h), fed by emu_button()/emu_button_verdict() for button index
  * BTN_PWR. sensors_key_take() is read-and-clear, once per tick, same
- * contract as the board. No KEY_RELEASE: the board never delivers one
- * either (sensors.h's PWR key section explains why), and an emulator that
- * is more generous than the hardware it emulates is worse than no
- * emulator - see emu_abi.h's "keeping the emulator honest" section. */
+ * contract as the board.
+ *
+ * KEY_RELEASE is now delivered on the down==0 edge, matching hardware: the
+ * board used to mask this bit out (pmic_poll_core1(), firmware/runtime/
+ * sensors.c) and this file matched that by never OR-ing it in, per
+ * emu_abi.h's "keeping the emulator honest" rule (the worked example in
+ * that file's header comment is literally this bit). The board's mask
+ * widened once a real consumer needed the release edge - runtime_core.c's
+ * PWR-held-5s power-off gesture has to know when a hold ENDS - so this file
+ * changes to match, same rule, opposite direction: the emulator must not be
+ * MORE generous than hardware, and now hardware itself delivers this, so
+ * withholding it here would make the emulator LESS capable than the board
+ * it stands in for, which is just as dishonest the other way. */
 #define BTN_BOOT 0
 #define BTN_PWR  1
 
@@ -310,6 +334,17 @@ uint8_t sensors_key_take(void) {
     uint8_t ev = g_keyEvent;
     g_keyEvent = 0;
     return ev;
+}
+
+// Declared by sensors.h for the board's power-off gesture
+// (runtime_core.c). Nothing in wasm has a PMIC to actually cut power on,
+// so this is a no-op, kept for the same "implemented anyway for API
+// completeness" reason sensors_inject_touch()/sensors_inject_erase() above
+// are: the DECISION to call this is still fully exercised in the emulator
+// (runtime_core.c's rt_log() line right before this call fires either
+// way), only the physical effect is out of scope here, same category of
+// gap emu_abi.h already documents for timing and input-device defects.
+void sensors_request_poweroff(void) {
 }
 
 /* ---- BOOT: level tracked directly (no chip-select borrowing here - see
@@ -373,6 +408,8 @@ void sensors_stats(sensors_stats_t *out) {
     out->touchRecoveries = 0;
     out->imuTimeouts = 0;
     out->pmicTimeouts = 0;
+    out->poweroffCmds = 0; // no PMIC to send a real command to; see
+                            // sensors_request_poweroff() above
 }
 
 // sensors_init()/sensors_start() are deliberately NOT implemented here:
@@ -425,10 +462,10 @@ void emu_button(int index, int down) {
             }
         }
     } else if (index == BTN_PWR) {
-        // Press only. The board never delivers a release edge either - see
-        // sensors.h's PWR key section for why - so matching that here means
-        // NOT OR-ing anything in on down == 0, not adding a KEY_RELEASE.
+        // Both edges now, matching the board's widened mask (see this
+        // file's PWR key section above).
         if (down) g_keyEvent |= KEY_PRESS;
+        else g_keyEvent |= KEY_RELEASE;
     }
     // Any other index: emu_device() only ever declares two buttons, so this
     // would be a host bug; ignored rather than trapped, same policy

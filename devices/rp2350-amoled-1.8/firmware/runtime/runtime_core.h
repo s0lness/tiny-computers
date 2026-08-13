@@ -13,15 +13,18 @@
  * sensors.h from a browser is enough to run the real firmware there, not a
  * reimplementation of it.
  *
- * The three functions below are the one place that rule bends, and only
- * because two things runtime.c used to do inline - print a diagnostic line,
- * and time a switch, and hold the board on a fatal arena overflow - are
- * pico-sdk calls (printf's stdio lock, time_us_32(), watchdog_update(),
- * sleep_ms()) with no equivalent in a freestanding wasm module. Each target
- * implements these three; neither is part of emu_abi.h's host-import
- * contract (env.js_log, the math functions) - they are compiled INTO the
- * wasm module by emu_shim.c, same as gfx_init()'s malloc, so they never
- * touch the list the JS side is written against.
+ * The four functions below are the one place that rule bends, and only
+ * because things runtime.c used to do inline - print a diagnostic line, time
+ * a switch, hold the board on a fatal arena overflow, and (since the PWR-held
+ * power-off gesture) set the panel's brightness - are either pico-sdk calls
+ * (printf's stdio lock, time_us_32(), watchdog_update(), sleep_ms()) with no
+ * equivalent in a freestanding wasm module, or board-specific hardware calls
+ * (AMOLED_1IN8_SetBrightness(), declared in a header the wasm build's own
+ * shim deliberately does not carry - see shim/AMOLED_1in8.h's header
+ * comment). Each target implements these four; none is part of emu_abi.h's
+ * host-import contract (env.js_log, the math functions) - they are compiled
+ * INTO the wasm module by emu_shim.c, same as gfx_init()'s malloc, so they
+ * never touch the list the JS side is written against.
  */
 #ifndef RUNTIME_CORE_H
 #define RUNTIME_CORE_H
@@ -57,6 +60,21 @@ uint32_t rt_time_us(void);
 // unreachable by any of today's shipped apps on either target, so this
 // divergence is never actually observed.
 void rt_halt(void);
+
+// Sets the panel's brightness, 0-100 percent. Used by the PWR-held-alone
+// power-off gesture (runtime_core.c) to fade the screen out while the
+// button is held, rather than cutting abruptly - see that file's "the
+// PWR-held-alone power-off gesture" section for the full reasoning. The
+// board's implementation is a single QSPI write (AMOLED_1IN8_SetBrightness,
+// same bus gfx_push() already drives every frame, NOT i2c1 - see runtime.c).
+// wasm has no real panel to dim: browser chrome is not part of emu_abi.h's
+// exported surface and extending it is outside what this hook is for, so
+// the wasm implementation is a documented no-op, not a simulated fade - see
+// emu_shim.c. What the emulator DOES still exercise is the DECISION logic
+// that calls this (whether and when the ramp runs, whether the chord
+// suppresses it, whether release restores it), via the rt_log() lines that
+// logic writes at the moments that matter.
+void rt_set_brightness(uint8_t percent);
 
 /* ---- lifecycle: what the host drives ------------------------------------
  *

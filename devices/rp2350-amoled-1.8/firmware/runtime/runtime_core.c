@@ -320,6 +320,142 @@ uint32_t rtcore_last_switch_us(void) {
 // default its cursor to "the app you came from" when it opens.
 static int g_menuReturnApp = 0;
 
+/* ---- the PWR-held-alone power-off gesture --------------------------------
+ *
+ * The owner's requirement: holding PWR for 5 seconds powers the device off.
+ * Five seconds does not exist in hardware - the AXP2101's OFFLEVEL field
+ * only offers 4/6/8/10s (sensors.h), and 10s of that is already spent as
+ * the menu chord's safety backstop (pmic_raise_poweroff_threshold(),
+ * sensors.c) - so this firmware measures the hold itself, in wall-clock
+ * time, from the two edges the PMIC now gives it: KEY_PRESS and KEY_RELEASE
+ * (register 0x49 bits 1 and 0). KEY_RELEASE was deleted from sensors.h
+ * earlier and is back for exactly this reason - see its comment there for
+ * the full story of why deleting it was correct then and reinstating it is
+ * correct now.
+ *
+ * THE CHORD MUST NEVER POWER OFF, however long it is held - the owner's
+ * requirement, verbatim, and it is checked every tick PWR is down, not just
+ * at the 1.5s KEY_LONG verdict the menu-open branch above cares about:
+ * sensors_boot_down() is safe to call this often (see the KEY_LONG branch's
+ * comment above - bootbtn_poll_level() rate-limits its own sampling
+ * internally, regardless of call frequency).
+ *
+ * The moment BOOT is seen down during a PWR hold, that whole hold is marked
+ * TAINTED (g_pwrChordTainted) and stays that way until PWR is released -
+ * deliberately not just "not currently dimming while BOOT happens to be
+ * held right now". A per-instant check would let a child open the menu
+ * (chord fires at 1.5s), keep gripping PWR out of habit while browsing,
+ * happen to let go of BOOT alone, and have the device power off under her
+ * mid-browse once wall-clock time since the ORIGINAL press reaches 5s -
+ * technically still "BOOT not held" at that instant, but not what "the
+ * chord must never power off, however long it is held" is asking for.
+ * Tainting the whole hold closes that gap: once BOOT has touched this hold
+ * at all, this hold cannot dim or power off, full stop, until PWR comes
+ * back up and is pressed fresh.
+ *
+ * THE FADE. The owner approved a progressive fade over a plain wipe at the
+ * end: the screen dims continuously while PWR is held alone, starting at
+ * 1.5s (the same instant the PMIC's own long-press verdict would fire, so
+ * there is only one threshold to learn, not two unrelated ones) and
+ * reaching black exactly at 5s, when power-off is requested. Releasing PWR
+ * at any point restores full brightness immediately. This adds NOTHING to
+ * any app's screen - decision 0002 section 4b forbids exactly that - it is
+ * the panel's own brightness changing, the same physical property real
+ * power loss would produce anyway, just arriving gradually instead of as a
+ * cut. A child who holds PWR, watches it dim, and lets go learns what the
+ * button does by exploring it safely: nothing is lost, nothing is punished,
+ * and letting go is what undoes it - the best property a control on a toy
+ * can have. No countdown digits, no icon, nothing drawn: only brightness.
+ *
+ * Linear, not eased: a curve that stays imperceptible for the first second
+ * or two and then plunges reads as a fault rather than as a warning, where
+ * a constant rate is continuously informative from the first frame of the
+ * ramp onward - the property "teaches by failing" above depends on.
+ *
+ * rt_set_brightness() (runtime_core.h) is the fourth host hook alongside
+ * rt_log/rt_time_us/rt_halt: a real QSPI panel write on the board, a
+ * documented no-op in wasm - see both implementations' comments.
+ * set_brightness_if_changed() below is this file's own throttle on top of
+ * that hook, so the ramp calls it only when the rounded percentage actually
+ * moves, not once a frame.
+ */
+#define PWR_HOLD_DIM_START_MS       1500u
+#define PWR_HOLD_POWEROFF_MS        5000u
+#define PWR_BASELINE_BRIGHTNESS_PCT 100 // what runtime.c's boot already sets
+                                        // (AMOLED_1IN8_SetBrightness(180)
+                                        // clamps to 100 internally - see its
+                                        // comment in runtime.c). If a future
+                                        // idle-dim feature (decision 0002
+                                        // section 10, still open) starts
+                                        // changing brightness for its own
+                                        // reasons, this fixed baseline needs
+                                        // to become "whatever it was when
+                                        // this hold started" instead - noted
+                                        // here so that feature's author
+                                        // trips over this rather than
+                                        // shipping two dimmers that fight.
+
+static bool g_pwrDown = false;
+static bool g_pwrChordTainted = false;
+static bool g_pwrPoweroffSent = false;
+static uint32_t g_pwrPressStartMs = 0;
+static int g_lastBrightnessPct = -1; // -1: never set, forces the first real
+                                      // call through even if it would
+                                      // compute exactly the baseline
+
+static void set_brightness_if_changed(int pct) {
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    if (pct == g_lastBrightnessPct) return; // the cheapest possible no-op:
+        // see rt_set_brightness()'s comment in runtime.c for why a dropped
+        // repeat call is free and an extra one is not.
+    g_lastBrightnessPct = pct;
+    rt_set_brightness((uint8_t)pct);
+}
+
+static void poweroff_gesture_tick(uint32_t nowMs, uint8_t key) {
+    if (key & KEY_PRESS) {
+        g_pwrDown = true;
+        g_pwrPressStartMs = nowMs;
+        g_pwrChordTainted = false;
+        g_pwrPoweroffSent = false;
+    }
+    if (key & KEY_RELEASE) {
+        g_pwrDown = false;
+    }
+
+    if (!g_pwrDown) {
+        set_brightness_if_changed(PWR_BASELINE_BRIGHTNESS_PCT);
+        return;
+    }
+
+    if (sensors_boot_down()) {
+        g_pwrChordTainted = true;
+    }
+    if (g_pwrChordTainted) {
+        set_brightness_if_changed(PWR_BASELINE_BRIGHTNESS_PCT);
+        return;
+    }
+
+    uint32_t heldMs = nowMs - g_pwrPressStartMs;
+    if (heldMs < PWR_HOLD_DIM_START_MS) {
+        set_brightness_if_changed(PWR_BASELINE_BRIGHTNESS_PCT);
+    } else if (heldMs < PWR_HOLD_POWEROFF_MS) {
+        uint32_t rampMs = heldMs - PWR_HOLD_DIM_START_MS;
+        uint32_t rampSpan = PWR_HOLD_POWEROFF_MS - PWR_HOLD_DIM_START_MS;
+        int pct = PWR_BASELINE_BRIGHTNESS_PCT -
+                  (int)((uint64_t)PWR_BASELINE_BRIGHTNESS_PCT * rampMs / rampSpan);
+        set_brightness_if_changed(pct);
+    } else {
+        set_brightness_if_changed(0);
+        if (!g_pwrPoweroffSent) {
+            g_pwrPoweroffSent = true;
+            rt_log("poweroff: PWR held 5s alone (BOOT never held during this hold), requesting power-off");
+            sensors_request_poweroff();
+        }
+    }
+}
+
 /* ---- lifecycle: what the host drives -------------------------------------- */
 
 // Whether this is the very first tick, so dtMs reads 0 for it instead of
@@ -406,10 +542,16 @@ void rtcore_tick(uint32_t nowMs) {
 
     if (key & KEY_LONG) {
         // sensors_boot_down() borrows the flash chip select on the board
-        // (bootbtn.h) and must not be sampled often - one read per
-        // long-press verdict, never per tick, which is exactly what this
-        // gate gives it: this branch only runs on the tick a KEY_LONG bit
-        // is actually present.
+        // (bootbtn.h), which sounds expensive but is not sampled any
+        // faster for it: bootbtn_poll_level() rate-limits its own sampling
+        // to once every 50ms internally, regardless of how often its
+        // caller asks (see bootbtn.h's comment on bootbtn_poll_level() -
+        // "safe to call every main-loop iteration"). This branch still only
+        // NEEDS one read per long-press verdict, which is exactly what this
+        // gate gives it, but the power-off gesture below calls the same
+        // function every tick PWR is held for an unrelated reason (it needs
+        // BOOT's live level, not just its value at one instant) and that is
+        // not a new cost this callsite has to worry about sharing.
         bool bootHeld = sensors_boot_down();
         if (g_currentIndex == APP_INDEX_MENU) {
             // Already in the menu: the same chord fired again closes it,
@@ -435,11 +577,20 @@ void rtcore_tick(uint32_t nowMs) {
         }
     }
 
-    frame.key = key; // KEY_SHORT and KEY_PRESS always pass through
-                      // unchanged; the release edge (0x01) is never even
-                      // delivered here - see sensors.h's PWR key section.
-                      // Only a KEY_LONG that opened or closed the menu is
-                      // missing by the time an app sees this.
+    // The power-off gesture below reads KEY_PRESS/KEY_RELEASE off `key`
+    // too, alongside whatever the chord above already consumed. It does not
+    // remove anything from `key`: an app that already tolerates
+    // KEY_PRESS passing through unchanged tolerates KEY_RELEASE the same
+    // way (see sensors.h's PWR key section on why the release edge is back,
+    // and this file's own "the PWR-held-alone power-off gesture" section
+    // below for why it is not masked out here the way KEY_LONG sometimes
+    // is).
+    poweroff_gesture_tick(nowMs, key);
+
+    frame.key = key; // KEY_SHORT, KEY_PRESS and KEY_RELEASE always pass
+                      // through unchanged. Only a KEY_LONG that opened or
+                      // closed the menu is missing by the time an app sees
+                      // this.
 
     frame.bootClicked = sensors_boot_clicked();
 

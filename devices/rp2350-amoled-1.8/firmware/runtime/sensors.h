@@ -88,36 +88,39 @@ void sensors_set_finger_down(bool down);
  * 6s default, giving only 4.5s of margin between the menu gesture's
  * long-press verdict and an unannounced power cut; sensors_init() now raises
  * it to 10s, the field's maximum, on every boot (see
- * pmic_raise_poweroff_threshold() in sensors.c), so the margin is 8.5s.
+ * pmic_raise_poweroff_threshold() in sensors.c), so the margin is 8.5s. That
+ * 10s ceiling is now also this firmware's power-off BACKSTOP rather than its
+ * only power-off mechanism - see KEY_RELEASE and sensors_request_poweroff()
+ * below for the real one, and pmic_poll_core1()'s comment in sensors.c for
+ * why the backstop still matters even though it does.
  *
- * NO MACRO FOR 0x01 (release edge), ON PURPOSE. Register 0x41 is written
- * 0xFF at init, so the PMIC already latches the release edge into 0x49 on
- * every press like the other three; but pmic_poll_core1() (sensors.c) reads
- * that byte and keeps only `s1 & 0x0E`, which excludes bit 0, so it is
- * discarded before it ever reaches g_keyEvent. Nothing in this firmware
- * asks for it and nothing delivers it: not a partial implementation, a
- * deliberate one.
+ * KEY_RELEASE (0x01) WAS DELETED FROM THIS FILE EARLIER, AND IS BACK.
+ * Register 0x41 is written 0xFF at init, so the PMIC always latches the
+ * release edge into 0x49 on every press, like the other three bits; for a
+ * long time nothing in this firmware asked for it, so pmic_poll_core1()
+ * (sensors.c) masked it out before it ever reached g_keyEvent, and the
+ * macro itself was deleted on the reasoning that a #define for a bit that
+ * can never appear in app_frame_t.key is a worse trap than no macro at all
+ * - it lets an app compile against a signal that silently does nothing on
+ * hardware. That reasoning was correct at the time and nobody made a
+ * mistake deleting it.
  *
- * A #define for a bit that can never actually appear in app_frame_t.key is
- * a worse trap than not having the macro at all: it lets an app compile
- * against a signal that silently does nothing on hardware, and the failure
- * shows up later, off this codebase entirely, as "the button feels
- * unresponsive" on a device. Deleting it instead turns that mistake into a
- * compile error today, in the one app that tries it - and the table above
- * still says what 0x01 means, for whoever comes back to this datasheet
- * mapping wondering where its macro went.
- *
- * To actually deliver it: change pmic_poll_core1()'s `s1 & 0x0E` (and its
- * `g_keyEvent = ...` sibling) to keep bit 0 too. Not done, because every
- * PWR press would then also hand apps a KEY_RELEASE alongside whichever of
- * KEY_PRESS/KEY_SHORT/KEY_LONG already describes that same gesture, one
- * more bit every consumer of app_frame_t.key has to reason about, forever,
- * for a signal nothing today reads. A cost with no matching benefit, so the
- * mask stays as it is until something actually needs the release edge.
+ * The requirement changed: the owner's power-off gesture (hold PWR alone
+ * for 5 seconds) has to be timed in firmware, because 5 seconds does not
+ * exist as an OFFLEVEL value (4/6/8/10s only, see above), and timing a hold
+ * needs to know when it ENDS, not just when it started or how long the PMIC
+ * decided it had already been. KEY_PRESS alone cannot answer "is PWR still
+ * down right now", and re-deriving that from KEY_LONG (a one-shot verdict
+ * at 1.5s, not a level) does not cover the 1.5s-5s window at all. So the
+ * mask widened again (pmic_poll_core1()'s `s1 & 0x0E` became `s1 & 0x0F`)
+ * and the macro is reinstated to name the bit that mask now lets through.
+ * See runtime_core.c's "the PWR-held-alone power-off gesture" section for
+ * the consumer.
  */
 #define KEY_PRESS   0x02
 #define KEY_LONG    0x04
 #define KEY_SHORT   0x08
+#define KEY_RELEASE 0x01
 
 // Reads and clears the pending key bits. Exactly one caller per loop
 // iteration, or events are lost: this is a read-and-clear, not a queue.
@@ -125,11 +128,17 @@ void sensors_set_finger_down(bool down);
 // itself (see app.h's app_key field).
 uint8_t sensors_key_take(void);
 
-// Injects PMIC key bits (any of KEY_PRESS/KEY_LONG/KEY_SHORT, OR'd
-// together), for the agent-facing devlink test link. Merged into whatever
-// sensors_key_take() next returns, with the same read-and-clear semantics a
-// real PMIC event has: call once per synthetic event, not once per frame you
-// want it to appear "held", or it is delivered more than once.
+// Injects PMIC key bits (any of KEY_PRESS/KEY_LONG/KEY_SHORT/KEY_RELEASE,
+// OR'd together), for the agent-facing devlink test link. Merged into
+// whatever sensors_key_take() next returns, with the same read-and-clear
+// semantics a real PMIC event has: call once per synthetic event, not once
+// per frame you want it to appear "held", or it is delivered more than
+// once. devlink.c's own KEY command only names PRESS/LONG/SHORT today (see
+// tools/README-devlink.md); KEY_RELEASE reaching this function is currently
+// only exercised via the emulator's emu_button(BTN_PWR, 0) path
+// (emu_shim.c), not via devlink on real hardware - a gap worth closing if
+// the power-off gesture ever needs standalone devlink testing beyond what
+// the emulator already covers.
 //
 // Core0-owned end to end, like sensors_inject_erase() above, but for a
 // different reason: g_keyEvent (sensors.c) is written by core1
@@ -171,6 +180,44 @@ uint8_t sensors_key_take(void);
 // discover by trusting a green chord test too far.
 void sensors_inject_key(uint8_t bits);
 
+/* ---- power off -----------------------------------------------------------
+ *
+ * Requests that the AXP2101 cut power to the board (register 0x10, bit 0 -
+ * "software configuration as POWEROFF source"; every rail drops except
+ * VRTC). This bit did not extract as readable text from the datasheet PDF
+ * (tried, got PDF structure noise back), so it is corroborated instead
+ * against lewisxhe/XPowersLib (github.com/lewisxhe/XPowersLib,
+ * src/REG/AXP2101Constants.h's XPOWERS_AXP2101_COMMON_CONFIG = 0x10 and
+ * src/XPowersAXP2101.hpp's shutdown(), which sets bit 0 of that same
+ * register), a widely used open AXP2101 driver whose OTHER register
+ * addresses this file already relies on match exactly and were
+ * independently confirmed on this board's own hardware: slave address
+ * 0x34, register 0x27 (IRQLEVEL/OFFLEVEL/ONLEVEL), and 0x48/0x49/0x4A (IRQ
+ * status 1/2/3, this file's own PWR key bits). That agreement on every
+ * other register this codebase already trusts is why this one is trusted
+ * too, not a guess.
+ *
+ * Core0-owned request, core1-owned execution, the same pattern
+ * g_fingerDownShared (sensors.c) already uses: the DECISION - has PWR been
+ * held 5 seconds alone, per runtime_core.c's gesture logic - is made by a
+ * portable, hardware-blind file that must never touch i2c1 even if it
+ * wanted to, but the i2c write that actually cuts power must come from
+ * core1 like every other transaction on this bus (see the ownership rule
+ * banner at the top of this file). One flag, one writer (this function,
+ * called from core0), one reader (core1_entry(), sensors.c); no barrier
+ * needed, for the same reason g_fingerDownShared needs none: a plain bool
+ * load/store is already atomic on this part, and a one-loop-iteration delay
+ * before core1 notices is invisible for a gesture measured in seconds.
+ *
+ * Calling this does not guarantee power actually drops: it is a best-effort
+ * i2c write like any other in sensors.c, not retried if it times out. The
+ * OFFLEVEL backstop (pmic_raise_poweroff_threshold(), 10s) is what still
+ * cuts power if this write is lost or if firmware is too wedged to have
+ * reached this call in the first place - see that function's comment for
+ * why the two are not redundant.
+ */
+void sensors_request_poweroff(void);
+
 /* ---- shake -------------------------------------------------------------
  *
  * A monotonic counter bumped once per accepted shake, rather than a flag,
@@ -208,6 +255,15 @@ typedef struct {
     uint32_t touchRecoveries;
     uint32_t imuTimeouts;
     uint32_t pmicTimeouts;
+    // Bumped once per sensors_request_poweroff() core1 actually notices and
+    // acts on (see that function's comment). Core1 cannot printf to prove a
+    // shutdown command was sent (the ownership-rule banner above explains
+    // why), so this counter is the only way the once-a-second profiler line
+    // can show it happened - the difference between "we watched the counter"
+    // and "we held the button and the screen went dark" that
+    // sensors_inject_key()'s HONESTY REQUIREMENT comment already insists on
+    // elsewhere in this file.
+    uint32_t poweroffCmds;
 } sensors_stats_t;
 
 void sensors_stats(sensors_stats_t *out);
