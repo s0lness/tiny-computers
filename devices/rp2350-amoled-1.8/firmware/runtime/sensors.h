@@ -320,6 +320,18 @@ uint32_t sensors_debug_core1_fault_phase(void);
 bool sensors_debug_core1_halted(void);
 uint32_t sensors_debug_core1_stack_headroom(void);
 
+// TEMPORARY diagnostics: transaction-level progress of the local i2c1 write
+// path (sensors.c's i2c1_write_bytes_bounded()). started/returned are call
+// counts (a freeze with started == returned + 1 means the function never
+// came back); addr and bytesPushed describe the current or last
+// transaction. Plain counter reads, safe from core0 at any time.
+void sensors_debug_i2c1_write_progress(uint32_t *started, uint32_t *returned,
+                                       uint32_t *addr, uint32_t *bytesPushed);
+
+// TEMPORARY diagnostic: the PMIC write self-test's attempt/failure counts -
+// see sensors.c's PMIC_WRITE_SELFTEST block. Both 0 when the gate is off.
+void sensors_debug_pmic_selftest(uint32_t *writes, uint32_t *fails);
+
 // TEMPORARY diagnostic: i2c1's hardware status, read live from core0 - see
 // sensors.c's sensors_debug_i2c1_live() for the full argument and the ONE
 // CAVEAT (tx_abrt_source is clear-on-read; only call this once core1 is

@@ -575,6 +575,20 @@ int main(void) {
                    // register load the while-condition evaluates.
                    (unsigned long)sensors_debug_core1_write_wait_kind(),
                    (unsigned long)sensors_debug_core1_write_wait_spins());
+            // TEMPORARY diagnostic: write-path transaction progress and the
+            // PMIC write self-test counters (sensors.h). wr=started/returned
+            // answers "did the write function itself ever return"; addr and
+            // pushed say which slave and how many bytes of the current or
+            // last write made it into the FIFO. selftest=writes/fails stays
+            // 0/0 unless the build was made with PMIC_WRITE_SELFTEST=1.
+            {
+                uint32_t wrS, wrR, wrA, wrB, stW, stF;
+                sensors_debug_i2c1_write_progress(&wrS, &wrR, &wrA, &wrB);
+                sensors_debug_pmic_selftest(&stW, &stF);
+                printf("DBG i2c1 wr started=%lu returned=%lu addr=%02lx pushed=%lu selftest=%lu/%lu\r\n",
+                       (unsigned long)wrS, (unsigned long)wrR, (unsigned long)wrA,
+                       (unsigned long)wrB, (unsigned long)stW, (unsigned long)stF);
+            }
             // TEMPORARY diagnostic: the i2c1 status captured once, right
             // after sound_init() (main()'s comment). Printed every second
             // (not just once) specifically so a host that connects late -

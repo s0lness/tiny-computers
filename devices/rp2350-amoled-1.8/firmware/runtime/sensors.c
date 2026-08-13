@@ -294,9 +294,33 @@ void sensors_request_poweroff(void) {
 static volatile uint32_t g_core1WriteWaitKind;
 static volatile uint32_t g_core1WriteWaitSpins;
 
+// TEMPORARY diagnostic, same investigation: transaction-level progress of
+// the write path, because the wait-kind/spins pair above cannot answer the
+// one question the captured i2c1 register state leaves open. status=0x27
+// with raw_intr_stat=0x510 (TX FIFO empty, master active, START seen, no
+// STOP, no abort) is the same corpse whether (a) all bytes were pushed and
+// the STOP could not complete on the wire, or (b) the feeding core stopped
+// executing between two pushes and the master is waiting for a byte that
+// will never come. These four say which: how many transactions this path
+// ever started, how many returned (started != returned+1 at a freeze means
+// the function itself never came back), the target address, and how many
+// bytes of the current/last transaction were pushed into the FIFO.
+// Written by whichever core runs the function; in normal operation that is
+// core1 only, and the one core0 caller (i2c1_bus_recover(), below) runs
+// only while core1 is held in reset, so there is still exactly one live
+// writer at any moment.
+static volatile uint32_t g_i2cWritesStarted;
+static volatile uint32_t g_i2cWritesReturned;
+static volatile uint32_t g_i2cWriteAddr;
+static volatile uint32_t g_i2cWriteBytesPushed;
+
 static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t len, bool nostop, uint32_t timeout_us) {
     i2c_inst_t *i2c = I2C_PORT;
     absolute_time_t deadline = make_timeout_time_us(timeout_us);
+
+    g_i2cWriteAddr = addr;
+    g_i2cWriteBytesPushed = 0;
+    g_i2cWritesStarted++;
 
     i2c_get_hw(i2c)->enable = 0;
     i2c_get_hw(i2c)->tar = addr;
@@ -313,6 +337,7 @@ static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t le
                 (uint32_t)((first && i2c->restart_on_next) ? 1u : 0u) << I2C_IC_DATA_CMD_RESTART_LSB |
                 (uint32_t)((last && !nostop) ? 1u : 0u) << I2C_IC_DATA_CMD_STOP_LSB |
                 src[byte_ctr];
+        g_i2cWriteBytesPushed = (uint32_t)(byte_ctr + 1);
 
         // Wait for the shift register to take the byte - needs TX_EMPTY_CTRL
         // set in IC_CON, which i2c_init() (pico-sdk) already does.
@@ -349,6 +374,7 @@ static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t le
     }
 
     i2c->restart_on_next = nostop; // mirrors the SDK's own bookkeeping for a chained transfer
+    g_i2cWritesReturned++;
     return !abort && byte_ctr == len;
 }
 
@@ -701,6 +727,7 @@ static volatile uint32_t g_core1Phase;
 #define PHASE_PMIC_CLR_48      15
 #define PHASE_PMIC_CLR_49      16
 #define PHASE_PMIC_CLR_4A      17
+#define PHASE_PMIC_SELFTEST_WR 18
 
 /* ---- TEMPORARY diagnostic: core1 fault capture ---------------------------
  *
@@ -1003,6 +1030,58 @@ static void pmic_poll_core1(uint32_t nowMs) {
     }
 }
 
+/* ---- TEMPORARY bench reproducer: PMIC write self-test, core1 side --------
+ *
+ * Every observed core1 death sits at the write-1-to-clear of the AXP2101's
+ * IRQ status registers, and that write only ever runs when the PMIC has
+ * actually latched an event, which on a bench with no finger means it never
+ * runs at all. Every idle soak of this investigation measured the one
+ * condition under which the fault cannot occur (decision 0004). This
+ * closes that hole: with PMIC_WRITE_SELFTEST set, core1 issues the exact
+ * transaction shape of the fatal write (4-byte burst, register 0x48 plus
+ * three payload bytes, STOP-terminated, same function, same bus, same
+ * core) every 2 seconds, no human required.
+ *
+ * Payload alternates between 0x00 and 0xFF. Write-1-to-clear semantics
+ * make both harmless with nothing latched: 0x00 clears no bits by
+ * definition, 0xFF clears bits that are already 0. 0xFF additionally
+ * matches the byte values a real press produces on the wire in case the
+ * wedge is somehow value-dependent.
+ *
+ * What this separates:
+ *   - wedges with no press  -> "a real button press" was never the trigger,
+ *     any core1 write to the AXP2101 is, and the bug can be hammered on
+ *     the bench at will;
+ *   - never wedges          -> the latched-IRQ state (AXP_IRQ low, PWRON
+ *     physically held, a nonzero status register) is a necessary
+ *     ingredient, which points at the chip's own behavior during a real
+ *     clear, not at the transaction shape.
+ *
+ * MUST be 0 in anything shipped. Attempts/failures are exported through
+ * sensors_debug_pmic_selftest() and printed on the DBG line so the count
+ * of completed transactions is visible right up to a freeze.
+ */
+#ifndef PMIC_WRITE_SELFTEST
+#define PMIC_WRITE_SELFTEST 1
+#endif
+
+static volatile uint32_t g_selftestWrites;
+static volatile uint32_t g_selftestFails;
+
+#if PMIC_WRITE_SELFTEST
+static void pmic_write_selftest_core1(uint32_t nowMs) {
+    static uint32_t lastMs = 0;
+    if (nowMs - lastMs < 2000) return;
+    lastMs = nowMs;
+
+    uint8_t v = (g_selftestWrites & 1u) ? 0xFFu : 0x00u;
+    uint8_t clr[4] = { 0x48, v, v, v };
+    g_core1Phase = PHASE_PMIC_SELFTEST_WR;
+    g_selftestWrites++;
+    if (!i2c1_write_to(AXP2101_ADDR, clr, sizeof(clr))) g_selftestFails++;
+}
+#endif
+
 /* ---- PMIC: software power-off, core1 side -------------------------------
  *
  * Checked every pass through core1_entry()'s loop - a volatile bool read,
@@ -1130,6 +1209,9 @@ static void core1_entry(void) {
 
         imu_poll_core1(nowMs);
         pmic_poll_core1(nowMs);
+#if PMIC_WRITE_SELFTEST
+        pmic_write_selftest_core1(nowMs);
+#endif
         pmic_poweroff_poll_core1();
         g_core1Phase = PHASE_LOOP_BOTTOM;
     }
@@ -1342,16 +1424,46 @@ static void i2c1_bus_recover(void) {
     // straight back into the same write-clear path - no new button press
     // required, which is exactly what was observed. Core0 clears them
     // here, once, while core1 is provably not running (same argument as
-    // the bus recovery above), using the plain DEV_I2C_* calls: safe
-    // because this is a single one-shot recovery step, not a hot path, and
-    // if this specific write happens to hang too the caller
-    // (sensors_restart_core1()) has already reset core1 and unwedged the
-    // bus, so a stuck DEV_I2C_Write_Byte here blocks core0 rather than
-    // leaving core1 dead - a strictly better failure than the one this is
-    // fixing.
-    DEV_I2C_Write_Byte(AXP2101_ADDR, 0x48, DEV_I2C_Read_Byte(AXP2101_ADDR, 0x48));
-    DEV_I2C_Write_Byte(AXP2101_ADDR, 0x49, DEV_I2C_Read_Byte(AXP2101_ADDR, 0x49));
-    DEV_I2C_Write_Byte(AXP2101_ADDR, 0x4A, DEV_I2C_Read_Byte(AXP2101_ADDR, 0x4A));
+    // the bus recovery above).
+    //
+    // TWO CHANGES from the first version of this clear, both from reading
+    // the whole failure chain end to end rather than this function alone:
+    //
+    // 1. BOUNDED transactions, not DEV_I2C_*. The DEV_I2C_ calls are the
+    //    SDK's plain _blocking ones with no timeout anywhere, so if the
+    //    bus recovery above did NOT free the wire, this clear hung core0,
+    //    the 4s watchdog rebooted the chip, and the reboot then re-ran
+    //    the boot-time init (sensors_init() and everything under it, all
+    //    DEV_I2C_ too) against the same wedged bus, this time BEFORE
+    //    watchdog_enable() runs: core0 parked forever, screen lit with
+    //    its last frame. That chain is the owner's "responds to nothing
+    //    ever again". The bounded local implementations above are just as
+    //    callable from core0 while core1 is held in reset, and a failed
+    //    clear now costs a counted timeout instead of the device.
+    //
+    // 2. PUBLISH 0x49's key bits, do not destroy them. The AXP2101 latches
+    //    the short-press verdict at RELEASE, which for every wedge so far
+    //    is AFTER core1 died (the wedge fires within 40ms of the press
+    //    edge, a human press lasts hundreds of ms). So at this point in
+    //    recovery, register 0x49 holds the only copy anywhere of the press
+    //    the owner actually made: pmic_poll_core1()'s publish-first order
+    //    can only ever deliver KEY_PRESS, because KEY_SHORT does not exist
+    //    yet when it runs. The first version of this clear read those bits
+    //    and threw them away, which is why "publish first" alone still
+    //    left the stopwatch not starting: chrono toggles on KEY_SHORT
+    //    (apps/chrono.c), and KEY_SHORT died here. Writing g_keyEvent from
+    //    core0 is safe for the same reason every transaction in this
+    //    function is: its usual writer, core1, is provably in reset.
+    uint8_t s0 = 0, s1 = 0, s2 = 0;
+    bool ok0 = i2c1_read_reg_n_to(AXP2101_ADDR, 0x48, &s0, 1);
+    bool ok1 = i2c1_read_reg_n_to(AXP2101_ADDR, 0x49, &s1, 1);
+    bool ok2 = i2c1_read_reg_n_to(AXP2101_ADDR, 0x4A, &s2, 1);
+    if (ok1 && (s1 & 0x0F)) g_keyEvent = (uint8_t)(g_keyEvent | (s1 & 0x0F));
+    bool okc = true;
+    if (ok0 && s0) okc = i2c1_write_reg_to(AXP2101_ADDR, 0x48, s0) && okc;
+    if (ok1 && s1) okc = i2c1_write_reg_to(AXP2101_ADDR, 0x49, s1) && okc;
+    if (ok2 && s2) okc = i2c1_write_reg_to(AXP2101_ADDR, 0x4A, s2) && okc;
+    if (!ok0 || !ok1 || !ok2 || !okc) g_pmicTimeouts++;
 }
 
 // PERMANENT: how many times core1 has been restarted after a stall -
@@ -1429,6 +1541,23 @@ void sensors_debug_i2c1_live(uint32_t *enable, uint32_t *enableStatus, uint32_t 
 // i2c1_write_bytes_bounded()'s comment.
 uint32_t sensors_debug_core1_write_wait_kind(void) { return g_core1WriteWaitKind; }
 uint32_t sensors_debug_core1_write_wait_spins(void) { return g_core1WriteWaitSpins; }
+
+// TEMPORARY diagnostic accessors for the write-side transaction progress -
+// see the g_i2cWritesStarted block's comment above i2c1_write_bytes_bounded().
+void sensors_debug_i2c1_write_progress(uint32_t *started, uint32_t *returned,
+                                       uint32_t *addr, uint32_t *bytesPushed) {
+    *started = g_i2cWritesStarted;
+    *returned = g_i2cWritesReturned;
+    *addr = g_i2cWriteAddr;
+    *bytesPushed = g_i2cWriteBytesPushed;
+}
+
+// TEMPORARY diagnostic accessor for the PMIC write self-test - see the
+// PMIC_WRITE_SELFTEST block. Reads as 0/0 in a build with the gate off.
+void sensors_debug_pmic_selftest(uint32_t *writes, uint32_t *fails) {
+    *writes = g_selftestWrites;
+    *fails = g_selftestFails;
+}
 
 // TEMPORARY diagnostic: SDA/SCL read as plain GPIO levels, bypassing the
 // i2c peripheral entirely - gpio_get() reads the pad's synchronized input

@@ -12,6 +12,34 @@ pico_sdk_init()
 
 add_executable(main)
 
+# THE WHOLE BINARY EXECUTES FROM SRAM, NOT XIP. This is the fix for the
+# core1 freeze diagnosed in docs/decisions/0004: bootbtn.c samples the BOOT
+# button by floating the flash chip select for ~100us at a time
+# (read_cs_low()), which its own comment understands is fatal to any core
+# fetching from flash at that moment - and it protects only the calling
+# core. Core0 is covered (the function is __no_inline_not_in_flash_func and
+# runs with its interrupts off); core1, which executed every sensor loop
+# from flash via XIP, was not, so any XIP-cache miss on core1 during a
+# borrow fetched garbage instructions through a deselected chip. The
+# deleted pre-runtime main.c had already hit and documented this ("a
+# periodic poll was in here briefly and the app hung with a white screen
+# and no input"), and solved it by not polling; the runtime refactor
+# deleted that file and reintroduced the periodic poll for bootClicked.
+#
+# copy_to_ram is the total form of the fix, chosen over per-function
+# __not_in_flash_func annotation deliberately: annotating core1's call
+# graph means auditing every callee forever (time_us_64, sleep_ms, libm's
+# sqrtf, libgcc's 64-bit division helpers, the multicore launch trampoline,
+# the vendor FT3168 reset - all were on core1's path and all live in
+# flash), and one future refactor adding one innocent call silently
+# reopens the hole, which is precisely how this bug returned the first
+# time. With the entire image copied to SRAM at boot there is no XIP
+# execution on either core, ever, so the chip-select borrow is safe by
+# construction and stays safe. Cost, measured before the change: 65KB
+# .text + 4KB .rodata against roughly 355KB of free SRAM, and a few ms of
+# boot-time copy.
+pico_set_binary_type(main copy_to_ram)
+
 pico_generate_pio_header(main ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO/qspi.pio
                         OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO)
 
