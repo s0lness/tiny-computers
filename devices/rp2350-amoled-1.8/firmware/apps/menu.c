@@ -325,85 +325,154 @@ static void draw_icon_sketch(int ox, int oy, uint16_t color) {
  * moche. elle devrait etre plus ronde" against a reference photo of a real
  * hourglass (see this file's task brief) - two ROUND, near-spherical
  * bulbs meeting at a narrow waist, not the previous version's two hard-
- * edged triangles (a schematic symbol, not an object). Each chamber's
- * outline is now sampled off a CIRCLE via shapes.h's half-width table,
- * the same "bars-not-curves" technique the chrono ring above already uses,
- * instead of a straight linear taper.
+ * edged triangles (a schematic symbol, not an object).
  *
- * The circle is not centred on the chamber: solved so that a single
- * radius R, sampled starting TIMER_BULB_K rows past the circle's own
- * centre, passes through TIMER_HALF_OUT (full width) at row 0 (the cap)
- * and TIMER_HALF_NECK (the waist) at the last row (TIMER_CHAMBER_H-1) -
- * i.e. the visible chamber is only the circle's lower arc, well past its
- * equator. That is what "flattened where it meets the waist and the end
- * caps" (the owner's words) comes out to mechanically: near row 0 the
- * circle is still close to its own peak, so the slope is gentle and the
- * cap reads as rounded-but-nearly-flat, not pointed; near the last row the
- * circle is close to its own pole, so the slope is steep and the chamber
- * narrows fast right where it meets the neck, instead of drifting there
- * on a constant straight-line slope the way the old triangle did.
+ * MIRROR SYMMETRY ABOUT THE WAIST is what makes an hourglass legible at a
+ * glance: the top chamber is widest at its cap and narrows going down to
+ * the waist; the bottom chamber must be the exact opposite - narrowest at
+ * the waist, widening going down to its own cap. s_timerBulbHw[] below is
+ * filled ONCE for that shape (row 0 = cap/wide, last row = waist/narrow)
+ * and the bottom chamber's drawing loop reads it BACKWARDS (index
+ * TIMER_CHAMBER_H-1-row), so row 0 of the bottom chamber (right under the
+ * waist) reads the table's LAST entry (narrow) and its last row (the
+ * bottom cap) reads the table's FIRST entry (wide) - see the bottom loop
+ * below. Verified by measuring the actual rendered framebuffer, not just
+ * by eye: half-width at the bottom chamber's own rows is strictly
+ * increasing from the waist down to the cap, never the other way - this
+ * was got wrong once during development (mirrored correctly on paper, but
+ * the first rendered version still read as a funnel - see the next
+ * paragraph for why that was a curve-SHAPE bug, not a mirroring one) and
+ * is worth re-checking this way, not by eye, if this shape is ever
+ * retuned again.
  *
- * TIMER_BULB_K is solved algebraically, not tuned by eye: for a circle of
- * radius R centred k rows above the chamber's own row 0,
- *   hw(row) = sqrt(R^2 - (k+row)^2)
- * Requiring hw(0) = TIMER_HALF_OUT and hw(TIMER_CHAMBER_H-1) =
- * TIMER_HALF_NECK gives two equations in (R, k); subtracting them cancels
- * R^2 and leaves k in closed form (TIMER_BULB_K below), and R follows from
- * either original equation. Both stay in terms of TIMER_HALF_OUT/
- * TIMER_HALF_NECK/TIMER_CHAMBER_H, so this recomputes itself if any of
- * those three ever change, the same self-updating property CHRONO_TAB_OFF
- * above has for its own fixed geometry.
+ * A FIRST version of this curve (a single circle, one radius sampled off
+ * its own lower arc - see this file's git history) got the mirroring
+ * above right but still read as a funnel, not a bulb, for a reason that
+ * has nothing to do with which end is wide: a circle is locally FLAT right
+ * at its own peak and increasingly STEEP away from it, and forcing the
+ * peak to sit exactly at row 0 (the only way a single circle can reach a
+ * chamber this tall - see below) put all of that flatness at the wide end
+ * and all of the steepness at the narrow end. Flat-then-steep is exactly
+ * the silhouette of a funnel or a martini glass, not a sphere, regardless
+ * of which end is which - a ball's curvature is closer to symmetric on
+ * both sides of its widest point. Confirmed both by eye against the
+ * reference photo and numerically: a circle's own half-width formula is
+ * hw(row) = sqrt(R^2 - dy^2), whose slope near dy=0 (the peak) is
+ * approximately -dy/R - near zero when dy is small relative to R, which it
+ * necessarily is when R has to be almost as large as TIMER_HALF_OUT itself
+ * just to reach TIMER_HALF_NECK within the chamber's own height (see next
+ * paragraph) - so "near the peak" ends up covering most of the visible cap.
+ *
+ * Why the peak cannot just be moved inside the window: reaching from a
+ * half-width of TIMER_HALF_OUT down to TIMER_HALF_NECK on a circle of
+ * radius R takes very close to R rows of descent (exactly sqrt(R^2 -
+ * TIMER_HALF_NECK^2), which is within a few percent of R whenever
+ * TIMER_HALF_NECK is small next to R, as it is here). At the dimensions
+ * this was first found against (a 34-row chamber, TIMER_HALF_OUT=40) that
+ * was roughly 39-40 rows on its own - already more than the chamber's own
+ * height, with nothing left over to also spend rows on a rounded shoulder
+ * above the peak. Tried numerically before settling on the fix below:
+ * moving the peak 10 rows inside that window while still hitting both
+ * endpoints exactly forced a radius wider than TIMER_HALF_OUT by under
+ * half a pixel - an invisible bulge bought at a real cost in code
+ * complexity, for nothing. Growing the chamber a little (roughly +20%) was
+ * the other lever tried at the time, and was rejected too, for spending
+ * its rows on a still sub-pixel bulge rather than on anything the icon
+ * keeps - the chamber eventually DID grow, but for a different reason (see
+ * "PROPORTIONS" below), and by enough (34 -> 44 rows, nearly +30%) that
+ * the bulge this same algebra produces is no longer sub-pixel: worth
+ * knowing if the exact numbers here ever get re-tuned again, since the
+ * tradeoff that ruled this lever out originally no longer holds.
+ *
+ * The fix: an ELLIPSE, not a circle. A circle has exactly one radius,
+ * which fixes its width AND how many rows it takes to reach any given
+ * narrower width TOGETHER - that coupling is the actual problem above, not
+ * the chamber height. An ellipse has two independent axes, so the bulge's
+ * PEAK WIDTH and how far it takes to fall from the peak to each endpoint
+ * can be solved separately. hw(row) = A*sqrt(1 - ((row-P)/B)^2), with the
+ * peak position P chosen directly (TIMER_BULB_PEAK_ROW, about 3/10 of the
+ * way down - close to where the reference photo's own widest point sits)
+ * and (A, B) solved from the two endpoints this shape must still hit
+ * exactly (hw(0) = TIMER_HALF_OUT, hw(TIMER_CHAMBER_H-1) =
+ * TIMER_HALF_NECK) - see ensure_timer_bulb_table() for the two-line
+ * derivation. The overshoot past TIMER_HALF_OUT this buys is real and
+ * visible, not the sub-pixel one a circle was stuck with, and the curve is
+ * close to symmetric in shape on both sides of that peak the way a ball's
+ * is.
+ *
+ * PROPORTIONS: an hourglass is TALL and NARROW - being that shape is as
+ * much a part of reading as "hourglass" as the waist is, and an early pass
+ * at this icon (TIMER_MARGIN=12, TIMER_HALF_OUT=40, TIMER_CHAMBER_H=34)
+ * measured out at roughly 90px wide by 70px tall on the rendered
+ * framebuffer, wider than it was tall - two stacked bowls, not an
+ * hourglass. Fixed by pulling both available levers at once rather than
+ * either alone: TIMER_MARGIN dropped close to 0 so the whole ICON_H is
+ * spent on the glass instead of a lot of it sitting in unused top/bottom
+ * padding, and TIMER_HALF_OUT/TIMER_HALF_NECK both came down so the
+ * chambers are slimmer. Measured on the current numbers below: ink height
+ * (top cap to bottom cap) 92px, ink width (at the widest bulge) about
+ * 66px - a 0.72 width/height ratio, against the reference photo's own
+ * "distinctly taller than wide" and the brief's 0.7 target.
  * ------------------------------------------------------------------- */
-#define TIMER_MARGIN    (ICON_H / 8)                             // 12
-#define TIMER_HALF_OUT  (ICON_W / 2 - ICON_W / 12)                // 40
-#define TIMER_HALF_NECK (ICON_W / 16)                              // 6
+#define TIMER_MARGIN    (ICON_H / 48)                             // 2
+#define TIMER_HALF_OUT  (ICON_W * 7 / 24)                          // 28
+#define TIMER_HALF_NECK 5
 #define TIMER_NECK_H    (ICON_H / 24)                              // 4
-#define TIMER_CHAMBER_H ((ICON_H - 2 * TIMER_MARGIN - TIMER_NECK_H) / 2) // 34
+#define TIMER_CHAMBER_H ((ICON_H - 2 * TIMER_MARGIN - TIMER_NECK_H) / 2) // 44
 #define TIMER_OUTLINE   (ICON_W / 24)                              // 4
 
-// See this block's header comment for the derivation. ~7.2 rows at today's
-// dimensions: the modelling circle's centre sits about 7 rows above the
-// chamber's own cap.
-#define TIMER_BULB_K \
-    (((float)(TIMER_HALF_OUT * TIMER_HALF_OUT - TIMER_HALF_NECK * TIMER_HALF_NECK \
-              - (TIMER_CHAMBER_H - 1) * (TIMER_CHAMBER_H - 1))) \
-     / (2.0f * (float)(TIMER_CHAMBER_H - 1)))
+// Where the bulb's TRUE widest point sits, measured down from the cap -
+// see this block's header comment for why this needs to be a free choice
+// (an ellipse, not a circle) rather than something solved for. 3/10 of the
+// way down is close to where the reference photo's own bulge sits; 13 rows
+// at today's (taller) chamber.
+#define TIMER_BULB_PEAK_ROW (TIMER_CHAMBER_H * 3 / 10)
 
-// Generous virtual table for shapes_fill_half_width_table(): big enough to
-// hold a full circle of TIMER_BULB_K's radius (~41px at today's dimensions)
-// with headroom either side, so the window picked out in
-// ensure_timer_bulb_table() below never runs off either end.
-#define TIMER_BULB_TABLE_ROWS 128
-
-static int16_t s_timerFullCircle[TIMER_BULB_TABLE_ROWS];
 static int16_t s_timerBulbHw[TIMER_CHAMBER_H]; // row 0 = cap (wide), last = waist (narrow)
 static bool s_timerBulbReady = false;
 
 static void ensure_timer_bulb_table(void) {
     if (s_timerBulbReady) return;
 
-    float k = TIMER_BULB_K;
-    float r = sqrtf((float)(TIMER_HALF_OUT * TIMER_HALF_OUT) + k * k);
-    shapes_fill_half_width_table(s_timerFullCircle, TIMER_BULB_TABLE_ROWS, r);
+    // hw(row) = A*sqrt(1 - ((row-P)/B)^2), P = TIMER_BULB_PEAK_ROW fixed.
+    // Squaring the two endpoint conditions (hw(0) = TIMER_HALF_OUT,
+    // hw(m) = TIMER_HALF_NECK, m = TIMER_CHAMBER_H-1) and subtracting
+    // cancels the A^2/B^2 cross term down to one unknown, v = A^2/B^2; A
+    // and B follow from there. See this block's header comment for why
+    // this replaces a single circle (which cannot decouple the bulge's
+    // width from how many rows it takes to reach it, and so cannot place
+    // its own peak inside the window without an invisible, sub-pixel
+    // bulge).
+    float outF = (float)TIMER_HALF_OUT, neckF = (float)TIMER_HALF_NECK;
+    float p = (float)TIMER_BULB_PEAK_ROW;
+    float m = (float)(TIMER_CHAMBER_H - 1);
 
-    // shapes_fill_half_width_table() centres its table at rows/2.0, i.e.
-    // virtual row v has dy = (v+0.5) - TIMER_BULB_TABLE_ROWS/2. Chamber row
-    // i wants dy = k+i (see the header comment above), so v = i + v0 with
-    // v0 solved from that equality. +0.5f rounds rather than truncates;
-    // exact to a fraction of a pixel either way is invisible on a 96px icon.
-    int v0 = (int)((float)TIMER_BULB_TABLE_ROWS / 2.0f + k - 0.5f + 0.5f);
-    for (int i = 0; i < TIMER_CHAMBER_H; i++) {
-        int v = v0 + i;
-        int16_t hw = (v >= 0 && v < TIMER_BULB_TABLE_ROWS) ? s_timerFullCircle[v] : 0;
-        // Clamped, not trusted verbatim: TIMER_BULB_K's algebra targets
-        // these exact bounds at the two ends, but integer table rows only
-        // land close, not exact. Clamping is what guarantees a flush,
-        // gapless seam against the flat-topped cap (row 0) and the neck
-        // rectangle drawn separately below (last row), regardless of that
-        // rounding.
-        if (hw < TIMER_HALF_NECK) hw = TIMER_HALF_NECK;
-        if (hw > TIMER_HALF_OUT) hw = TIMER_HALF_OUT;
-        s_timerBulbHw[i] = hw;
+    float v = (outF * outF - neckF * neckF) / ((m - p) * (m - p) - p * p);
+    float aSq = outF * outF + v * p * p;
+    float a = sqrtf(aSq);
+    float b = sqrtf(aSq / v);
+
+    // ICON_W/2 - 1: the icon's own box edge, a hard safety clamp so a
+    // future change to TIMER_BULB_PEAK_ROW or the chamber's proportions
+    // cannot silently draw the bulge's peak past the icon's own bounding
+    // box instead of just making it visibly too fat (an obvious bug, not a
+    // corrupted one).
+    int maxHw = ICON_W / 2 - 1;
+
+    for (int row = 0; row < TIMER_CHAMBER_H; row++) {
+        float dy = (float)row - p;
+        float t = dy / b;
+        float underRoot = 1.0f - t * t;
+        float hwF = underRoot > 0.0f ? a * sqrtf(underRoot) : 0.0f;
+        int16_t hw = (int16_t)(hwF + 0.5f);
+        if (hw < TIMER_HALF_NECK) hw = TIMER_HALF_NECK; // guards the waist
+                                                          // end against
+                                                          // float rounding
+                                                          // only - the
+                                                          // algebra targets
+                                                          // this exactly.
+        if (hw > maxHw) hw = maxHw;
+        s_timerBulbHw[row] = hw;
     }
     s_timerBulbReady = true;
 }
@@ -414,9 +483,12 @@ static void draw_icon_timer(int ox, int oy, uint16_t color) {
     int cx = ox + ICON_W / 2;
     int top = oy + TIMER_MARGIN;
 
-    // Top chamber: solid fill, the sand. Row 0 is the cap (wide end,
-    // s_timerBulbHw[0] ~= TIMER_HALF_OUT) tapering by the CURVED profile
-    // down to the waist (s_timerBulbHw[last] ~= TIMER_HALF_NECK).
+    // Top chamber: solid fill, the sand. Row 0 is the cap
+    // (s_timerBulbHw[0] == TIMER_HALF_OUT), bulging out WIDER still by
+    // TIMER_BULB_PEAK_ROW before curving back in and down to the waist
+    // (s_timerBulbHw[last] == TIMER_HALF_NECK) - see this block's header
+    // comment for why the peak sits past the cap's own width instead of
+    // exactly at it.
     for (int row = 0; row < TIMER_CHAMBER_H; row++) {
         int hw = s_timerBulbHw[row];
         gfx_fill_rect_land(cx - hw, top + row, 2 * hw, 1, color);
@@ -432,22 +504,29 @@ static void draw_icon_timer(int ox, int oy, uint16_t color) {
     // Bottom chamber: outline only - nothing has fallen yet. Mirrored: its
     // own row 0 (right below the neck) is the NARROW end, so it reads
     // s_timerBulbHw in reverse (index TIMER_CHAMBER_H-1-row), same table
-    // the top chamber used, just walked the other way. Two edge bars per
-    // row (left side, right side), the same idea as
-    // shapes_draw_annulus_row() above but this shape's own curved profile
-    // instead of a circle's, plus one bottom cap bar to close the wide end
-    // (the narrow end is already closed by the neck).
+    // the top chamber used, just walked the other way.
+    //
+    // Each edge is a march of shapes_fill_thick_segment_land() calls
+    // connecting one row's point to the next, not an independent bar per
+    // row: right past the waist this curve's own half-width can jump more
+    // per row than TIMER_OUTLINE is wide (the bulge rises fast right after
+    // the pinch - see this block's header comment on why), and a bar drawn
+    // only at each row's own x, with nothing bridging the horizontal gap to
+    // the next row's, breaks the outline into visible dashes exactly there.
+    // Confirmed empirically: rendering the old per-row-bar version showed a
+    // real gap on both edges a few rows past the neck, not just a
+    // theoretical risk. A marched thick segment is the same fix
+    // shapes_fill_thick_segment_land's own header comment already
+    // describes solving for a diagonal at any angle - see there for why its
+    // stamps are spaced to always overlap.
     int bottomTop = neckY + TIMER_NECK_H;
-    for (int row = 0; row < TIMER_CHAMBER_H; row++) {
+    int prevHw = s_timerBulbHw[TIMER_CHAMBER_H - 1]; // this chamber's own row 0 (waist)
+    for (int row = 1; row < TIMER_CHAMBER_H; row++) {
         int hw = s_timerBulbHw[TIMER_CHAMBER_H - 1 - row];
-        int y = bottomTop + row;
-        int outT = TIMER_OUTLINE;
-        if (outT > hw) outT = hw; // near the neck the shape is narrower
-                                   // than the outline stroke; clamp so the
-                                   // two edges meet instead of overshooting
-                                   // past each other.
-        gfx_fill_rect_land(cx - hw, y, outT, 1, color);
-        gfx_fill_rect_land(cx + hw - outT, y, outT, 1, color);
+        int y0 = bottomTop + row - 1, y1 = bottomTop + row;
+        shapes_fill_thick_segment_land(cx - prevHw, y0, cx - hw, y1, TIMER_OUTLINE, color);
+        shapes_fill_thick_segment_land(cx + prevHw, y0, cx + hw, y1, TIMER_OUTLINE, color);
+        prevHw = hw;
     }
     gfx_fill_rect_land(cx - TIMER_HALF_OUT, bottomTop + TIMER_CHAMBER_H - TIMER_OUTLINE,
                         2 * TIMER_HALF_OUT, TIMER_OUTLINE, color);
