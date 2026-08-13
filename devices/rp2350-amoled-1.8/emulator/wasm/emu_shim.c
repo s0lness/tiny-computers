@@ -294,10 +294,13 @@ void sensors_set_finger_down(bool down) {
     g_fingerDown = down;
 }
 
-/* ---- PWR key: bits latched exactly like the real AXP2101 register 0x49
- * (see sensors.h), fed by emu_button()/emu_button_verdict() for button
- * index BTN_PWR. sensors_key_take() is read-and-clear, once per tick, same
- * contract as the board. */
+/* ---- PWR key: bits latched like the real AXP2101 register 0x49 (see
+ * sensors.h), fed by emu_button()/emu_button_verdict() for button index
+ * BTN_PWR. sensors_key_take() is read-and-clear, once per tick, same
+ * contract as the board. No KEY_RELEASE: the board never delivers one
+ * either (sensors.h's PWR key section explains why), and an emulator that
+ * is more generous than the hardware it emulates is worse than no
+ * emulator - see emu_abi.h's "keeping the emulator honest" section. */
 #define BTN_BOOT 0
 #define BTN_PWR  1
 
@@ -422,7 +425,10 @@ void emu_button(int index, int down) {
             }
         }
     } else if (index == BTN_PWR) {
-        g_keyEvent |= down ? KEY_PRESS : KEY_RELEASE;
+        // Press only. The board never delivers a release edge either - see
+        // sensors.h's PWR key section for why - so matching that here means
+        // NOT OR-ing anything in on down == 0, not adding a KEY_RELEASE.
+        if (down) g_keyEvent |= KEY_PRESS;
     }
     // Any other index: emu_device() only ever declares two buttons, so this
     // would be a host bug; ignored rather than trapped, same policy

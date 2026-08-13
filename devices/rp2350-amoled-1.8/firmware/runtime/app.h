@@ -78,13 +78,14 @@ typedef struct {
     int      touchX, touchY; // panel coordinates, valid while touchDown
 
     // Power key bits the runtime did not consume (KEY_SHORT, KEY_LONG,
-    // KEY_PRESS, KEY_RELEASE from sensors.h). Zero on most frames.
+    // KEY_PRESS from sensors.h; there is no KEY_RELEASE - see sensors.h's
+    // PWR key section for why). Zero on most frames.
     uint8_t  key;
 
     // True on the frame BOOT was released, which is the conventional moment
     // for a click. BOOT is read by borrowing the flash chip select, which
     // costs a few microseconds with interrupts off, so the runtime samples
-    // it at 50Hz and never faster.
+    // it at 20Hz (every 50ms) and never faster.
     bool     bootClicked;
 
     // Bumped when an accepted shake happened, and only delivered to apps

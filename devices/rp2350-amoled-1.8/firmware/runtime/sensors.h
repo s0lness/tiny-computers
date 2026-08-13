@@ -86,8 +86,32 @@ void sensors_set_finger_down(bool down);
  * 0x41 at init. The long-press interrupt fires at 1.5s and the PMIC's hard
  * power-off at 6s (register 0x27), measured at 1480ms and no cut at 4.5s,
  * so a 1.5s gesture has 4.5s of margin before the rails drop.
+ *
+ * NO MACRO FOR 0x01 (release edge), ON PURPOSE. Register 0x41 is written
+ * 0xFF at init, so the PMIC already latches the release edge into 0x49 on
+ * every press like the other three; but pmic_poll_core1() (sensors.c) reads
+ * that byte and keeps only `s1 & 0x0E`, which excludes bit 0, so it is
+ * discarded before it ever reaches g_keyEvent. Nothing in this firmware
+ * asks for it and nothing delivers it: not a partial implementation, a
+ * deliberate one.
+ *
+ * A #define for a bit that can never actually appear in app_frame_t.key is
+ * a worse trap than not having the macro at all: it lets an app compile
+ * against a signal that silently does nothing on hardware, and the failure
+ * shows up later, off this codebase entirely, as "the button feels
+ * unresponsive" on a device. Deleting it instead turns that mistake into a
+ * compile error today, in the one app that tries it - and the table above
+ * still says what 0x01 means, for whoever comes back to this datasheet
+ * mapping wondering where its macro went.
+ *
+ * To actually deliver it: change pmic_poll_core1()'s `s1 & 0x0E` (and its
+ * `g_keyEvent = ...` sibling) to keep bit 0 too. Not done, because every
+ * PWR press would then also hand apps a KEY_RELEASE alongside whichever of
+ * KEY_PRESS/KEY_SHORT/KEY_LONG already describes that same gesture, one
+ * more bit every consumer of app_frame_t.key has to reason about, forever,
+ * for a signal nothing today reads. A cost with no matching benefit, so the
+ * mask stays as it is until something actually needs the release edge.
  */
-#define KEY_RELEASE 0x01
 #define KEY_PRESS   0x02
 #define KEY_LONG    0x04
 #define KEY_SHORT   0x08

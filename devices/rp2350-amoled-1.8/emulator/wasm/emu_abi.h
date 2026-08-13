@@ -40,6 +40,32 @@
  *     clearly labelled when on.
  *   - The display as a physical object: no burn-in, no brightness, no
  *     tearing.
+ *
+ * THE RULE THIS FILE EXISTS TO ENFORCE, A.K.A. KEEPING THE EMULATOR HONEST
+ *
+ * The emulator must never deliver an input the hardware cannot produce.
+ * Where the two disagree, the emulator changes to match the hardware, never
+ * the reverse. THE ONE IDEA above ("the emulator runs the real firmware")
+ * is worthless as a guarantee if the browser then hands that firmware
+ * inputs no board could ever generate: an emulator that is MORE GENEROUS
+ * than the device it stands in for is worse than no emulator at all,
+ * because it lets an app get built and tested against something that will
+ * never happen on the device, and the gap does not surface until someone
+ * is holding real hardware.
+ *
+ * Worked example. sensors.h declares KEY_PRESS, KEY_LONG and KEY_SHORT for
+ * the PWR key, all three of which the AXP2101 genuinely delivers on this
+ * board. It does NOT declare a KEY_RELEASE: pmic_poll_core1()
+ * (firmware/runtime/sensors.c) masks that bit out of every PMIC read before
+ * an app can ever see it, on purpose, not by oversight (see sensors.h's PWR
+ * key section for the full reasoning). An earlier version of emu_shim.c got
+ * this backwards: it OR'd a synthetic release bit into the emulator's key
+ * event on every button-up, so an app built and tested only in the browser
+ * could come to depend on a signal that silently does nothing on the
+ * device. The fix was not to make the board deliver it - that would enable
+ * a PMIC-derived signal nothing reads, a real ongoing cost for no benefit -
+ * it was to stop the emulator inventing what the board does not have. See
+ * emu_shim.c's PWR key section for the fix itself.
  */
 #ifndef EMU_ABI_H
 #define EMU_ABI_H

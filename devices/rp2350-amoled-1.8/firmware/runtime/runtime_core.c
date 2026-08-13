@@ -436,9 +436,10 @@ void rtcore_tick(uint32_t nowMs) {
     }
 
     frame.key = key; // KEY_SHORT and KEY_PRESS always pass through
-                      // unchanged; KEY_RELEASE was never consumed here
-                      // either. Only a KEY_LONG that opened or closed the
-                      // menu is missing by the time an app sees this.
+                      // unchanged; the release edge (0x01) is never even
+                      // delivered here - see sensors.h's PWR key section.
+                      // Only a KEY_LONG that opened or closed the menu is
+                      // missing by the time an app sees this.
 
     frame.bootClicked = sensors_boot_clicked();
 
