@@ -70,9 +70,20 @@ export interface WiredButton {
 // already reached, short otherwise). A button with no longPressMs always
 // gets a "short" verdict on release, immediately, exactly matching a plain
 // button that has no concept of a hold at all.
+//
+// "holding" (only added when longPressMs is declared) is a second class
+// alongside "pressed", read by app.css's ::after fill: its transition
+// duration is set, once, to that exact longPressMs (via the --hold-ms
+// custom property below), so the fill's own animation IS the countdown,
+// not a separate approximation of it - the owner should never have to
+// wonder whether a five-second hold registered, and a CSS transition timed
+// to the real threshold cannot drift from it the way a hand-rolled JS
+// progress loop could.
 export function wireButton(el: HTMLElement, events: ButtonEvents, longPressMs?: number): WiredButton {
   let longFired = false;
   let longTimer: ReturnType<typeof setTimeout> | null = null;
+
+  if (longPressMs !== undefined) el.style.setProperty("--hold-ms", `${longPressMs}ms`);
 
   function clearTimer() {
     if (longTimer) { clearTimeout(longTimer); longTimer = null; }
@@ -82,6 +93,7 @@ export function wireButton(el: HTMLElement, events: ButtonEvents, longPressMs?: 
     if (el.classList.contains("pressed")) return; // already down (e.g. key auto-repeat)
     longFired = false;
     el.classList.add("pressed");
+    if (longPressMs !== undefined) el.classList.add("holding");
     events.onDown?.();
     if (longPressMs !== undefined) {
       longTimer = setTimeout(() => {
@@ -93,7 +105,7 @@ export function wireButton(el: HTMLElement, events: ButtonEvents, longPressMs?: 
   }
   function up() {
     if (!el.classList.contains("pressed")) return;
-    el.classList.remove("pressed", "long");
+    el.classList.remove("pressed", "long", "holding");
     clearTimer();
     events.onUp?.();
     if (!longFired) events.onVerdict?.(false);
@@ -106,9 +118,11 @@ export function wireButton(el: HTMLElement, events: ButtonEvents, longPressMs?: 
   return { down, up };
 }
 
-const BTN_LENGTH_PX = 40;
-const BTN_THICKNESS_PX = 8;
-const BTN_OFFSET_PX = -6; // how far it protrudes past the bezel edge
+// Owner feedback: hard to hit with a mouse and hard to read at a glance.
+// Roughly 40% bigger in both dimensions than the first pass (40x8 -> 56x14).
+const BTN_LENGTH_PX = 56;
+const BTN_THICKNESS_PX = 14;
+const BTN_OFFSET_PX = -8; // how far it protrudes past the bezel edge
 
 // Creates the DOM element for one declared button and positions it along
 // its declared edge, at its declared fraction (0..1). Position is real

@@ -81,10 +81,10 @@ const soundPlayer = new SoundPlayer();
 let shakeSensorIndex = -1;
 let centeredOnce = false;
 
-// The overlay toggle (item 1: disc, trail and coordinate readout together,
-// one switch). Default ON: it is what stops a layout flattering itself by
-// hiding how a real fingertip actually lands.
-let overlayEnabled = true;
+// The overlay toggle (disc, trail and coordinate readout together, one
+// switch). Default OFF per owner feedback: it was on by default and that
+// was wrong, the toggle stays exactly where it is, only the default flips.
+let overlayEnabled = false;
 
 // Diagnostics kept for the one-line strip at the bottom of the page
 // (main.ts's redesign: coordinates, push counts, reload status and shake
