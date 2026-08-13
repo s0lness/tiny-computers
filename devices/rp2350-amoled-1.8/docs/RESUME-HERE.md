@@ -1,8 +1,14 @@
-# Resume here, 2026-08-13 evening
+# Resume here, updated 2026-08-14
 
 Read this first if you are picking this device up cold. It says what we are
 building, where today stopped, what physical state the hardware is in, and the
 exact first three actions.
+
+**Nothing below about the hardware has changed since it was written.** The
+device is still off, the `copy_to_ram` fix is still unvalidated, and the
+acceptance test is still owed. What happened since was all work that could be
+done without touching a board, and it is summarised in "What moved while the
+device was off" near the end.
 
 ## The objective
 
@@ -93,11 +99,35 @@ count.
   stay.** It was deleted once during this investigation and the bug instantly
   became invisible again.
 
+## What moved while the device was off
+
+All of it verifiable without a board, and all of it pushed.
+
+- **The apps were fuzzed through the emulator**, roughly 116,000 ticks plus
+  directed repros. One real defect found and fixed: the timer destroyed a PWR
+  short-press that arrived in the same tick as a BOOT release, because
+  `sensors_key_take()` is read-and-clear and `timer_tick()` returned early.
+  `chrono.c` already handled the same collision correctly. Write-up in
+  `emulator/docs/findings-app-fuzzing.md`.
+- **The push path was checked and held.** No pixel changed outside the union
+  of a tick's pushed rectangles, in any app. That is the class of bug that
+  looks right in the emulator and is broken on the panel, and it is absent.
+  Recorded as a result, not as silence.
+- **The invariant checker is built and wired into the build.** It fails on
+  `e11fafc` and passes on `4869d00`, so it would have caught the core1 death
+  the day it was introduced. Mutation testing caught a real bug in the checker
+  itself: pico-sdk links with `--wrap`, so forbidding `printf` by name
+  forbade a symbol that never exists in the image. Decisions 0006 and 0007.
+- **The emulator was extracted** to `~/projects/puck` and hardened. An
+  adversarial pass found it could die silently and go on looking alive, which
+  is the same failure mode as decision 0004, in the instrument built to answer
+  it. Fixed, with a permanent suite of hostile firmware modules driven through
+  real headless Chrome. Not yet public.
+
 ## Open, not blocking
 
-- The emulator is to be extracted into a public repo once it has been used
-  enough to know what it lacks. The ABI is already device-agnostic so the
-  extraction should be mechanical.
+- `puck` has no git remote yet. That is deliberate: it goes public once the
+  work in flight settles.
 - The owner wants the icons redrawn as real ink strokes rather than assembled
   shapes, in the manner of tldraw and Ink and Switch. The capture rig for this
   already exists (`tools/capture-server.ts` serves a real tldraw; the
