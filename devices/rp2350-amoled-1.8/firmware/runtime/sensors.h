@@ -163,6 +163,21 @@ typedef struct {
 
 void sensors_stats(sensors_stats_t *out);
 
+/* ---- FT3168 has no pressure signal, measured -----------------------------
+ *
+ * Measured 2026-08-13: FT3168 registers 0x07 (FocalTech's per-touch "weight")
+ * and 0x08 (area/misc) read 0 always, under a hard finger press included.
+ * Evidence: over a 75s window with a real finger held on the glass, the
+ * profiler showed touch reads=3032 and reads=558 in successive seconds (so
+ * the controller was genuinely being read with a finger present) while the
+ * running min/max moved off the never-sampled sentinel (min=255 max=0) to
+ * min=0 max=0, meaning every sample seen was zero.
+ *
+ * Consequence: this panel cannot report press force or contact area. There
+ * is nothing to calibrate here; the information does not exist on this part.
+ * Do not re-add a burst read of 0x07/0x08 to answer this again.
+ */
+
 /* ---- BOOT button ---------------------------------------------------------
  *
  * Not a chip on i2c1 - BOOT is read by borrowing the flash chip select (see

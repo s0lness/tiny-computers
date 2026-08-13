@@ -253,6 +253,12 @@ and treat that as the authority for stroke start and end. Clamp the coordinates
 too: they come straight from 12-bit touch registers and the driver never
 validates them.
 
+**No pressure signal.** Measured 2026-08-13 (see `firmware/runtime/sensors.h`):
+this FT3168 reports 0 for both its per-touch weight (0x07) and area (0x08)
+registers, always, finger held hard included. There is no press force or
+contact area to read from this panel; `sketch.c` derives pressure from stroke
+speed instead, and that is the only option here, not a placeholder.
+
 **Anti-aliasing without a second buffer.** Everything on screen is neutral grey,
 so the 6-bit green channel of the RGB565 framebuffer doubles as an 8-bit ink
 level: read it back widened, rebuild R/G/B symmetrically on write. A separate

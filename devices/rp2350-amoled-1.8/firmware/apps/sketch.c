@@ -31,6 +31,13 @@
  * point trails the finger by roughly two reports by construction, which was
  * the largest contributor to felt lag once the pipeline itself measured clean
  * (raster 9us, push 27us). 0.35 tightens it at the cost of some jitter.
+ *
+ * Pressure below is derived from stroke speed (SPEED_MAX, PRESSURE_LERP),
+ * not from the touch controller. Measured 2026-08-13 (see sensors.h): the
+ * FT3168 reports zero for both its weight and area registers, always, so it
+ * cannot tell a light touch from a hard press. Speed-derived pressure is not
+ * a stand-in for a better source; it is the only pressure signal this
+ * hardware can produce.
  * ------------------------------------------------------------------- */
 #define STREAMLINE   0.35f
 #define DEDUPE_PX    0.7f
