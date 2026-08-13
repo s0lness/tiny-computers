@@ -1,27 +1,34 @@
 /*
  * menu: how a child picks an app.
  *
- * Landscape, full-screen, one tile per entry in runtime.c's g_apps[]. Each
- * tile is a blocky icon (rectangles only, via gfx_fill_rect_land - nothing
- * here ever plots a single pixel or a curve) with the app's name underneath
- * in a small hand-authored font. Pictures first, words second: reading
- * English is not the entry fee for a child who cannot yet.
+ * Landscape, full-screen. Icons only, in a row along the TOP of the screen -
+ * no borders, no tile rectangles, no app name printed underneath. The owner's
+ * words for this design: "je pense qu'on fait juste des icones... ne mets que
+ * les icones, en haut de l'ecran, sans texte, sans bordure." Pictures only:
+ * reading English is not the entry fee for a child who cannot yet, and now
+ * neither is reading a frame around a picture.
  *
- * Tapping a tile is the primary input and it launches immediately: this is
- * what resolves what "confirm" means, which a button-only menu never
- * answers on its own (see docs/decisions/0002 section 4). BOOT / PWR-short
- * are the backup path for a device held sideways with both thumbs on the
- * buttons and no finger free for the glass: BOOT moves the selection right,
- * wrapping, PWR-short launches whatever is selected. The selected tile
- * always has a visibly thicker border than the others, so which of BOOT's
- * two meanings ("move" vs "launch, once PWR is pressed") is live is never a
- * guess - see the header comment on "no modal state" in app.h and 0002.
+ * Touch is the ONLY input this file reads. Touching an icon launches that
+ * app immediately - "je veux que ce soit que du touch. toucher une app ouvre
+ * une app." There used to also be a button-driven cursor (BOOT moved a
+ * selection, PWR-short launched it) for a device held sideways with both
+ * thumbs on the buttons and no finger free for the glass. That path, and the
+ * "which tile is selected" state it needed, are both gone: with touch as the
+ * only way to launch, there is nothing left to select in advance and nothing
+ * left to draw a cursor around. One less piece of state to get wrong is a
+ * simplification, not a loss - see menu_state_t's comment.
+ *
+ * The touch TARGET is not the small icon itself: each icon's touch region is
+ * a full-height column spanning the whole screen top to bottom, only its
+ * WIDTH tied to the icon above it - see this file's comment on
+ * column_hit_test() for the exact sizes and why.
  *
  * Opening and closing the menu (the BOOT+PWR long-press chord) is entirely
  * the runtime's business; this file never reads the PMIC and never calls
  * app_switch_to() with its own index. It only ever switches TO a real
- * g_apps[] entry, on a tap or on PWR-short.
+ * g_apps[] entry, on a touch.
  */
+#include <math.h>
 #include <stdio.h>
 
 #include <stdbool.h>
@@ -42,127 +49,25 @@ extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 
 /* ---------------------------------------------------------------------
- * A minimal 5x7 block font: a private copy of firmware/menu.c's, itself
- * a private copy per that file's own header comment (see there for why
- * push_dirty-style code lives independently everywhere it is used rather
- * than being shared - the same reasoning applies to a font nothing else
- * in this codebase currently needs). Uppercase A-Z, digits 0-9, space and
- * hyphen; anything else, including lowercase before the uppercasing below
- * runs, draws as a blank cell rather than faulting. App names are each
- * app's own free-form string (this file does not own or validate them), so
- * degrading gracefully here matters more than it did for the old menu's
- * fixed, known-in-advance APP_NAMES table.
+ * Layout, landscape coordinates (LAND_W x LAND_H = 448 x 368). Icons sit in
+ * one row near the top; g_appCount is an extern int, not a macro (sized from
+ * the linked app table, see app.h), so the split below is computed at
+ * runtime rather than checked with a compile-time _Static_assert.
  * ------------------------------------------------------------------- */
-#define FONT_W 5
-#define FONT_H 7
-
-static const uint8_t FONT5X7[38][7] = {
-    { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }, // ' ' (index 0)
-    { 0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E }, // '0' (1)
-    { 0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E }, // '1'
-    { 0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F }, // '2'
-    { 0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E }, // '3'
-    { 0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02 }, // '4'
-    { 0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E }, // '5'
-    { 0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E }, // '6'
-    { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08 }, // '7'
-    { 0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E }, // '8'
-    { 0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C }, // '9' (10)
-    { 0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 }, // 'A' (11)
-    { 0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E }, // 'B'
-    { 0x0F, 0x10, 0x10, 0x10, 0x10, 0x10, 0x0F }, // 'C'
-    { 0x1E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1E }, // 'D'
-    { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F }, // 'E'
-    { 0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10 }, // 'F'
-    { 0x0F, 0x10, 0x10, 0x17, 0x11, 0x11, 0x0E }, // 'G'
-    { 0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11 }, // 'H'
-    { 0x0E, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0E }, // 'I'
-    { 0x01, 0x01, 0x01, 0x01, 0x01, 0x11, 0x0E }, // 'J'
-    { 0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11 }, // 'K'
-    { 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F }, // 'L'
-    { 0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11 }, // 'M'
-    { 0x11, 0x19, 0x15, 0x15, 0x13, 0x11, 0x11 }, // 'N'
-    { 0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E }, // 'O'
-    { 0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10 }, // 'P'
-    { 0x0E, 0x11, 0x11, 0x11, 0x15, 0x12, 0x0D }, // 'Q'
-    { 0x1E, 0x11, 0x11, 0x1E, 0x14, 0x12, 0x11 }, // 'R'
-    { 0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E }, // 'S'
-    { 0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04 }, // 'T'
-    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E }, // 'U'
-    { 0x11, 0x11, 0x11, 0x11, 0x11, 0x0A, 0x04 }, // 'V'
-    { 0x11, 0x11, 0x11, 0x15, 0x15, 0x15, 0x0A }, // 'W'
-    { 0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11 }, // 'X'
-    { 0x11, 0x11, 0x0A, 0x04, 0x04, 0x04, 0x04 }, // 'Y'
-    { 0x1F, 0x01, 0x02, 0x04, 0x08, 0x10, 0x1F }, // 'Z' (36)
-    { 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00 }, // '-' (37)
-};
-
-static int font_index(char c) {
-    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A'); // app names are not
-                                                          // guaranteed upper
-                                                          // case; this font
-                                                          // only draws one.
-    if (c >= '0' && c <= '9') return 1 + (c - '0');
-    if (c >= 'A' && c <= 'Z') return 11 + (c - 'A');
-    if (c == '-') return 37;
-    return 0; // space, and anything unsupported: a blank cell, not a fault.
-}
-
-#define FONT_SCALE 3
-#define CHAR_W     (FONT_W * FONT_SCALE) // 15
-#define CHAR_H     (FONT_H * FONT_SCALE) // 21
-#define CHAR_GAP   (1 * FONT_SCALE)      // 3
-
-static int menu_text_width(const char *s) {
-    int n = 0;
-    for (const char *p = s; *p; p++) n++;
-    if (n == 0) return 0;
-    return n * CHAR_W + (n - 1) * CHAR_GAP;
-}
-
-static void menu_draw_text(int lx, int ly, const char *s, uint16_t colorPx) {
-    int x = lx;
-    for (const char *p = s; *p; p++) {
-        const uint8_t *rows = FONT5X7[font_index(*p)];
-        for (int r = 0; r < FONT_H; r++) {
-            uint8_t bits = rows[r];
-            for (int c = 0; c < FONT_W; c++) {
-                if (bits & (1u << (FONT_W - 1 - c))) {
-                    gfx_fill_rect_land(x + c * FONT_SCALE, ly + r * FONT_SCALE,
-                                        FONT_SCALE, FONT_SCALE, colorPx);
-                }
-            }
-        }
-        x += CHAR_W + CHAR_GAP;
-    }
-}
-
-/* ---------------------------------------------------------------------
- * Tile layout, landscape coordinates (LAND_W x LAND_H = 448 x 368). One row
- * of g_appCount tiles, evenly spread with a fixed margin and gap. Computed
- * at runtime rather than with a compile-time _Static_assert the way the old
- * menu.c checked APPSWITCH_SLOT_COUNT: g_appCount is an extern int here, not
- * a macro, since it is sized from the linked app table (see app.h), so
- * there is nothing for the preprocessor to check against.
- * ------------------------------------------------------------------- */
-#define TILE_MARGIN       16
-#define TILE_GAP          16
-#define TILE_H            220
-#define TILE_PAD          18
-#define TILE_BORDER_THICK 4
-#define TILE_BORDER_THIN  2
+#define ICON_TOP_MARGIN 24 // gap from the screen's top edge to the icon's own box
 
 #define ICON_W 96
 #define ICON_H 96
 
-static void tile_rect_land(int i, int *bx, int *by, int *bw, int *bh) {
+// Column i's horizontal span, in landscape x. Contiguous and full-width
+// (no gap, no margin either side): the LAST column absorbs whatever LAND_W
+// does not divide evenly, so every x in [0, LAND_W) belongs to exactly one
+// column and none is dead space a touch can fall into and hit nothing.
+static void column_rect_land(int i, int *bx, int *bw) {
     int n = g_appCount;
-    int usableW = LAND_W - 2 * TILE_MARGIN - (n - 1) * TILE_GAP;
-    int tileW = usableW / n;
-    *bw = tileW;
-    *bh = TILE_H;
-    *bx = TILE_MARGIN + i * (tileW + TILE_GAP);
-    *by = (LAND_H - TILE_H) / 2;
+    int w = LAND_W / n;
+    *bx = i * w;
+    *bw = (i == n - 1) ? (LAND_W - *bx) : w;
 }
 
 // The touch coordinates a tick() sees arrive in PANEL (portrait) space, not
@@ -173,20 +78,32 @@ static void tile_rect_land(int i, int *bx, int *by, int *bw, int *bh) {
 // rect's header comment) because chrono and timer, the other two landscape
 // apps, never need the inverse: they draw digits, not touch targets. Solved
 // here by algebra on that same documented mapping, not by a new gfx.h
-// helper (nothing else needs it, same reasoning as this file's private font
-// above).
+// helper (nothing else needs it, same reasoning as this file's icon code
+// below).
 static void panel_to_land(int px, int py, int *lx, int *ly) {
     *lx = py;
     *ly = PANEL_W - 1 - px;
 }
 
-static int tile_hit_test(int lx, int ly) {
-    for (int i = 0; i < g_appCount; i++) {
-        int bx, by, bw, bh;
-        tile_rect_land(i, &bx, &by, &bw, &bh);
-        if (lx >= bx && lx < bx + bw && ly >= by && ly < by + bh) return i;
-    }
-    return -1;
+// THE TOUCH TARGET. Not the icon's own ~96px box - a full-height column,
+// LAND_H (368px, the panel's entire landscape height) tall and one column
+// width (LAND_W/g_appCount, ~149px for today's 3 apps) wide. AGENTS.md's
+// finger-size section measures a child's fingertip contact at ~75px on this
+// panel; 149px is about two finger-widths across (the same width the old
+// bordered tile already used, so no regression there), and 368px is the
+// WHOLE screen top to bottom - there is no way to miss vertically at all,
+// which is the actual gain over the old ~220px-tall tile: a child aiming
+// only roughly at an icon, anywhere in its column, still launches it. ly is
+// computed by panel_to_land() above but genuinely unused here (see its
+// caller): only which column lx falls in decides the hit.
+static int column_hit_test(int lx) {
+    int n = g_appCount;
+    int w = LAND_W / n;
+    int idx = lx / w;
+    if (idx >= n) idx = n - 1; // clamp into the last column, which absorbed
+                                // LAND_W's remainder in column_rect_land()
+    if (idx < 0) idx = 0;
+    return idx;
 }
 
 /* ---------------------------------------------------------------------
@@ -400,24 +317,42 @@ static void draw_icon_sketch(int ox, int oy, uint16_t color) {
 
 /* ---------------------------------------------------------------------
  * The TIMER icon: an hourglass with sand in the TOP chamber only, the
- * bottom drawn empty - per the owner's sketch (icon-sablier.png), which
- * hatches the top chamber and leaves the bottom a bare outline. The
- * asymmetry is the whole point (time still to come), which the old
- * icon here - two identical stacks of bars - could not say; it read as
- * neutral stripes, not an hourglass.
+ * bottom drawn empty. The asymmetry is the whole point (time still to
+ * come) and is kept unchanged from the previous version - see the sand-
+ * drawing code below for why it stays solid, not hatched.
  *
- * Each chamber is a straight taper from TIMER_HALF_OUT down to
- * TIMER_HALF_NECK, one row at a time - the same bars-not-curves technique
- * as the chrono icon's ring above, just a linear lerp instead of a circle,
- * so it does not need shapes.h's sqrtf table (a straight taper has a
- * closed form per row).
+ * What changed: the owner's words were "l'icone de sablier est ultra
+ * moche. elle devrait etre plus ronde" against a reference photo of a real
+ * hourglass (see this file's task brief) - two ROUND, near-spherical
+ * bulbs meeting at a narrow waist, not the previous version's two hard-
+ * edged triangles (a schematic symbol, not an object). Each chamber's
+ * outline is now sampled off a CIRCLE via shapes.h's half-width table,
+ * the same "bars-not-curves" technique the chrono ring above already uses,
+ * instead of a straight linear taper.
  *
- * The sand is solid black, not hatched: hatching was tried (a handful of
- * short diagonal shapes_fill_thick_segment_land() strokes across the top
- * chamber) and looked wrong at this size - at 96px the gaps between
- * strokes closed up under the panel's own anti-aliasing and it read as a
- * grey smear, not lines, which is worse than committing to solid. A few
- * grains just past the neck stayed legible at this size and are kept.
+ * The circle is not centred on the chamber: solved so that a single
+ * radius R, sampled starting TIMER_BULB_K rows past the circle's own
+ * centre, passes through TIMER_HALF_OUT (full width) at row 0 (the cap)
+ * and TIMER_HALF_NECK (the waist) at the last row (TIMER_CHAMBER_H-1) -
+ * i.e. the visible chamber is only the circle's lower arc, well past its
+ * equator. That is what "flattened where it meets the waist and the end
+ * caps" (the owner's words) comes out to mechanically: near row 0 the
+ * circle is still close to its own peak, so the slope is gentle and the
+ * cap reads as rounded-but-nearly-flat, not pointed; near the last row the
+ * circle is close to its own pole, so the slope is steep and the chamber
+ * narrows fast right where it meets the neck, instead of drifting there
+ * on a constant straight-line slope the way the old triangle did.
+ *
+ * TIMER_BULB_K is solved algebraically, not tuned by eye: for a circle of
+ * radius R centred k rows above the chamber's own row 0,
+ *   hw(row) = sqrt(R^2 - (k+row)^2)
+ * Requiring hw(0) = TIMER_HALF_OUT and hw(TIMER_CHAMBER_H-1) =
+ * TIMER_HALF_NECK gives two equations in (R, k); subtracting them cancels
+ * R^2 and leaves k in closed form (TIMER_BULB_K below), and R follows from
+ * either original equation. Both stay in terms of TIMER_HALF_OUT/
+ * TIMER_HALF_NECK/TIMER_CHAMBER_H, so this recomputes itself if any of
+ * those three ever change, the same self-updating property CHRONO_TAB_OFF
+ * above has for its own fixed geometry.
  * ------------------------------------------------------------------- */
 #define TIMER_MARGIN    (ICON_H / 8)                             // 12
 #define TIMER_HALF_OUT  (ICON_W / 2 - ICON_W / 12)                // 40
@@ -426,35 +361,85 @@ static void draw_icon_sketch(int ox, int oy, uint16_t color) {
 #define TIMER_CHAMBER_H ((ICON_H - 2 * TIMER_MARGIN - TIMER_NECK_H) / 2) // 34
 #define TIMER_OUTLINE   (ICON_W / 24)                              // 4
 
+// See this block's header comment for the derivation. ~7.2 rows at today's
+// dimensions: the modelling circle's centre sits about 7 rows above the
+// chamber's own cap.
+#define TIMER_BULB_K \
+    (((float)(TIMER_HALF_OUT * TIMER_HALF_OUT - TIMER_HALF_NECK * TIMER_HALF_NECK \
+              - (TIMER_CHAMBER_H - 1) * (TIMER_CHAMBER_H - 1))) \
+     / (2.0f * (float)(TIMER_CHAMBER_H - 1)))
+
+// Generous virtual table for shapes_fill_half_width_table(): big enough to
+// hold a full circle of TIMER_BULB_K's radius (~41px at today's dimensions)
+// with headroom either side, so the window picked out in
+// ensure_timer_bulb_table() below never runs off either end.
+#define TIMER_BULB_TABLE_ROWS 128
+
+static int16_t s_timerFullCircle[TIMER_BULB_TABLE_ROWS];
+static int16_t s_timerBulbHw[TIMER_CHAMBER_H]; // row 0 = cap (wide), last = waist (narrow)
+static bool s_timerBulbReady = false;
+
+static void ensure_timer_bulb_table(void) {
+    if (s_timerBulbReady) return;
+
+    float k = TIMER_BULB_K;
+    float r = sqrtf((float)(TIMER_HALF_OUT * TIMER_HALF_OUT) + k * k);
+    shapes_fill_half_width_table(s_timerFullCircle, TIMER_BULB_TABLE_ROWS, r);
+
+    // shapes_fill_half_width_table() centres its table at rows/2.0, i.e.
+    // virtual row v has dy = (v+0.5) - TIMER_BULB_TABLE_ROWS/2. Chamber row
+    // i wants dy = k+i (see the header comment above), so v = i + v0 with
+    // v0 solved from that equality. +0.5f rounds rather than truncates;
+    // exact to a fraction of a pixel either way is invisible on a 96px icon.
+    int v0 = (int)((float)TIMER_BULB_TABLE_ROWS / 2.0f + k - 0.5f + 0.5f);
+    for (int i = 0; i < TIMER_CHAMBER_H; i++) {
+        int v = v0 + i;
+        int16_t hw = (v >= 0 && v < TIMER_BULB_TABLE_ROWS) ? s_timerFullCircle[v] : 0;
+        // Clamped, not trusted verbatim: TIMER_BULB_K's algebra targets
+        // these exact bounds at the two ends, but integer table rows only
+        // land close, not exact. Clamping is what guarantees a flush,
+        // gapless seam against the flat-topped cap (row 0) and the neck
+        // rectangle drawn separately below (last row), regardless of that
+        // rounding.
+        if (hw < TIMER_HALF_NECK) hw = TIMER_HALF_NECK;
+        if (hw > TIMER_HALF_OUT) hw = TIMER_HALF_OUT;
+        s_timerBulbHw[i] = hw;
+    }
+    s_timerBulbReady = true;
+}
+
 static void draw_icon_timer(int ox, int oy, uint16_t color) {
+    ensure_timer_bulb_table();
+
     int cx = ox + ICON_W / 2;
     int top = oy + TIMER_MARGIN;
 
-    // Top chamber: solid fill, the sand. Row 0 comes out at TIMER_HALF_OUT
-    // (a flat top edge, no separate cap rectangle needed) and tapers down
-    // to TIMER_HALF_NECK at the waist.
+    // Top chamber: solid fill, the sand. Row 0 is the cap (wide end,
+    // s_timerBulbHw[0] ~= TIMER_HALF_OUT) tapering by the CURVED profile
+    // down to the waist (s_timerBulbHw[last] ~= TIMER_HALF_NECK).
     for (int row = 0; row < TIMER_CHAMBER_H; row++) {
-        int hw = TIMER_HALF_OUT -
-                 (TIMER_HALF_OUT - TIMER_HALF_NECK) * row / (TIMER_CHAMBER_H - 1);
+        int hw = s_timerBulbHw[row];
         gfx_fill_rect_land(cx - hw, top + row, 2 * hw, 1, color);
     }
 
     // Neck: a short solid connector. It closes the bottom of the sand and
     // the top of the empty chamber in the same rectangle, which is what
-    // gives the glass a pinch point instead of two triangles meeting at a
+    // gives the glass a pinch point instead of two chambers meeting at a
     // single pixel.
     int neckY = top + TIMER_CHAMBER_H;
     gfx_fill_rect_land(cx - TIMER_HALF_NECK, neckY, 2 * TIMER_HALF_NECK, TIMER_NECK_H, color);
 
-    // Bottom chamber: outline only - nothing has fallen yet. Two edge bars
-    // per row (left side, right side), the same idea as
-    // shapes_draw_annulus_row() above but a linear taper instead of a
-    // circle, plus one bottom cap bar to close the wide end (the narrow
-    // end is already closed by the neck).
+    // Bottom chamber: outline only - nothing has fallen yet. Mirrored: its
+    // own row 0 (right below the neck) is the NARROW end, so it reads
+    // s_timerBulbHw in reverse (index TIMER_CHAMBER_H-1-row), same table
+    // the top chamber used, just walked the other way. Two edge bars per
+    // row (left side, right side), the same idea as
+    // shapes_draw_annulus_row() above but this shape's own curved profile
+    // instead of a circle's, plus one bottom cap bar to close the wide end
+    // (the narrow end is already closed by the neck).
     int bottomTop = neckY + TIMER_NECK_H;
     for (int row = 0; row < TIMER_CHAMBER_H; row++) {
-        int hw = TIMER_HALF_NECK +
-                 (TIMER_HALF_OUT - TIMER_HALF_NECK) * row / (TIMER_CHAMBER_H - 1);
+        int hw = s_timerBulbHw[TIMER_CHAMBER_H - 1 - row];
         int y = bottomTop + row;
         int outT = TIMER_OUTLINE;
         if (outT > hw) outT = hw; // near the neck the shape is narrower
@@ -469,8 +454,8 @@ static void draw_icon_timer(int ox, int oy, uint16_t color) {
 
     // A couple of grains just past the neck, already fallen into the empty
     // chamber - small enough to read as grains rather than a blob at this
-    // size (see the header comment above on what did NOT survive the same
-    // test: hatching the sand).
+    // size (see this block's header comment: hatching the sand itself was
+    // tried and rejected the same way, for the same reason).
     gfx_fill_rect_land(cx - 2, bottomTop + 6, 3, 3, color);
     gfx_fill_rect_land(cx - 1, bottomTop + 15, 2, 2, color);
 }
@@ -479,119 +464,103 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) draw_icon_chrono(ox, oy, color);
     else if (app == &g_sketchApp) draw_icon_sketch(ox, oy, color);
     else if (app == &g_timerApp) draw_icon_timer(ox, oy, color);
-    // An app added to g_apps[] without a matching icon here draws no icon,
-    // just its name below - a silent gap, not a fault. The menu is a
-    // navigation aid; it must never be the thing that stops a build.
+    // An app added to g_apps[] without a matching icon here draws nothing -
+    // a silent gap, not a fault. The menu is a navigation aid; it must
+    // never be the thing that stops a build. There is no name to fall back
+    // to any more either (see this file's header comment): an app with no
+    // icon is simply an empty column, still fully touchable by position.
 }
 
 /* ---------------------------------------------------------------------
- * Painting. paint_tile() only ever fills pixels; it never pushes, so
- * menu_enter_paint_all() (the initial full draw) does not push once per
- * tile for nothing - the runtime already pushes the whole panel once after
- * enter() returns (see app.h). repaint_tile_and_push() is what interactive
- * updates (a moved selection) use instead, so "repaint only what changed"
- * means exactly what it says: two tiles' worth of pixels and two small
- * pushes, not a full-panel one.
+ * Painting. Icons are drawn exactly once, from menu_enter(): there is no
+ * selection state any more (see menu_state_t below), so there is nothing
+ * that ever changes about the screen after the initial draw - a touch
+ * launches immediately and the arena is reset by the switch before another
+ * frame could ever run, so there is never a "repaint just this icon"
+ * case the way the old bordered-cursor design needed. menu_enter() does
+ * not need to push either: the runtime pushes the whole panel once after
+ * enter() returns (see app.h).
  * ------------------------------------------------------------------- */
-static void paint_tile(int i, bool selected) {
-    int bx, by, bw, bh;
-    tile_rect_land(i, &bx, &by, &bw, &bh);
-
-    // Clear the tile's own area first. Not a cosmetic step: switching a
-    // tile from selected to not (or back) changes the border's thickness,
-    // and redrawing a thinner border over a thicker one leaves the old
-    // outer edge behind unless the tile is wiped first.
-    gfx_fill_rect_land(bx, by, bw, bh, PX_WHITE);
-
-    int borderT = selected ? TILE_BORDER_THICK : TILE_BORDER_THIN;
-    gfx_fill_rect_land(bx, by, bw, borderT, PX_BLACK);
-    gfx_fill_rect_land(bx, by + bh - borderT, bw, borderT, PX_BLACK);
-    gfx_fill_rect_land(bx, by, borderT, bh, PX_BLACK);
-    gfx_fill_rect_land(bx + bw - borderT, by, borderT, bh, PX_BLACK);
-
-    const app_t *app = g_apps[i];
-
+static void paint_icon(int i) {
+    int bx, bw;
+    column_rect_land(i, &bx, &bw);
     int iconX = bx + (bw - ICON_W) / 2;
-    int iconY = by + TILE_PAD;
-    draw_icon_for(app, iconX, iconY, PX_BLACK);
-
-    int tw = menu_text_width(app->name);
-    int tx = bx + (bw - tw) / 2;
-    int ty = by + bh - TILE_PAD - CHAR_H;
-    menu_draw_text(tx, ty, app->name, PX_BLACK);
+    int iconY = ICON_TOP_MARGIN;
+    draw_icon_for(g_apps[i], iconX, iconY, PX_BLACK);
 }
 
-static void repaint_tile_and_push(int i, bool selected) {
-    paint_tile(i, selected);
-    int bx, by, bw, bh;
-    tile_rect_land(i, &bx, &by, &bw, &bh);
-    gfx_push_land(bx, by, bw, bh);
-}
-
-static void menu_paint_all(int cursor) {
-    for (int i = 0; i < g_appCount; i++) paint_tile(i, i == cursor);
+static void menu_paint_all(void) {
+    for (int i = 0; i < g_appCount; i++) paint_icon(i);
 }
 
 /* ---------------------------------------------------------------------
  * State and the app_t callbacks.
  * ------------------------------------------------------------------- */
+
+// Just one flag: whether the current touch (if any) has already launched
+// something. There is deliberately no "which icon is selected" field any
+// more - the old cursor's whole reason for existing was to make a
+// button-driven "move, then confirm" gesture legible (see this file's
+// header comment on the removed BOOT/PWR path), and a touch-only menu has
+// no such two-step gesture to make legible: a touch IS the confirmation,
+// the instant it lands. Removing the cursor is a simplification, not a
+// loss - the child never chose "which one is highlighted" as a separate
+// step even in the old design (tapping a tile always launched immediately
+// too), so no capability goes away with the state that used to back it.
 typedef struct {
-    int cursor;
+    bool armed;
 } menu_state_t;
 
 static menu_state_t *s_menu;
 
-// Set by the runtime (see menu.h) before it switches into the menu; NOT
-// arena-allocated, since it has to survive the arena reset that happens
-// between that call and menu_enter() running.
-static int s_returnAppIndex = 0;
-
+// Called by the runtime (see menu.h) before it switches into the menu, so
+// the runtime can tell menu_enter() which app to default a selection
+// cursor to. That cursor is gone (see menu_state_t's comment above), so
+// this file has nothing left to do with the value - but the function stays
+// and keeps accepting it regardless: runtime_core.c calls this
+// unconditionally on every chord that opens the menu (see its own "BOOT+PWR
+// long-press chord" comment) and this file is not the one that gets to
+// change that contract (see this file's header comment on scope).
 void menu_set_return_app(int index) {
-    s_returnAppIndex = index;
+    (void)index;
 }
 
 static void menu_enter(void) {
     s_menu = APP_STATE(menu_state_t);
-
-    int cursor = s_returnAppIndex;
-    if (g_appCount <= 0) {
-        // Should be unreachable: the app table is compiled in, not loaded.
-        // Guarded anyway rather than dividing by g_appCount elsewhere below.
-        s_menu->cursor = 0;
-        return;
-    }
-    if (cursor < 0 || cursor >= g_appCount) cursor = 0;
-    s_menu->cursor = cursor;
-
-    menu_paint_all(s_menu->cursor);
+    menu_paint_all();
 }
 
 static void menu_tick(const app_frame_t *f) {
-    if (f->touchPressed) {
-        int lx, ly;
-        panel_to_land(f->touchX, f->touchY, &lx, &ly);
-        int hit = tile_hit_test(lx, ly);
-        if (hit >= 0) {
-            // Tap launches immediately: see this file's header comment on
-            // why tapping is the primary input and resolves "confirm" on
-            // its own. The arena is about to be reset by the switch, so
-            // there is nothing worth repainting here first.
-            s_menu->cursor = hit;
+    // Touch only, per this file's header comment - no BOOT cursor, no
+    // PWR-short launch. f->touchDown is a LEVEL (true for every tick a
+    // finger is down), not an edge, so s_menu->armed is this file's own
+    // latch: launch on the first tick a touch is seen, then stay quiet
+    // until the finger lifts, so a touch that drags across several columns
+    // while still down cannot launch a second app out from under the
+    // first switch. Reading the level rather than app_frame_t's own
+    // touchPressed edge is deliberate hardening, not a style choice: this
+    // is now the ONLY way to launch anything (see header comment), so it
+    // should not depend on catching one specific tick's edge if a future
+    // touch-resolution change ever makes that edge less reliable than the
+    // level it is derived from.
+    if (f->touchDown) {
+        if (!s_menu->armed) {
+            s_menu->armed = true;
+            int lx, ly;
+            panel_to_land(f->touchX, f->touchY, &lx, &ly);
+            (void)ly; // the touch target is a full-height column - see
+                      // column_hit_test()'s comment - so only which column
+                      // lx falls in decides the hit, never ly.
+            int hit = column_hit_test(lx);
+            // Launches immediately: see this file's header comment on why
+            // a touch resolves "confirm" on its own, with no separate
+            // step. The arena is about to be reset by the switch, so there
+            // is nothing worth repainting here first.
             app_switch_to(hit);
             return;
         }
-    }
-
-    if (f->bootClicked) {
-        int prev = s_menu->cursor;
-        int next = (prev + 1) % g_appCount;
-        s_menu->cursor = next;
-        repaint_tile_and_push(prev, false);
-        repaint_tile_and_push(next, true);
-    }
-
-    if (f->key & KEY_SHORT) {
-        app_switch_to(s_menu->cursor);
+    } else {
+        s_menu->armed = false;
     }
 }
 
