@@ -27,8 +27,11 @@
 // was a patch over quantisation that never fully went away: even
 // interpolated, it was still one distinguished element standing in for a
 // continuous quantity, redrawn in discrete steps. An arc has nothing to
-// quantise; it moves because the angle IS the remaining time, computed
-// fresh every frame. It also answers the "hard to see big dots vs small
+// quantise; it moves because the angle is a continuous function of what is
+// left, recomputed fresh every frame (see current_fill_deg() for exactly
+// what that function is now - it stopped being plain proportional-to-time
+// on 2026-08-13, see TICK_COUNT's comment, but it is still continuous, not
+// stepped). It also answers the "hard to see big dots vs small
 // dots" complaint more directly than grey-as-primary-cue did: a thick black
 // arc against a light grey track is the strongest contrast this white-
 // paper-black-ink panel can produce, and it reads as ONE shape rather than
@@ -70,26 +73,62 @@
 /* ---------------------------------------------------------------------
  * Tick geometry and the seconds-per-tick mapping.
  *
- * TICK_COUNT = 65: 10 ticks at 30s each covers 0..5 minutes (the brief's
- * "30 seconds per step below 5 minutes"), then 55 ticks at 60s each covers
- * 5..60 minutes ("a minute above"). 10*30 + 55*60 = 300 + 3300 = 3600s,
- * exactly one hour, which is the cap. Both the cap and the 5-minute knee are
- * the owner's words in the brief, not derived from anything; only the tick
- * count and the seconds arithmetic below follow from them.
+ * Owner requirement (2026-08-13): "the timer must be settable in
+ * increments of 5 seconds." A flat 5s step collides with the old 60-minute
+ * cap - 3600/5 = 720 positions around a ring whose circumference, at this
+ * file's RING_RADIUS (165, see the ring-geometry section below), is
+ * 2*pi*165 = ~1036.7px, is ~1.4px per step, well under AGENTS.md's ~75px
+ * child-fingertip figure. A first pass traded the cap down to 10 minutes to
+ * keep a flat step. The owner was offered that trade and picked a
+ * different one instead, kept here:
  *
- * This no longer sizes anything about the RING (that used to be 65 dots
- * spaced around it; the ring is now a continuous arc, sized only by
+ *   0:00  -  2:00   5s  per step  (24 steps)
+ *   2:00  - 10:00  30s  per step  (16 steps)
+ *  10:00  - 60:00   1m  per step  (50 steps)
+ *
+ * TICK_COUNT = 24+16+50 = 90, and 24*5 + 16*30 + 50*60 = 120+480+3000 =
+ * 3600s, so the old 60-minute cap survives. 1036.7/90 = ~11.5px per step,
+ * comfortably clear of the ~75px fingertip figure (and finer than the flat-
+ * step alternative's 8.6px/step at a 10-minute cap, because the coarse tail
+ * spends far fewer of the ring's 90 slots per minute of real time than a
+ * flat step would).
+ *
+ * THE CONSEQUENCE, accepted deliberately, not stumbled into: this makes the
+ * seconds-per-degree of arc NON-UNIFORM across the dial, which the very
+ * first version of this file explicitly rejected ("half the arc must mean
+ * half the time"). That rule is retired by this instruction, not violated
+ * by accident - see current_fill_deg()'s header comment for the mechanical
+ * change this forces (the angle must now be driven by STEP INDEX, not by
+ * remaining seconds) and why. The owner accepted the price knowing what it
+ * buys: the last two minutes occupy 24/90 = ~27%, about a quarter, of the
+ * ring, while being only 120/3600 = ~3.3%, about three percent, of the
+ * maximum - a countdown that visibly slows and stretches its ending, which
+ * reads as more useful than one that thins out linearly and vanishes,
+ * because the end is the part anyone is actually watching. That upside was
+ * not the design goal (the goal was reaching 5s resolution on a 75px
+ * finger without shrinking the cap); it is a side effect worth knowing
+ * about before "fixing" the non-uniformity back out.
+ *
+ * This no longer sizes anything about the RING (that used to be dots spaced
+ * around it; the ring is now a continuous arc, sized only by
  * RING_OUTER_R/RING_INNER_R below). What TICK_COUNT still does is size the
- * SNAP: dragging still lands on one of 65 discrete values, per the brief's
+ * SNAP: dragging still lands on one of 90 discrete values, per the brief's
  * "snap to sensible steps... so a small imprecise finger still lands
- * somewhere round" - the arc's angle is continuous, the VALUE it represents
- * is not.
+ * somewhere round" - the arc's angle is now driven directly by which of
+ * those 90 slots is current (see current_fill_deg), not by the seconds
+ * that slot happens to represent.
  * ------------------------------------------------------------------- */
-#define FINE_TICKS      10
-#define FINE_STEP_S     30
+#define FINE_TICKS      24
+#define FINE_STEP_S     5
+#define FINE_SPAN_S     (FINE_TICKS * FINE_STEP_S)               // 120 (2:00)
+#define MID_TICKS       16
+#define MID_STEP_S      30
+#define MID_SPAN_S      (MID_TICKS * MID_STEP_S)                 // 480 (8:00 more)
+#define COARSE_TICKS    50
 #define COARSE_STEP_S   60
-#define TICK_COUNT      (FINE_TICKS + 55)   // 65
-#define TIMER_MAX_SECONDS (FINE_TICKS * FINE_STEP_S + (TICK_COUNT - FINE_TICKS) * COARSE_STEP_S) // 3600
+#define COARSE_SPAN_S   (COARSE_TICKS * COARSE_STEP_S)           // 3000 (50:00 more)
+#define TICK_COUNT      (FINE_TICKS + MID_TICKS + COARSE_TICKS)  // 90
+#define TIMER_MAX_SECONDS (FINE_SPAN_S + MID_SPAN_S + COARSE_SPAN_S) // 3600, i.e. 60 minutes
 
 // Ring centre, in LANDSCAPE coordinates (448 wide x 368 tall). Centred on
 // the canvas, same as the dot version.
@@ -242,11 +281,13 @@
  *      SETTING arc and a freshly-started RUNNING arc at the same value look
  *      identical, and that is fine because the digit colour already answers
  *      "which state is this" unambiguously. What the ring DOES show, in
- *      every non-alarm state alike, is one continuous fact: how much of the
- *      3600s cap the current value represents, as the fraction of the
- *      circle the black arc covers. RUNNING and PAUSED differ from each
- *      other only in whether that arc is currently moving; a single
- *      snapshot of the ring cannot tell them apart either, which is again
+ *      every non-alarm state alike, is one continuous fact: how far around
+ *      the dial's TICK_COUNT positions the current value sits (see
+ *      current_fill_deg - since 2026-08-13 this is a tick-index fraction,
+ *      not a plain remaining-seconds/TIMER_MAX_SECONDS fraction), as the
+ *      fraction of the circle the black arc covers. RUNNING and PAUSED
+ *      differ from each other only in whether that arc is currently moving;
+ *      a single snapshot of the ring cannot tell them apart either, which is again
  *      why the digit colour exists.
  *
  * ALARM is unambiguous by construction: it is the only state that flashes
@@ -295,15 +336,61 @@ typedef struct {
 static timer_state_t *s_state;
 
 /* ---------------------------------------------------------------------
- * Seconds <-> ticks. Piecewise: fine steps below 5 minutes, coarse above,
- * per TICK_COUNT's comment above. Still used to SNAP a drag to a round
- * value; no longer used to size anything about how the ring is drawn.
+ * Seconds <-> ticks. Piecewise, three tiers this time (5s/30s/1m, see
+ * TICK_COUNT's comment above for the table and why). Used to turn a tick
+ * count (from a drag, or from BOOT's recalled setTicks) into the seconds
+ * value the digits show. NOT used to derive the ring's angle any more -
+ * see tick_index_for_seconds()/current_fill_deg() just below for the
+ * inverse direction, which the angle now goes through instead.
  * ------------------------------------------------------------------- */
 static int seconds_for_ticks(int ticks) {
     if (ticks <= 0) return 0;
     if (ticks > TICK_COUNT) ticks = TICK_COUNT;
     if (ticks <= FINE_TICKS) return ticks * FINE_STEP_S;
-    return FINE_TICKS * FINE_STEP_S + (ticks - FINE_TICKS) * COARSE_STEP_S;
+    if (ticks <= FINE_TICKS + MID_TICKS)
+        return FINE_SPAN_S + (ticks - FINE_TICKS) * MID_STEP_S;
+    return FINE_SPAN_S + MID_SPAN_S + (ticks - FINE_TICKS - MID_TICKS) * COARSE_STEP_S;
+}
+
+/* ---------------------------------------------------------------------
+ * Seconds -> continuous tick index: the exact inverse of seconds_for_ticks
+ * above, but continuous (float) rather than snapped to a whole tick, on the
+ * SAME three-tier scale. This is now the only path from "a remaining-
+ * seconds value" to "an angle on the ring" - see current_fill_deg().
+ *
+ * Why this exists at all: with a uniform step, remainSec/TIMER_MAX_SECONDS
+ * and tickIndex/TICK_COUNT are the same curve, so it never mattered which
+ * one drove the arc. With the tiered table above they are NOT the same
+ * curve any more (a second spent in the 5s tier moves the arc six times as
+ * far, in degrees, as a second spent in the 1m tier). SETTING's drag
+ * reads an angle and picks a TICK via ring_tick_for_touch(), so the arc
+ * must be drawn from that same tick scale or the ring visibly fills to a
+ * different place than the finger dragged to - unusable, not just
+ * inconsistent. RUNNING's countdown, by contrast, only ever has a seconds
+ * value (remainingSeconds, decremented once a second, plus a fractional
+ * remainder from running_true_remaining()); this function is what lets
+ * RUNNING put that seconds value back onto the tick scale SETTING used, so
+ * the two states share one mapping instead of quietly disagreeing at every
+ * boundary.
+ *
+ * Exact at every tick boundary by construction (each branch is the direct
+ * algebraic inverse of the matching branch in seconds_for_ticks), so
+ * SETTING's own use of it (remainSec = seconds_for_ticks(setTicks), fed
+ * back in here) returns exactly setTicks, modulo float rounding too small
+ * to move a pixel - see current_fill_deg()'s comment for why SETTING calls
+ * through this rather than using setTicks directly.
+ * ------------------------------------------------------------------- */
+static float tick_index_for_seconds(float sec) {
+    if (sec <= 0.0f) return 0.0f;
+    if (sec > (float)TIMER_MAX_SECONDS) sec = (float)TIMER_MAX_SECONDS;
+    if (sec <= (float)FINE_SPAN_S) {
+        return sec / (float)FINE_STEP_S;
+    }
+    if (sec <= (float)(FINE_SPAN_S + MID_SPAN_S)) {
+        return (float)FINE_TICKS + (sec - (float)FINE_SPAN_S) / (float)MID_STEP_S;
+    }
+    return (float)(FINE_TICKS + MID_TICKS) +
+           (sec - (float)(FINE_SPAN_S + MID_SPAN_S)) / (float)COARSE_STEP_S;
 }
 
 /* ---------------------------------------------------------------------
@@ -475,9 +562,10 @@ static void draw_cap(float deg) {
 // nearly-finished timer still shows a visible rounded nub near 12 o'clock
 // instead of thinning into an invisible sliver, which is what a sharp-cut
 // arc would have done. Checked by looking at the emulator output as the
-// countdown's last minute (60/3600*360 = 6 degrees, already inside the
-// overlap zone) played out; see this app's build/run instructions for how
-// to reproduce that capture.
+// countdown's final tick played out: one FINE_STEP_S (5s) step is 360/90 =
+// 4 degrees of arc, already inside the ~5.6deg overlap zone, while the tick
+// before it (8 degrees) is not - see this app's build/run instructions for
+// how to reproduce that capture.
 static void draw_arc_caps(float fillDeg) {
     if (fillDeg <= 0.0f) return;
     draw_cap(0.0f);
@@ -668,7 +756,7 @@ static int ring_tick_for_touch(int touchPanelX, int touchPanelY) {
     if (slot < 0) slot = 0;
     if (slot >= TICK_COUNT) slot = TICK_COUNT - 1;
     // slot+1, not slot: a full revolution of TICK_COUNT equal slots has no
-    // slot that means "zero", so a drag can set 1..TICK_COUNT ticks (30s to
+    // slot that means "zero", so a drag can set 1..TICK_COUNT ticks (5s to
     // 60min) but never back down to exactly zero. That is deliberate rather
     // than a gap in the mapping: true zero is only ever the untouched
     // default, which removes the ambiguity a dial with a true-zero position
@@ -717,12 +805,34 @@ static float running_true_remaining(const timer_state_t *s, uint32_t nowMs) {
 }
 
 // The ring's current fill angle, 0..360, as a function of state alone.
-// Proportional to REMAINING SECONDS (not to tick index): the arc moves at a
-// constant angular speed the whole way round this way, since seconds tick
-// at a constant rate but ticks do not (30s below 5 minutes, 60s above).
-// Driving the angle from tick index instead would make the arc visibly
-// speed up or slow down at the 5-minute knee, which is exactly the kind of
-// non-uniform motion a continuous arc exists to avoid.
+//
+// Corrected 2026-08-13, reversing this function's own previous rule: it
+// used to be proportional to REMAINING SECONDS, deliberately NOT to tick
+// index, so the arc swept at one constant angular speed regardless of the
+// (then two-tier) step size. That was right for a uniform or near-uniform
+// step. It is WRONG now that TICK_COUNT's table has three tiers spanning
+// 5s to 1m per step (see that comment for the table and why the owner
+// accepted a non-uniform arc to get it): a plain remainSec/TIMER_MAX_SECONDS
+// curve and the tick-index curve are different functions now, so SETTING's
+// drag (which picks a TICK via ring_tick_for_touch, an angle-to-tick
+// mapping) and a naive seconds-proportional arc would visibly disagree -
+// drag to one spot, watch the arc fill to another. Unusable, not just
+// inconsistent.
+//
+// So this now goes through tick_index_for_seconds(remainSec) - the
+// continuous inverse of seconds_for_ticks(), on the SAME three-tier scale -
+// and turns THAT into degrees. This is the one and only place either
+// SETTING or RUNNING computes the ring's angle (see the SETTING branch in
+// timer_tick, which calls this function too rather than deriving its own
+// angle from newTicks directly): setting and running sharing this single
+// mapping is the invariant that matters here, not any longer "arc length
+// equals fraction of time".
+//
+// RUNNING/PAUSED still read a fractional, continuous remainSec (via
+// running_true_remaining()'s sub-second remainder, or the frozen
+// pausedTrueRemaining), so the arc still sweeps smoothly within whichever
+// tier the countdown is currently in - it just no longer sweeps at the same
+// angular speed across tiers, on purpose.
 static float current_fill_deg(const timer_state_t *s, uint32_t nowMs) {
     float remainSec;
     switch (s->state) {
@@ -731,7 +841,8 @@ static float current_fill_deg(const timer_state_t *s, uint32_t nowMs) {
         case TS_RUNNING:
         default:         remainSec = running_true_remaining(s, nowMs); break;
     }
-    float deg = (remainSec / (float)TIMER_MAX_SECONDS) * 360.0f;
+    float tickIdx = tick_index_for_seconds(remainSec);
+    float deg = (tickIdx / (float)TICK_COUNT) * 360.0f;
     if (deg < 0.0f) deg = 0.0f;
     if (deg > 360.0f) deg = 360.0f;
     return deg;
@@ -944,8 +1055,12 @@ static void timer_tick(const app_frame_t *f) {
             // countdown the instant it resumes. This also means the arc's
             // sub-second position resets to 0 rather than resuming from
             // pausedTrueRemaining's exact fraction; the discrepancy is at
-            // most one second out of a 3600s max, under 0.03% of the full
-            // sweep, so it reads as continuous rather than as a jump.
+            // most one second, which (worst case, resuming inside the 5s-
+            // per-step fine tier - see TICK_COUNT's table comment) is at
+            // most 0.8 degrees of arc, under 0.23% of the full sweep, so it
+            // reads as continuous rather than as a jump. In the coarser
+            // tiers the same one-second cap is smaller still (down to
+            // ~0.07 degrees in the 1-minute-per-step tail).
             s->lastDecMs = f->nowMs;
             redraw_full(s, f->nowMs);
             gfx_push_all();
@@ -960,7 +1075,13 @@ static void timer_tick(const app_frame_t *f) {
         if (newTicks == s->setTicks) return;
         s->setTicks = newTicks;
         int newSeconds = seconds_for_ticks(newTicks);
-        update_ring_to(s, (newSeconds / (float)TIMER_MAX_SECONDS) * 360.0f);
+        // current_fill_deg(), not a hand-rolled newSeconds/TIMER_MAX_SECONDS
+        // formula: see that function's header comment for why a plain
+        // seconds-proportional angle would now visibly disagree with the
+        // finger. Going through the same function RUNNING uses is what
+        // guarantees the two states never compute the angle two different
+        // ways.
+        update_ring_to(s, current_fill_deg(s, f->nowMs));
         update_digits_if_changed(s, newSeconds);
         return;
     }

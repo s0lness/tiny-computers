@@ -94,6 +94,36 @@ const CAP_BULGE_TOLERANCE_DEG = 6;
 // below the bug, so it fails on the bug and passes on the noise.
 const MAX_STRAY_PER_BUCKET = 10;
 
+// timer.c's tiered tick table (see that file's TICK_COUNT comment, "the new
+// step table", 2026-08-13): 5s/step up to 2:00, 30s/step up to 10:00,
+// 1m/step up to 60:00. Mirrored here, not imported, since this test drives
+// the compiled wasm as a black box; kept in lockstep with timer.c's own
+// FINE_TICKS/MID_TICKS/COARSE_TICKS by hand.
+const FINE_TICKS = 24, FINE_STEP_S = 5, FINE_SPAN_S = FINE_TICKS * FINE_STEP_S;           // 120
+const MID_TICKS = 16, MID_STEP_S = 30, MID_SPAN_S = MID_TICKS * MID_STEP_S;               // 480
+const COARSE_TICKS = 50, COARSE_STEP_S = 60, COARSE_SPAN_S = COARSE_TICKS * COARSE_STEP_S; // 3000
+const TIMER_TICK_COUNT = FINE_TICKS + MID_TICKS + COARSE_TICKS;                            // 90
+const TIMER_MAX_SECONDS = FINE_SPAN_S + MID_SPAN_S + COARSE_SPAN_S;                        // 3600
+
+// Mirror of timer.c's tick_index_for_seconds(): the continuous inverse of
+// seconds_for_ticks() on the same three-tier scale. Since 2026-08-13
+// timer.c's ring angle is driven by TICK INDEX, not by remaining seconds
+// directly (a plain remainSec/TIMER_MAX_SECONDS*360 would visibly disagree
+// with where a drag lands, see current_fill_deg()'s header comment in
+// timer.c) - so this, not a flat proportion, is what this test must use to
+// predict where the arc should be after N seconds of RUNNING countdown.
+function tickIndexForSeconds(sec: number): number {
+    if (sec <= 0) return 0;
+    if (sec > TIMER_MAX_SECONDS) sec = TIMER_MAX_SECONDS;
+    if (sec <= FINE_SPAN_S) return sec / FINE_STEP_S;
+    if (sec <= FINE_SPAN_S + MID_SPAN_S) return FINE_TICKS + (sec - FINE_SPAN_S) / MID_STEP_S;
+    return FINE_TICKS + MID_TICKS + (sec - FINE_SPAN_S - MID_SPAN_S) / COARSE_STEP_S;
+}
+
+function fillDegForRemainingSeconds(sec: number): number {
+    return (tickIndexForSeconds(sec) / TIMER_TICK_COUNT) * 360;
+}
+
 let passCount = 0;
 let failCount = 0;
 function check(label: string, ok: boolean, detail?: string) {
@@ -108,12 +138,15 @@ async function loadDevice() {
 
     let memory!: WebAssembly.Memory;
     const decoder = new TextDecoder();
+    const fwLogLines: string[] = [];
 
     const imports = {
         env: {
             js_log(ptr: number, len: number) {
                 const bytes = new Uint8Array(memory.buffer, ptr, len);
-                console.log(`    [fw] ${decoder.decode(bytes)}`);
+                const line = decoder.decode(bytes);
+                fwLogLines.push(line);
+                console.log(`    [fw] ${line}`);
             },
             sinf: (x: number) => Math.sin(x),
             cosf: (x: number) => Math.cos(x),
@@ -157,6 +190,15 @@ async function loadDevice() {
         fbBytes(): Uint8Array {
             const ptr = exp.emu_fb();
             return new Uint8Array(memory.buffer, ptr, PANEL_W * PANEL_H * 2).slice();
+        },
+        // Every "[fw] ..." line printed so far, in order - used below to read
+        // back the exact MM:SS timer.c's own printf chose for a touch, rather
+        // than re-deriving it from a hand-rolled copy of ring_tick_for_touch's
+        // rounding path (px/py get rounded twice on the way in, see
+        // panelTouchForAngle, so a second independent derivation could easily
+        // land one tick off from the real one).
+        fwLogLines(): readonly string[] {
+            return fwLogLines;
         },
     };
 }
@@ -297,6 +339,17 @@ async function main() {
         dev.tick(1150);
         pwrShortClick(dev, 1200);
 
+        // Read back the exact value timer.c's own "timer: start, MM:SS" print
+        // chose for this touch, rather than re-deriving the tick from the
+        // touch angle a second time (see fwLogLines()'s comment on why that
+        // would risk a one-tick rounding mismatch of its own).
+        const startLine = dev.fwLogLines().find((l) => l.startsWith("timer: start, "));
+        if (!startLine) throw new Error("did not see a 'timer: start, MM:SS' log line");
+        const m = /timer: start, (\d+):(\d+)/.exec(startLine);
+        if (!m) throw new Error(`could not parse start time from: ${startLine}`);
+        const startSeconds = Number(m[1]) * 60 + Number(m[2]);
+        console.log(`    (parsed start = ${startSeconds}s from "${startLine}")`);
+
         let t = 1300;
         const endT = t + 90_000;
         while (t < endT) {
@@ -304,9 +357,10 @@ async function main() {
             dev.tick(t);
         }
 
-        // fillDeg after 90s off a ~300deg (2500s) start.
-        const startSeconds = (300 / 360) * 3600;
-        const currentFillDeg = ((startSeconds - 90) / 3600) * 360;
+        // fillDeg after 90s off the real start value above, on timer.c's
+        // tiered tick-index scale (see fillDegForRemainingSeconds - NOT a
+        // flat remainSec/3600*360 any more, since 2026-08-13).
+        const currentFillDeg = fillDegForRemainingSeconds(startSeconds - 90);
 
         const fb = dev.fbBytes();
         const stray = findStrayBlackPixels(fb, currentFillDeg);
