@@ -565,6 +565,65 @@ async function cmdErase() {
   }
 }
 
+// KEY takes a name (press/long/short), never a raw bit mask: see
+// tools/README-devlink.md's KEY section for why a hex mask at a prompt is
+// deliberately not offered.
+const KEY_NAMES = ["press", "long", "short"] as const;
+
+async function cmdKey(args: string[]) {
+  const name = (args[0] ?? "").toLowerCase();
+  if (!KEY_NAMES.includes(name as (typeof KEY_NAMES)[number])) {
+    console.error(`usage: bun tools/dev.ts key <${KEY_NAMES.join("|")}>`);
+    process.exit(1);
+  }
+  const bridge = await openBridge();
+  try {
+    await bridge.send(`KEY ${name.toUpperCase()}`);
+    const reply = await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "KEY reply");
+    console.log(reply);
+    if (!reply.startsWith("OK")) process.exitCode = 1;
+  } finally {
+    await bridge.close();
+  }
+}
+
+const BOOT_ACTIONS = ["down", "up", "click"] as const;
+
+async function cmdBoot(args: string[]) {
+  const action = (args[0] ?? "").toLowerCase();
+  if (!BOOT_ACTIONS.includes(action as (typeof BOOT_ACTIONS)[number])) {
+    console.error(`usage: bun tools/dev.ts boot <${BOOT_ACTIONS.join("|")}>`);
+    process.exit(1);
+  }
+  const bridge = await openBridge();
+  try {
+    await bridge.send(`BOOT ${action.toUpperCase()}`);
+    const reply = await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "BOOT reply");
+    console.log(reply);
+    if (!reply.startsWith("OK")) process.exitCode = 1;
+  } finally {
+    await bridge.close();
+  }
+}
+
+// CHORD is the BOOT+PWR app-menu gesture, composed on the firmware side from
+// the same BOOT/KEY primitives above (see devlink.c's CHORD case): hold
+// BOOT, deliver PWR's long-press verdict, release BOOT one tick later. This
+// tests the runtime and the menu app, never the PMIC register read or the
+// flash-chip-select borrow a real press goes through first; see
+// tools/README-devlink.md's "What injection cannot test" section.
+async function cmdChord() {
+  const bridge = await openBridge();
+  try {
+    await bridge.send("CHORD");
+    const reply = await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "CHORD reply");
+    console.log(reply);
+    if (!reply.startsWith("OK")) process.exitCode = 1;
+  } finally {
+    await bridge.close();
+  }
+}
+
 async function cmdDraw(args: string[]) {
   if (args.length === 0) {
     console.error("usage: bun tools/dev.ts draw x1,y1 x2,y2 ...");
@@ -628,7 +687,14 @@ function printUsage() {
       "  tap <x> <y>                   tap once",
       "  draw x1,y1 x2,y2 ...          down, move through each point, up",
       "  erase                         trigger the wipe animation",
+      "  key <press|long|short>        inject a PMIC key event",
+      "  boot <down|up|click>          inject the BOOT button's level or click",
+      "  chord                         inject the BOOT+PWR app-menu gesture",
       "  log [seconds]                 stream device output (default 10s)",
+      "",
+      "key/boot/chord test the runtime and the apps, not the PMIC or the BOOT",
+      "pad read themselves: see tools/README-devlink.md, \"What injection",
+      "cannot test\".",
       "",
       "Port/baud: DEVLINK_PORT (default COM4), DEVLINK_BAUD (default 115200).",
     ].join("\n")
@@ -658,6 +724,15 @@ async function main() {
       break;
     case "erase":
       await cmdErase();
+      break;
+    case "key":
+      await cmdKey(rest);
+      break;
+    case "boot":
+      await cmdBoot(rest);
+      break;
+    case "chord":
+      await cmdChord();
       break;
     case "log":
       await cmdLog(rest[0]);

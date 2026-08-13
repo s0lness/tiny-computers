@@ -132,6 +132,9 @@ giving up the shared console's usefulness to a human.
 | `UP` | `OK` |
 | `TAP <x> <y>` | `OK` (internally: DOWN then UP) |
 | `ERASE` | `OK` |
+| `KEY PRESS` / `KEY LONG` / `KEY SHORT` | `OK` (or `ERR args` if the name is not one of the three) |
+| `BOOT DOWN` / `BOOT UP` / `BOOT CLICK` | `OK` (or `ERR args`) |
+| `CHORD` | `OK` |
 | `APP` | `APP <index> <name>` |
 | `SWITCH <index>` | `OK`, `ERR args` (index does not parse), or `ERR range` |
 | anything else | `ERR unknown <cmd>` |
@@ -218,6 +221,86 @@ the header as a sanity check (it should exactly match the decoded byte
 length; `tools/dev.ts` warns if it does not, since that means the transfer
 was corrupted or truncated).
 
+### KEY, BOOT and CHORD
+
+These exist so an agent can drive the two physical buttons neither `devlink`
+nor an app can otherwise reach: PWR only ever reaches firmware through the
+AXP2101 PMIC (there is no GPIO for it), and BOOT is read by borrowing the
+flash chip select (`firmware/bootbtn.c`), not sampled from a normal pin.
+Without these, the app-switch chord (BOOT held with PWR long-pressed), the
+stopwatch's `KEY_SHORT` start/stop and the timer's `KEY_SHORT` pause could
+only ever be tested by a human physically pressing a contact.
+
+**`KEY <name>`** injects a PMIC key bit: `PRESS`, `LONG` or `SHORT`, matching
+`sensors.h`'s `KEY_PRESS`/`KEY_LONG`/`KEY_SHORT`. Named forms only, no raw
+hex mask, on purpose: `KEY 0x04` at an interactive prompt or in a hastily
+copy-pasted script is one fat-fingered digit away from injecting the wrong
+gesture with no complaint from anything, where `KEY LONG` either does what
+it says or fails to parse. The three bits are exactly the ones an app can
+ever see in `app_frame_t.key` (there is no `KEY_RELEASE`, see `sensors.h`'s
+PWR key section for why), so nothing is missing from this set.
+
+**`BOOT DOWN`** / **`BOOT UP`** set the BOOT button's injected level, for
+gestures that need it *held* (the chord). **`BOOT CLICK`** injects a
+completed press-and-release in one shot, for apps that only ever look at
+`app_frame_t.bootClicked` (a level toggle without a dedicated click command
+would not reliably produce one, since the two are tracked separately, see
+`sensors.h`).
+
+**`CHORD`** is the BOOT+PWR app-menu gesture, composed from the two
+primitives above and nothing else: it holds BOOT, delivers PWR's long-press
+verdict (`KEY LONG`), then releases BOOT one tick later, automatically. That
+is deliberately *all* it does, matching `runtime_core.c`'s own chord
+handling exactly: "both buttons held, PWR long-pressed" is the entire
+condition that code checks, so `CHORD` reproduces exactly that state and no
+more. It works both ways: sent while a normal app is running it opens the
+menu; sent again while the menu is open it closes back to whatever was
+running before. Firmware-side, `CHORD` cannot release BOOT before returning
+its `OK` (the tick that has to observe BOOT still held has not run yet, and
+`devlink_poll()` must not block waiting for it to), so the release is
+deferred to the very next `devlink_poll()` call instead; see `devlink.h` and
+`devlink.c` for the mechanism. In practice this settles within microseconds,
+long before a host-side command round-trip could notice.
+
+### What injection cannot test
+
+**None of `KEY`, `BOOT` or `CHORD` exercise the actual button hardware.**
+Both signals reach firmware through code injection routes plainly, not
+through the chips or pads a physical press goes through:
+
+- A real PWR press latches bits in the AXP2101's register 0x49.
+  `pmic_poll_core1()` (`firmware/runtime/sensors.c`) is what actually issues
+  the i2c1 read, masks the result (`s1 & 0x0E`), and write-1-to-clears the
+  chip's latch so the next event is distinguishable from this one. `KEY`
+  skips all of that and hands `sensors_key_take()` the bits directly, as if
+  that transaction had already happened and come out clean.
+- A real BOOT press borrows the flash chip select, waits for the line to
+  settle, and reads back a specific bit in the QSPI high-bank input register
+  (`firmware/bootbtn.c`'s `read_cs_low()`). `BOOT` skips all of that too.
+
+This is not a small gap. The one real bug this project has already shipped
+in this exact area, several PMIC bits landing in one read and silently
+breaking the old double-press menu gesture (see `runtime_core.c`'s chord
+comment), lived in precisely the code injection bypasses: the register read
+and the read-and-clear timing. **A `CHORD` run through devlink that opens
+the menu proves the runtime and the menu app handle a `KEY_LONG` bit
+correctly. It proves nothing about whether the AXP2101 will ever actually
+hand the runtime that bit on real silicon**, and a future run that sees the
+menu open after an injected chord must not be read as "the button path
+works": it is evidence for half of that claim, the half downstream of the
+chip. The other half, whether a real thumb on a real button still reaches
+this code path, can only be checked by a human physically pressing it.
+
+This is the mirror image of `emulator/wasm/emu_abi.h`'s rule for the
+emulator ("must never deliver an input the hardware cannot produce"). That
+rule polices a *simulated* board pretending to be real hardware; `KEY`,
+`BOOT` and `CHORD` are a test tool driving *real* firmware on *real*
+hardware, with no simulated chip standing in for anything. So this is not a
+violation of that rule, it is the other side of it, and the two should not
+be confused: the emulator's rule exists to stop a stand-in board from lying
+about what silicon can do, and injection has no stand-in board to lie
+through. What it has instead is the real, documented gap above.
+
 ### Framing and non-blocking behaviour
 
 `devlink_poll()` (called once per main-loop iteration) never blocks reading
@@ -281,6 +364,9 @@ bun tools/dev.ts switch 0
 bun tools/dev.ts tap 184 224
 bun tools/dev.ts draw 20,20 60,40 100,30 140,60
 bun tools/dev.ts erase
+bun tools/dev.ts key short
+bun tools/dev.ts boot click
+bun tools/dev.ts chord
 bun tools/dev.ts log 15
 ```
 
@@ -416,3 +502,17 @@ faith.
   `DEVLINK_PORT` pointed at a definitely-wrong port name and confirm you
   get an immediate "failed to open" instead of a silent hang, as a smoke
   test of the error path).
+- `KEY`, `BOOT` and `CHORD` have been run against real hardware: `chord`
+  opened the menu (`dev.ts app` went from `APP 0 chrono` to `APP -1 menu`
+  with no human touching a button), confirmed by both a `shot` framebuffer
+  dump and a `tools/cam.py` photo of the physical panel, and `chord` sent a
+  second time closed it back to `chrono` again, proving the gesture is
+  symmetric the same way the real button chord is (see `runtime_core.c`).
+  Remember what this does and does not prove: see "What injection cannot
+  test" above. `key`/`boot`'s individual subcommands (as opposed to the
+  `chord` composite) have been exercised by `devlink_dispatch()`'s own
+  parsing logic and by `chord` internally, but not yet driven standalone
+  against an app that reads `KEY_SHORT`/`bootClicked` directly (the
+  stopwatch's start/stop, the timer's pause) - that is the next thing to
+  check by hand if either of those stops responding to `dev.ts key short` or
+  `dev.ts boot click`.

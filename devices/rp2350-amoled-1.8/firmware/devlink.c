@@ -26,6 +26,13 @@ static devlink_hooks_t g_hooks;
 static char g_line[DEVLINK_LINE_MAX];
 static int g_lineLen = 0;
 
+// Set by the CHORD command, serviced at the top of the NEXT devlink_poll()
+// call. See devlink.h's devlink_poll() comment for why this cannot just
+// release BOOT before returning from the CHORD command itself: the tick
+// that has to see BOOT still held has not run yet at that point, and
+// devlink_poll() must not block waiting for it to.
+static bool g_chordReleasePending = false;
+
 void devlink_init(const devlink_hooks_t *hooks) {
     g_hooks = *hooks;
     g_lineLen = 0;
@@ -176,6 +183,22 @@ static bool devlink_parse_one_int(const char *s, int *a) {
     return true;
 }
 
+// Case-insensitive match of a single leading word in s against word (which
+// must already be uppercase). Used by KEY/BOOT's named subcommands instead
+// of strcasecmp (not pulled in anywhere else in this file, and this needs
+// the "must end at a word boundary" check regardless, so a real match cannot
+// accept "SHORTISH" as "SHORT"). Leading spaces in s are skipped; trailing
+// content after the matched word is not consumed or inspected here.
+static bool devlink_word_is(const char *s, const char *word) {
+    while (*s == ' ') s++;
+    size_t i = 0;
+    for (; word[i]; i++) {
+        if (toupper((unsigned char)s[i]) != (unsigned char)word[i]) return false;
+    }
+    char after = s[i];
+    return after == '\0' || after == ' ';
+}
+
 static void devlink_dispatch(char *line) {
     char *p = line;
     while (*p == ' ') p++;
@@ -228,6 +251,41 @@ static void devlink_dispatch(char *line) {
     } else if (strcmp(cmd, "ERASE") == 0) {
         if (g_hooks.erase) g_hooks.erase();
         printf("OK\r\n");
+    } else if (strcmp(cmd, "KEY") == 0) {
+        // Named forms only, no raw hex mask: see tools/README-devlink.md's
+        // KEY section for why (a mistyped mask at a prompt silently injects
+        // the wrong gesture; a misspelled name just fails).
+        devlink_key_t which;
+        if (devlink_word_is(args, "PRESS")) which = DEVLINK_KEY_PRESS;
+        else if (devlink_word_is(args, "LONG")) which = DEVLINK_KEY_LONG;
+        else if (devlink_word_is(args, "SHORT")) which = DEVLINK_KEY_SHORT;
+        else { printf("ERR args\r\n"); return; }
+        if (g_hooks.inject_key) g_hooks.inject_key(which);
+        printf("OK\r\n");
+    } else if (strcmp(cmd, "BOOT") == 0) {
+        if (devlink_word_is(args, "DOWN")) {
+            if (g_hooks.inject_boot) g_hooks.inject_boot(true);
+        } else if (devlink_word_is(args, "UP")) {
+            if (g_hooks.inject_boot) g_hooks.inject_boot(false);
+        } else if (devlink_word_is(args, "CLICK")) {
+            if (g_hooks.inject_boot_click) g_hooks.inject_boot_click();
+        } else {
+            printf("ERR args\r\n");
+            return;
+        }
+        printf("OK\r\n");
+    } else if (strcmp(cmd, "CHORD") == 0) {
+        // The BOOT+PWR menu chord, composed from the same primitives as
+        // BOOT/KEY above and no more: hold BOOT, deliver PWR's long-press
+        // verdict, release BOOT. See runtime_core.c's chord comment for what
+        // this reproduces at the firmware's input layer, and sensors.h's
+        // sensors_inject_key()/sensors_inject_boot() for what it does NOT
+        // reproduce (the PMIC register read and the flash-chip-select
+        // borrow that a real press goes through first).
+        if (g_hooks.inject_boot) g_hooks.inject_boot(true);
+        if (g_hooks.inject_key) g_hooks.inject_key(DEVLINK_KEY_LONG);
+        g_chordReleasePending = true;
+        printf("OK\r\n");
     } else if (strcmp(cmd, "APP") == 0) {
         int idx = g_hooks.app_current ? g_hooks.app_current() : 0;
         const char *name = g_hooks.app_name ? g_hooks.app_name(idx) : NULL;
@@ -243,6 +301,18 @@ static void devlink_dispatch(char *line) {
 }
 
 void devlink_poll(void) {
+    // Release BOOT from a CHORD one tick after it was asserted (see
+    // devlink.h's devlink_poll() comment and the CHORD case in
+    // devlink_dispatch() above). This runs before anything is drained off
+    // the wire, so it lands as early as possible in this iteration, strictly
+    // after the caller's rtcore_tick() for this iteration has already run
+    // (see runtime.c's main loop: rtcore_tick() then devlink_poll(), every
+    // iteration) and strictly after the iteration where CHORD set the flag.
+    if (g_chordReleasePending) {
+        g_chordReleasePending = false;
+        if (g_hooks.inject_boot) g_hooks.inject_boot(false);
+    }
+
     for (;;) {
         int c = getchar_timeout_us(0);
         if (c == PICO_ERROR_TIMEOUT) return; // nothing queued right now

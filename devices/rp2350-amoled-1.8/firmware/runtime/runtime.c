@@ -129,6 +129,26 @@ static void devlink_hook_erase(void) {
     sensors_inject_erase();
 }
 
+// Maps devlink's hardware-blind key names onto sensors.h's actual PMIC bit
+// values. This is the one place that knowledge lives: devlink.h's
+// devlink_key_t deliberately does not know these values (see its comment),
+// so that devlink.c never has to include sensors.h.
+static void devlink_hook_inject_key(devlink_key_t which) {
+    switch (which) {
+        case DEVLINK_KEY_PRESS: sensors_inject_key(KEY_PRESS); break;
+        case DEVLINK_KEY_LONG:  sensors_inject_key(KEY_LONG); break;
+        case DEVLINK_KEY_SHORT: sensors_inject_key(KEY_SHORT); break;
+    }
+}
+
+static void devlink_hook_inject_boot(bool down) {
+    sensors_inject_boot(down);
+}
+
+static void devlink_hook_inject_boot_click(void) {
+    sensors_inject_boot_click();
+}
+
 static int devlink_hook_app_current(void) {
     return app_current();
 }
@@ -220,6 +240,9 @@ int main(void) {
         .inject_move = devlink_hook_move,
         .inject_up = devlink_hook_up,
         .erase = devlink_hook_erase,
+        .inject_key = devlink_hook_inject_key,
+        .inject_boot = devlink_hook_inject_boot,
+        .inject_boot_click = devlink_hook_inject_boot_click,
         .app_current = devlink_hook_app_current,
         .app_name = devlink_hook_app_name,
         .app_switch = devlink_hook_app_switch,
