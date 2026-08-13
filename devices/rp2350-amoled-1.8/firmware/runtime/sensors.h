@@ -133,12 +133,11 @@ uint8_t sensors_key_take(void);
 // whatever sensors_key_take() next returns, with the same read-and-clear
 // semantics a real PMIC event has: call once per synthetic event, not once
 // per frame you want it to appear "held", or it is delivered more than
-// once. devlink.c's own KEY command only names PRESS/LONG/SHORT today (see
-// tools/README-devlink.md); KEY_RELEASE reaching this function is currently
-// only exercised via the emulator's emu_button(BTN_PWR, 0) path
-// (emu_shim.c), not via devlink on real hardware - a gap worth closing if
-// the power-off gesture ever needs standalone devlink testing beyond what
-// the emulator already covers.
+// once. devlink.c's own KEY command names all four, including RELEASE
+// (see tools/README-devlink.md): without it, `KEY PRESS` alone started a
+// hold that devlink had no way to end, which is exactly what made the
+// PWR-held-5s power-off gesture (runtime_core.c) hard to reproduce safely
+// by injection until this was added.
 //
 // Core0-owned end to end, like sensors_inject_erase() above, but for a
 // different reason: g_keyEvent (sensors.c) is written by core1

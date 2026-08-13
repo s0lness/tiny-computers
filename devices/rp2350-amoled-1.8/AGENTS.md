@@ -52,13 +52,23 @@ Pins, taken from the vendor demo and confirmed working:
 | IMU INT1 | 8 |
 | AXP2101 interrupt | 2 |
 | PWROK from PMIC (`SYS_OUT`) | 18 |
-| Audio I2S DOUT / DIN / MCLK / BCLK | 20 / 21 / 22 / 24 |
+| Audio I2S DOUT / DIN / MCLK / LRCK / BCLK | 20 / 21 / 22 / 23 / 24 |
 | Speaker amp enable | 19 |
 | microSD CS / MOSI / SCK / MISO | 25 / 26 / 27 / 28 |
 
 Taken from the published schematic
 (`files.waveshare.com/wiki/RP2350-Touch-AMOLED-1.8/RP2350-Touch-AMOLED-1.8.pdf`),
 not inferred from the demo code.
+
+**LRCK (GPIO23) was missing from this table until the audio bring-up
+(2026-08-13).** I2S cannot function without a word-select line, so it has to
+exist somewhere; it does, contiguous with the other four (20-24), and was
+found by tracing the schematic's "Codec" block net-label-to-net-label
+(`firmware/runtime/sound.c`'s header comment has the exact coordinates) after
+the demo/vendor sources gave no clean answer for this specific board. If a
+pin table is ever hand-copied from a schematic again, check every signal a
+chip's own datasheet says it needs is actually accounted for, not just the
+ones a first pass happened to label.
 
 ## The buttons, which the vendor header describes wrongly
 
@@ -145,7 +155,11 @@ firmware/runtime/    the runtime: runtime.c (board entry point, startup,
                       compiles for both the board and wasm32-freestanding, see
                       docs/decisions/0003), gfx.c (framebuffer + panel push,
                       the one place the 8-pixel row rule lives), sensors.c
-                      (core1 owns i2c1: touch, IMU, PMIC)
+                      (core1 owns i2c1: touch, IMU, PMIC), sound.c (the ES8311
+                      codec + I2S over PIO/DMA, brought up on core0 before
+                      core1 launches - see "Sound" below), sound_synth.c (the
+                      chime itself, pure math, compiles into both main.uf2 and
+                      emu.wasm unmodified)
 firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
                       menu.c (the app picker), digits.c (shared seven-segment
@@ -511,6 +525,43 @@ avoid it if you ever touch that code path directly). Coordinates are clamped
 downstream, both in `runtime_core.c`'s touch resolution and again in
 `sketch.c`'s own stroke code: they come straight from 12-bit touch registers
 and the driver never validates them.
+
+## Sound (`firmware/runtime/sound.c`, `sound_synth.c`, `sound_i2s.pio`)
+
+The ES8311 codec (0x18 on `i2c1`, CE pulled to AGND on the schematic) and its
+I2S link are brought up ONCE, on core0, in `sound_init()` (`runtime.c`),
+right after `sensors_init()` and before `sensors_start()` hands `i2c1` to
+core1 - the same "everything i2c1 happens before core1 exists" shape
+`sensors_init()` already uses for touch/IMU/PMIC. After that one call, the
+sound service never touches `i2c1` again: the codec is left unmuted at a
+fixed volume forever, and "play"/"stop" (`sound_play()`/`sound_stop()`,
+`sound.h`) are purely a DATA-PLANE change (is the I2S stream carrying the
+chime or silence), never a control-plane one. So there is no cross-core
+signal to design for sound at all, unlike every real sensor - see
+`sound.h`'s header comment for the full argument.
+
+I2S is driven by PIO (the RP2350 has no dedicated I2S peripheral), on `pio1`
+(claimed via `pio_claim_unused_sm()`, never `pio0`: the display's own QSPI PIO
+program, `firmware/lib/QSPI_PIO/qspi_pio.c`, uses `pio0` state machines 0 and
+1 directly without ever calling `pio_sm_claim()` for them, so the SDK's claim
+bookkeeping for `pio0` cannot be trusted - see `sound.c`'s header comment).
+No MCLK is generated: the ES8311 derives its internal clock from the bit
+clock instead (a documented, driver-confirmed mode), so only LRCK, BCLK and
+DOUT are actually driven. 32kHz / 16-bit stereo was chosen because it lands
+exactly on a supported ES8311 clock-coefficient row AND gives an exact
+(zero-remainder) PIO clock divider on this board's 150MHz system clock - see
+`sound.c` for both derivations.
+
+The chime is synthesised sample-by-sample (`sound_synth.c`), never stored:
+a phrase of PCM at any usable quality would cost tens of KB this device's
+SRAM budget (decision 0002's "Memory" table) does not have spare. The same
+`sound_synth_alarm_sample()` function also compiles into the emulator
+(`emulator/wasm/build.ts`), so what a browser plays through WebAudio
+(`emu_abi.h`'s "sound" section) is genuinely this firmware's own synthesis,
+not a JavaScript reimplementation - useful for judging the tune quickly, but
+not the timbre: a laptop speaker will always flatter what this device's tiny
+one actually does, so a real "does this sound good" verdict still needs the
+board.
 
 ## The sketchpad (`firmware/apps/sketch.c`)
 

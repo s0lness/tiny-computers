@@ -16,18 +16,15 @@
 
 #include "../runtime/app.h"
 
-// Tells the menu which app to treat as "where we came from": its tile
-// starts selected when the menu opens, exactly like the old menu.c defaulted
-// its cursor to the currently running slot. Called by the runtime in the
-// same frame it decides to switch into the menu, before that switch is
-// applied, so by the time menu_enter() runs (arena freshly reset) this value
-// is already set and safe to read.
-//
-// The runtime also keeps its own copy of this same value, for a reason
-// menu.c does not need to know about: closing the menu (the same BOOT+PWR
-// chord, fired again while already inside it) is a runtime-level decision,
-// not something menu.c requests, so the runtime needs this value for its
-// own use too, not just to hand to menu_enter().
+// Historically told the menu which app to treat as "where we came from", so
+// its tile could start selected when the menu opened. The menu is touch-only
+// now (see menu.c's header comment): there is no selection cursor left to
+// default, so menu.c's own implementation of this ignores the value. The
+// function still exists and is still called unconditionally by
+// runtime_core.c on every chord that opens the menu (see its "BOOT+PWR
+// long-press chord" comment) - that call site is the runtime's, not this
+// app's, to change, so the entry point stays even though menu.c no longer
+// has anything to do with what it is handed.
 void menu_set_return_app(int index);
 
 extern const app_t g_menuApp;

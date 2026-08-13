@@ -36,6 +36,7 @@
 #include "app.h"
 #include "gfx.h"
 #include "sensors.h"
+#include "sound.h"
 #include "runtime_core.h"
 
 // Cross-directory headers, included by relative path on purpose rather than
@@ -158,9 +159,10 @@ static void devlink_hook_erase(void) {
 // so that devlink.c never has to include sensors.h.
 static void devlink_hook_inject_key(devlink_key_t which) {
     switch (which) {
-        case DEVLINK_KEY_PRESS: sensors_inject_key(KEY_PRESS); break;
-        case DEVLINK_KEY_LONG:  sensors_inject_key(KEY_LONG); break;
-        case DEVLINK_KEY_SHORT: sensors_inject_key(KEY_SHORT); break;
+        case DEVLINK_KEY_PRESS:   sensors_inject_key(KEY_PRESS); break;
+        case DEVLINK_KEY_LONG:    sensors_inject_key(KEY_LONG); break;
+        case DEVLINK_KEY_SHORT:   sensors_inject_key(KEY_SHORT); break;
+        case DEVLINK_KEY_RELEASE: sensors_inject_key(KEY_RELEASE); break;
     }
 }
 
@@ -240,6 +242,14 @@ int main(void) {
     AMOLED_1IN8_SetBrightness(180);
 
     sensors_init();
+    // sound_init() belongs here, not inside sensors_init(): it brings up the
+    // ES8311 over i2c1 (the codec's control interface) plus the I2S PIO/DMA
+    // path, and per sensors.h's ownership rule this is still safe only
+    // because core1 has not launched yet. Kept as its own function/file
+    // rather than folded into sensors.c/sensors.h so the sound service never
+    // has to touch the file that owns the i2c1 ownership rule itself - see
+    // sound.h's header comment for the full argument.
+    sound_init();
 
     if (!gfx_init()) {
         // gfx_init() already printed why (SRAM already spoken for). There is
@@ -299,6 +309,13 @@ int main(void) {
         uint32_t nowMs = to_ms_since_boot(get_absolute_time());
 
         rtcore_tick(nowMs);
+
+        // sound: refills whichever I2S DMA buffer just finished playing (or
+        // does nothing, most calls - see sound_poll()'s own comment). Never
+        // touches i2c1 (sound.h's header comment), so this has nothing to do
+        // with the ownership rule sensors_start() below is about; it just
+        // needs to run every loop the same way devlink_poll() does.
+        sound_poll();
 
         // devlink: drains whatever an agent already sent (a screenshot
         // request, an injected touch or erase, an app query or switch) and

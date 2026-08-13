@@ -97,6 +97,7 @@ async function loadDevice() {
             floorf: (x: number) => Math.floor(x),
             fmodf: (x: number, y: number) => x % y,
             powf: (x: number, y: number) => Math.pow(x, y),
+            expf: (x: number) => Math.exp(x), // sound_synth.c's decay envelope; see emu_abi.h
         },
     };
 

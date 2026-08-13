@@ -65,6 +65,7 @@
 #include "gfx.h"
 #include "sensors.h"
 #include "shapes.h"
+#include "sound.h"
 
 /* ---------------------------------------------------------------------
  * Tick geometry and the seconds-per-tick mapping.
@@ -196,8 +197,10 @@
 #define X_SS_UNITS  (X_SS_TENS  + DIGIT_W + DIGIT_GAP)
 
 /* ---------------------------------------------------------------------
- * The alarm. No sound yet: the ES8311 codec is core1's, reserved but unused
- * (decision 0002, section 7). The one-line hook for it is marked below.
+ * The alarm. Sound now exists (firmware/runtime/sound.h, decision 0002
+ * section 7): handle_alarm() calls sound_play(SOUND_ID_TIMER_ALARM) once,
+ * on the flash-phase flip that used to carry the TODO, and sound_stop() on
+ * every dismissal path - see that function for both.
  *
  * ALARM_MAX_MS = 30000: "stop by itself after about 30 seconds" from the
  * brief, taken literally, not measured.
@@ -206,6 +209,18 @@
  * what reads as calm rather than a fast, seizure-risk strobe; not tested
  * against the real panel or a real child. If it reads as too fast or too
  * slow on hardware, this is the constant to change.
+ *
+ * Corrected 2026-08-13: the owner simplified dismissal after seeing this
+ * section's first pass. It used to read "any input... stops on any input"
+ * without saying what state that leaves behind, and this file's own
+ * handle_alarm() comment (see below) used to say "back to the value that
+ * was set, not to zero", mirroring BOOT's behaviour in RUNNING/PAUSED. The
+ * owner's actual instruction is simpler and wins: dismissal (any button, a
+ * shake, or a touch) silences the sound and the flash immediately and
+ * lands in SETTING at 00:00, a clean dial. BOOT still recalls the last
+ * value that was set (timer_state_t.lastSetTicks, above) once SETTING is
+ * showing zero, so "again is one press" survives in a different shape: a
+ * dedicated recall action rather than the dial staying pre-loaded.
  * ------------------------------------------------------------------- */
 #define ALARM_MAX_MS    30000
 #define ALARM_FLASH_MS  250
@@ -250,6 +265,13 @@ typedef struct {
     int setTicks;          // 0..TICK_COUNT, chosen by dragging in SETTING
     int remainingSeconds;  // the real countdown, RUNNING/PAUSED only
     uint32_t lastDecMs;    // f->nowMs anchor for the once-per-second decrement
+
+    // The last non-zero setTicks this session had, before a dismissal
+    // zeroed setTicks itself - see handle_alarm()'s "Corrected 2026-08-13"
+    // comment. BOOT, pressed while SETTING is showing a fresh 00:00, recalls
+    // this so "again" is still one press, without the alarm's own dial
+    // having to stay non-zero to make that possible.
+    int lastSetTicks;
 
     float lastFillDeg;      // arc angle currently painted, 0..360, whatever the state
     int lastDigitSeconds;   // seconds value currently painted in the MM:SS cells
@@ -774,16 +796,33 @@ static void redraw_full(timer_state_t *s, uint32_t nowMs) {
 static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
     // "Any input", read as literally every event app_frame_t can carry, per
     // the brief: a child reaching for a beeping object should not have to
-    // remember which button, or that it has to be a button at all.
+    // remember which button, or that it has to be a button at all. f->shaken
+    // joined this list per the owner's explicit correction (see this app's
+    // ALARM_MAX_MS/ALARM_FLASH_MS comment above and g_timerApp's wantsShake
+    // comment below for why shake is safe to read HERE and nowhere else in
+    // this file).
     bool anyInput = f->touchPressed || f->touchDown || f->touchReleased ||
-                    f->bootClicked || (f->key != 0);
+                    f->bootClicked || (f->key != 0) || f->shaken;
     bool timedOut = (f->nowMs - s->alarmStartMs) >= ALARM_MAX_MS;
 
     if (anyInput || timedOut) {
-        // Back to SETTING at the value that was set, not to zero: the same
-        // "again is one press" the brief asks of BOOT applies here too, the
-        // ring should not have to be re-dragged just because it finished.
-        //
+        // Silence the sound FIRST, before anything else in this branch: the
+        // owner's instruction is that dismissal is immediate, not "stops
+        // once the current visual/audio step finishes" - see sound_stop()'s
+        // own comment for why this actually is instant (it zeroes the
+        // in-flight DMA buffers directly) rather than merely changing what
+        // gets synthesised next.
+        sound_stop();
+
+        // Corrected 2026-08-13 (see this app's ALARM_MAX_MS comment above):
+        // the owner simplified this from "back to the value that was set" to
+        // a clean SETTING at 00:00. lastSetTicks remembers what setTicks was
+        // so BOOT can still recall it in one press (see the BOOT branch in
+        // timer_tick()) without the alarm state itself carrying a non-zero
+        // dial forward.
+        if (s->setTicks > 0) s->lastSetTicks = s->setTicks;
+        s->setTicks = 0;
+
         // Clear the whole panel first: the alarm's last flash frame may have
         // left it solid black (see the fill below, PX_BLACK on the inverted
         // phase), and redraw_full() only repaints the ring and the digit
@@ -799,19 +838,15 @@ static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
         s->state = TS_SETTING;
         redraw_full(s, f->nowMs);
         gfx_push_all();
-        int sec = seconds_for_ticks(s->setTicks);
-        printf("timer: alarm %s, back to %02d:%02d\r\n",
-               anyInput ? "dismissed" : "timed out", sec / 60, sec % 60);
+        int recallSec = seconds_for_ticks(s->lastSetTicks);
+        printf("timer: alarm %s, back to 00:00 (BOOT recalls %02d:%02d)\r\n",
+               anyInput ? "dismissed" : "timed out", recallSec / 60, recallSec % 60);
         return;
     }
 
     bool wantInverted = (((f->nowMs - s->alarmStartMs) / ALARM_FLASH_MS) % 2u) == 1u;
     if (wantInverted == s->alarmInverted) return;
     s->alarmInverted = wantInverted;
-
-    // TODO(sound): one call here, e.g. sound_play(SOUND_ID_TIMER_ALARM),
-    // once the ES8311 service from decision 0002 section 7 exists. Nothing
-    // else in this function needs to change to add it.
 
     // A full-panel fill needs no landscape rotation: a rectangle covering
     // the whole screen is the same rectangle whichever way it is rotated, so
@@ -858,6 +893,19 @@ static void timer_tick(const app_frame_t *f) {
             gfx_push_all();
             int sec = seconds_for_ticks(s->setTicks);
             printf("timer: BOOT reset to %02d:%02d\r\n", sec / 60, sec % 60);
+        } else if (s->setTicks == 0 && s->lastSetTicks > 0) {
+            // Recall, added 2026-08-13 alongside the alarm's dismiss-to-zero
+            // correction (see ALARM_MAX_MS's comment above): SETTING can now
+            // show a clean 00:00 after a dismissal, with nothing left on the
+            // dial to re-drag from. This is the one-press "again" that used
+            // to come for free from the dial staying pre-loaded; it only
+            // fires when there is genuinely nothing set (setTicks == 0), so
+            // it never fights a finger already mid-drag to a real value.
+            s->setTicks = s->lastSetTicks;
+            redraw_full(s, f->nowMs);
+            gfx_push_all();
+            int sec = seconds_for_ticks(s->setTicks);
+            printf("timer: BOOT recalled %02d:%02d\r\n", sec / 60, sec % 60);
         }
         return;
     }
@@ -928,6 +976,15 @@ static void timer_tick(const app_frame_t *f) {
             s->state = TS_ALARM;
             s->alarmStartMs = f->nowMs;
             s->alarmInverted = false;
+            // Exactly once, here, at the instant ringing starts - NOT inside
+            // handle_alarm()'s flash-flip (which runs every ALARM_FLASH_MS,
+            // 250ms, for the whole time the alarm rings): sound_play()
+            // restarts the chime's phrase from its own beginning each call
+            // (sound.h), so calling it every flip would retrigger the motif
+            // every 250ms instead of letting it repeat on its own ~1.5s
+            // period (sound_synth.c) - audibly chopped, not "repeated
+            // gently". One call here is the whole hook.
+            sound_play(SOUND_ID_TIMER_ALARM);
             printf("timer: ringing\r\n");
             return;
         }
@@ -946,16 +1003,32 @@ static void timer_tick(const app_frame_t *f) {
     // above, ever move it.
 }
 
-// wantsShake is false: shake is opt-in per app and belongs only where
-// erasing is the app's identity (sensors.h, decision 0002 section 5). BOOT
-// already resets this app to the set value; a second, accidental-shake path
-// to the same reset would just be a second way to startle a child holding
-// a countdown she is waiting on.
+// wantsShake is true, added 2026-08-13 - read this comment before assuming
+// that means "the timer uses shake", because it deliberately does not, past
+// this one narrow case:
+//
+// The owner's explicit instruction is that shaking the device while the
+// alarm RINGS must dismiss it, exactly like a button or a touch - a child
+// grabbing a beeping object and shaking it is exactly what happens, and
+// should work like everything else that silences it. sensors.h's opt-in
+// rule exists precisely so shake cannot become a universal destructive verb
+// (decision 0002 section 5: promoting it globally would let a stray jolt
+// reset the countdown a child is waiting on, or worse, wipe the sketchpad
+// from across the room). Turning wantsShake on for THIS app widens what
+// runtime_core.c is willing to deliver to it, but does not by itself decide
+// what the app DOES with it - that decision is handle_alarm()'s alone
+// (f->shaken is folded into anyInput there, and read NOWHERE else in this
+// file). Outside TS_ALARM, f->shaken is simply never consulted, so a shake
+// during SETTING, RUNNING or PAUSED does exactly nothing, same as before
+// this flag flipped. If a future change ever reads f->shaken from a second
+// place in this file, stop and re-read this comment: that is very likely
+// the opt-in rule being rebuilt by hand into a mistake it exists to
+// prevent.
 const app_t g_timerApp = {
     .name       = "timer",
     .enter      = timer_enter,
     .tick       = timer_tick,
     .leave      = NULL,
     .landscape  = true,
-    .wantsShake = false,
+    .wantsShake = true,
 };

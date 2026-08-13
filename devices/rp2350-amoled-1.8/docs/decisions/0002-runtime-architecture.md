@@ -230,6 +230,36 @@ architecture. Retrofitting audio means reopening exactly the code least worth
 reopening. The runtime gets a sound service (play a sample by id from the 16MB
 flash) on the same signals model as the sensors.
 
+**Done, 2026-08-13, and two predictions above turned out wrong in ways worth
+recording rather than editing away.** `firmware/runtime/sound.h`/`sound.c`
+give apps `sound_play(id)`/`sound_stop()`, called by the timer's alarm
+(`apps/timer.c`).
+
+- **Not core 1's problem, in the end.** The codec's control registers are
+  configured exactly once, from core0, in a new `sound_init()` (`runtime.c`)
+  called right after `sensors_init()` and before `sensors_start()` - the same
+  window where PMIC/touch/IMU are already brought up single-threaded. Once
+  set, the codec is left unmuted at a fixed volume permanently, so
+  `sound_play()`/`sound_stop()` (called at arbitrary times afterward) never
+  touch `i2c1` at all: they only change whether the already-running I2S
+  stream carries the chime or silence. So sound never had to reopen
+  sensors.c/sensors.h, the file this section predicted would be "the code
+  least worth reopening" - it was not reopened.
+- **Synthesised, not stored.** "Play a sample by id from the 16MB flash"
+  assumed PCM in flash/RAM; a phrase of stored audio at a usable quality
+  costs tens of KB, more than this document's entire SRAM "headroom" line
+  (section 10's memory table) on its own. `sound_synth.c` computes the chime
+  sample-by-sample instead (sine plus an exponential-decay envelope), which
+  costs CPU during the ~30s the alarm actually rings and no flash or RAM for
+  the waveform itself - see that file for the reasoning and the actual
+  fixed sound (a four-note major-pentatonic rising motif, C5-E5-G5-C6).
+
+I2S itself is driven by PIO (the RP2350 has no dedicated I2S peripheral) on
+`pio1`, not `pio0`: the display's own QSPI PIO program uses `pio0` without
+ever registering its claim with the SDK, so trusting `pio0`'s claim state
+for a "free" state machine would risk silently colliding with the display -
+see `sound.c`'s header comment.
+
 ### 8. Rejected: apps as data, or a scripting layer
 
 Adding apps without a rebuild contradicts requirement one: an interpreter
@@ -301,6 +331,30 @@ beeping until the battery dies.
 
 This app is why the sound service is reserved now rather than retrofitted: a
 timer with no sound is a timer that has to be watched, which defeats it.
+
+**Corrected 2026-08-13, sound bring-up.** Two clarifications the owner made
+once section 7's sound service actually existed and this section's
+"any input" had to become real code, both tightening rather than changing
+the requirement above:
+
+- "Any input" is literally any of the three input kinds this device has:
+  a button, a touch, OR a shake. Shake is normally opt-in per app precisely
+  so it cannot become a universal destructive verb (section 5) - the timer
+  now opts in, but `firmware/apps/timer.c`'s `handle_alarm()` is the ONLY
+  place it reads that signal; outside the alarm a shake still does nothing
+  to this app, exactly as before.
+- Dismissal (any of the three) now silences the sound AND the flash
+  immediately, and returns to SETTING at **00:00**, not to the value that
+  was set - simpler than this section's original phrasing, which mirrored
+  BOOT's "reset to the value that was set" behaviour without saying so
+  explicitly. BOOT, pressed while SETTING shows a fresh 00:00, still recalls
+  the last value in one press (`timer_state_t.lastSetTicks`), so "again is
+  one press" survives as a deliberate recall action rather than as the dial
+  staying pre-loaded through the alarm itself.
+
+See `docs/decisions/`'s own convention (further down this section, and in
+the runtime rewrite this document is titled after): record the correction
+with its date rather than silently editing the original sentence away.
 
 End-to-end, phrased as a child would notice them rather than as frame counts.
 

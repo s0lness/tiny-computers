@@ -15,6 +15,13 @@ add_executable(main)
 pico_generate_pio_header(main ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO/qspi.pio
                         OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO)
 
+# I2S TX for the ES8311 speaker codec (firmware/runtime/sound.c). Same
+# pico_generate_pio_header pattern as qspi.pio above, output alongside the
+# .pio source rather than into lib/QSPI_PIO - this is the sound service's
+# own PIO program, not the display's.
+pico_generate_pio_header(main ${CMAKE_CURRENT_LIST_DIR}/runtime/sound_i2s.pio
+                        OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/runtime)
+
 # One binary holds every app, and switching between them is a function call
 # rather than a reboot. See docs/decisions/0002-runtime-architecture.md: a
 # reboot costs 182ms of which 150ms is the sleep-out the SH8601 physically
@@ -31,6 +38,13 @@ target_sources(main PRIVATE
     runtime/runtime.c
     runtime/gfx.c
     runtime/sensors.c
+    # sound_synth.c is the portable half (no PIO/DMA/i2c/pico-sdk
+    # dependency): it also compiles into emu.wasm unmodified (emulator/wasm/
+    # build.ts), so the emulator's WebAudio preview is genuinely this
+    # firmware's own synthesis - see sound.c's header comment. sound.c is the
+    # board half: the ES8311 bring-up and the PIO+DMA I2S path.
+    runtime/sound_synth.c
+    runtime/sound.c
 
     # The apps. None of them owns any hardware.
     apps/menu.c

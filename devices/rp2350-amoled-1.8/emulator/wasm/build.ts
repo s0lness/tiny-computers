@@ -1,7 +1,7 @@
-// build.ts: compiles the real firmware (runtime_core.c, gfx.c, every app
-// under firmware/apps/) plus this directory's emu_shim.c to a single
-// wasm32-freestanding module, per docs/decisions/0003-emulator-runs-the-
-// real-apps.md. TypeScript, run with `bun run emulator/wasm/build.ts`, not
+// build.ts: compiles the real firmware (runtime_core.c, gfx.c, sound_synth.c,
+// every app under firmware/apps/) plus this directory's emu_shim.c to a
+// single wasm32-freestanding module, per docs/decisions/0003-emulator-runs-
+// the-real-apps.md. TypeScript, run with `bun run emulator/wasm/build.ts`, not
 // .js/.mjs - see the project owner's standing rule (AGENTS.md / CLAUDE.md):
 // build scripts are source too.
 //
@@ -69,12 +69,18 @@ const EMU_EXPORTS = [
   "emu_sensor_event",
   "emu_app_current",
   "emu_app_switch",
+  "emu_sound_sample_rate",
+  "emu_sound_play_seq",
+  "emu_sound_stop_seq",
+  "emu_sound_buffer",
+  "emu_sound_frames",
 ];
 
 const SOURCES = [
   join(WASM_DIR, "emu_shim.c"),
   join(FIRMWARE, "runtime", "runtime_core.c"),
   join(FIRMWARE, "runtime", "gfx.c"),
+  join(FIRMWARE, "runtime", "sound_synth.c"),
   join(FIRMWARE, "apps", "digits.c"),
   join(FIRMWARE, "apps", "chrono.c"),
   join(FIRMWARE, "apps", "sketch.c"),

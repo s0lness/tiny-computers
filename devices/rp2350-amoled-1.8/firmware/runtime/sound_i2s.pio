@@ -1,0 +1,75 @@
+;
+; i2s_out: drive the ES8311 as an I2S bus MASTER (bit clock + word select
+; both generated here, by side-set, on this PIO's own state machine), 16
+; bits per sample, 2 channels (32 SM-output-bits per frame).
+;
+; Adapted, not invented: this is the "audio_i2s_swapped" program from
+; pico-extras (raspberrypi/pico-extras, src/rp2_common/pico_audio_i2s/
+; audio_i2s.pio, (c) 2020 Raspberry Pi (Trading) Ltd, SPDX-License-Identifier:
+; BSD-3-Clause), copied instruction-for-instruction and renamed. The choice
+; between its two variants ("audio_i2s" vs "_swapped") is not cosmetic:
+; sm_config_set_sideset_pins() requires side-set bit 0 to land on the LOWER
+; of the two consecutive GPIOs, and this board's schematic (RP2350-Touch-
+; AMOLED-1.8.pdf, "Codec" block, traced net-label-to-net-label since
+; AGENTS.md's own pin table did not list LRCK at all - see firmware/runtime/
+; sound.c's header comment) wires word-select (LRCK) to GPIO23 and bit clock
+; (SCLK/BCLK) to GPIO24, i.e. LRCK is the LOWER pin. The "_swapped" variant is
+; exactly the one built for that order (its own header comment: "BCLK" on the
+; higher bit). The unswapped variant would put BCLK and LRCK on the wrong
+; pins with no compile-time warning, so getting this choice wrong would have
+; been silent - discovered on the schematic, not by trial and error.
+;
+; Autopull enabled, threshold 32, shift LEFT (I2S is MSB-first). The 32-bit
+; FIFO word is:
+;   | 31 .. 16 | 15 .. 0 |
+;   | ws=0     | ws=1    |
+; sound.c writes the SAME int16 sample into both halves: the ES8311 is a
+; mono codec and this driver does not know which I2S slot it actually reads
+; audio from (undocumented here), so both carry identical audio rather than
+; guessing which one is silent.
+.program i2s_out
+.side_set 2
+
+                    ;        /--- BCLK
+                    ;        |/-- LRCLK
+bitloop1:           ;        ||
+    out pins, 1       side 0b01
+    jmp x-- bitloop1  side 0b11
+    out pins, 1       side 0b00
+    set x, 14         side 0b10
+
+bitloop0:
+    out pins, 1       side 0b00
+    jmp x-- bitloop0  side 0b10
+    out pins, 1       side 0b01
+public entry_point:
+    set x, 14         side 0b11
+
+% c-sdk {
+// data_pin: DOUT (GPIO20, DSDIN on the ES8311 - see sound.c). lrck_pin_base:
+// the LOWER of the two side-set pins, i.e. LRCK (GPIO23); BCLK (GPIO24) is
+// lrck_pin_base + 1, fixed by the .pio program above, not a parameter.
+static inline void i2s_out_program_init(PIO pio, uint sm, uint offset, uint data_pin, uint lrck_pin_base) {
+    pio_sm_config c = i2s_out_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, data_pin, 1);
+    sm_config_set_sideset_pins(&c, lrck_pin_base);
+    sm_config_set_out_shift(&c, false, true, 32);
+    sm_config_set_fifo_join(&c, PIO_FIFO_JOIN_TX);
+    pio_sm_init(pio, sm, offset, &c);
+
+    uint32_t pin_mask = (1u << data_pin) | (3u << lrck_pin_base);
+    pio_sm_set_pindirs_with_mask(pio, sm, pin_mask, pin_mask);
+    pio_sm_set_pins(pio, sm, 0); // clear pins before the SM starts driving them
+
+    pio_gpio_init(pio, data_pin);
+    pio_gpio_init(pio, lrck_pin_base);
+    pio_gpio_init(pio, lrck_pin_base + 1);
+
+    // Jump straight to entry_point: the two "set x, 14" instructions above it
+    // are only ever reached via fallthrough from inside the program's own
+    // loops, never as a valid starting state (matches pico-extras' own
+    // audio_i2s_program_init(), which does the identical jmp for the same
+    // reason: pio_sm_init() otherwise starts execution at offset 0).
+    pio_sm_exec(pio, sm, pio_encode_jmp(offset + i2s_out_offset_entry_point));
+}
+%}

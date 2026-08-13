@@ -20,9 +20,16 @@
  *    None of these are wasm imports; they are ordinary C compiled into this
  *    module, same as any other function here.
  *
- * Depends on emu_abi.h, runtime_core.h, app.h, gfx.h, sensors.h and
- * freestanding headers only - this file is the "host", so unlike
- * runtime_core.c it is allowed to know it is running in wasm.
+ * 4. Implements sound.h (sound_play/sound_stop, called by apps/timer.c) by
+ *    synthesising into a fixed buffer with sound_synth_alarm_sample() - the
+ *    SAME function firmware/runtime/sound.c calls for the real board - and
+ *    exposing it through emu_abi.h's sound section for the host to play via
+ *    WebAudio. See that section for why this is genuine synthesis, not a
+ *    JavaScript reimplementation, and what does not carry over (the timbre).
+ *
+ * Depends on emu_abi.h, runtime_core.h, app.h, gfx.h, sensors.h, sound.h,
+ * sound_synth.h and freestanding headers only - this file is the "host", so
+ * unlike runtime_core.c it is allowed to know it is running in wasm.
  */
 #include "emu_abi.h"
 
@@ -35,6 +42,8 @@
 #include "gfx.h"
 #include "runtime_core.h"
 #include "sensors.h"
+#include "sound.h"
+#include "sound_synth.h"
 
 /* ===========================================================================
  * What the module imports from the host (env.*). Exactly emu_abi.h's list:
@@ -418,6 +427,55 @@ void sensors_stats(sensors_stats_t *out) {
 // there is no i2c1 to bring up in a browser regardless.
 
 /* ===========================================================================
+ * sound.h, in full. See this file's header comment, job (4), and
+ * emu_abi.h's "sound" section for the ABI this feeds.
+ *
+ * PREVIEW LENGTH. Real playback has no fixed duration here - it lasts until
+ * either the timer's own 30-second self-limit (timer.c's ALARM_MAX_MS, which
+ * this file does not know about, deliberately: that is the app's self-limit,
+ * not the sound service's, see sound.h) or a dismissal calls sound_stop().
+ * The browser cannot know either in advance, so sound_play() just generates
+ * a fixed, generous number of phrase repeats up front and hands the whole
+ * thing over; sound_stop() (a real dismissal) tells the host to cut it off
+ * early via emu_sound_stop_seq() rather than the module trying to predict
+ * when that will happen. See emu_abi.h for why a browser can afford to
+ * generate this much PCM up front where the board's own sound.c pointedly
+ * cannot.
+ * ======================================================================= */
+#define SOUND_PREVIEW_PHRASES 5 // a few repeats of the chime's own ~1.5s
+                                // phrase (sound_synth.c) - enough to judge
+                                // the pacing without generating minutes of
+                                // audio nobody asked for.
+#define SOUND_PREVIEW_SECONDS 8 // >= SOUND_PREVIEW_PHRASES * the phrase
+                                // period; sound_synth.c owns the exact
+                                // period, so this is rounded up generously
+                                // rather than importing that constant here.
+#define SOUND_PREVIEW_FRAMES (SOUND_SYNTH_SAMPLE_RATE_HZ * SOUND_PREVIEW_SECONDS)
+
+static int16_t s_soundBuf[SOUND_PREVIEW_FRAMES];
+static uint32_t s_soundPlaySeq = 0;
+static uint32_t s_soundStopSeq = 0;
+
+void sound_play(sound_id_t id) {
+    (void)id; // one sound exists today; see sound.h's comment on why the enum stays
+    for (int i = 0; i < SOUND_PREVIEW_FRAMES; i++) {
+        float tSec = (float)i / (float)SOUND_SYNTH_SAMPLE_RATE_HZ;
+        s_soundBuf[i] = sound_synth_alarm_sample(tSec);
+    }
+    s_soundPlaySeq++;
+}
+
+void sound_stop(void) {
+    s_soundStopSeq++;
+}
+
+// sound_init()/sound_poll() are deliberately NOT implemented here, the same
+// reasoning sensors_init()/sensors_start() already use above: nothing in the
+// wasm build calls them (they are runtime.c's, board-only - see build.ts's
+// source list), and there is no ES8311/PIO/DMA to bring up or refill in a
+// browser regardless.
+
+/* ===========================================================================
  * emu_abi.h
  * ======================================================================= */
 
@@ -493,6 +551,12 @@ int emu_app_current(void) {
 void emu_app_switch(int index) {
     app_switch_to(index);
 }
+
+int emu_sound_sample_rate(void) { return SOUND_SYNTH_SAMPLE_RATE_HZ; }
+uint32_t emu_sound_play_seq(void) { return s_soundPlaySeq; }
+uint32_t emu_sound_stop_seq(void) { return s_soundStopSeq; }
+int emu_sound_buffer(void) { return (int)(intptr_t)s_soundBuf; }
+int emu_sound_frames(void) { return SOUND_PREVIEW_FRAMES; }
 
 /* ---- emu_device(): built from what this board actually is, per
  * emu_abi.h's example JSON and AGENTS.md's "buttons, which the vendor

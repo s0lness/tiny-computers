@@ -26,6 +26,7 @@ import { TouchSim, type TouchReport } from "./touchsim";
 import { type TouchSimConfig, TOUCHSIM_DEFAULTS, TOUCH_DEFECTS_DEFAULT } from "./constants";
 import { WindowShakeDetector } from "./windowshake";
 import { PuckMotion } from "./puckmotion";
+import { SoundPlayer } from "./audio";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -76,6 +77,7 @@ const windowShake = new WindowShakeDetector();
 // animation frames at all, which no threshold tuning fixes).
 const puckDragShake = new WindowShakeDetector();
 const puckMotion = new PuckMotion();
+const soundPlayer = new SoundPlayer();
 let shakeSensorIndex = -1;
 let centeredOnce = false;
 
@@ -545,6 +547,7 @@ async function bringUp(bytes: ArrayBuffer, reason: string): Promise<void> {
   panelH = newDevice.panel.h;
   fbPtr = newEmu.emu_fb();
   pixelReader = reader;
+  soundPlayer.resetForReload(newEmu);
 
   if (touchSim) touchSim.setBounds(panelW, panelH);
   else touchSim = new TouchSim(touchCfg, panelW, panelH);
@@ -585,6 +588,10 @@ function updateDiagStrip(): void {
     parts.push(`${lastTouchMapped.panel.x},${lastTouchMapped.panel.y}`);
   }
   parts.push(`push ${pushOverlay.lastCount}×${pushOverlay.lastWidth}px`);
+  // Only for a device that declared sound at all; "suspended" is what
+  // makes the autoplay-policy case say so rather than playing nothing
+  // silently, per emu_abi.h.
+  if (emu?.emu_sound_play_seq) parts.push(`sound ${soundPlayer.status}`);
   // Whichever of the two detectors is actually seeing motion right now:
   // this is the "tell the user whether their shaking is being seen at
   // all" readout, and a person only ever tries one gesture at a time.
@@ -680,6 +687,7 @@ function afterTick(now: number): void {
   while (pushHistory.length > PUSH_HISTORY_MAX) pushHistory.shift();
   if (device?.apps && device.apps.length > 0 && emu.emu_app_current) lastAppIndex = emu.emu_app_current();
   appStripControl?.refresh();
+  soundPlayer.poll(emu); // right after emu_tick(), per emu_abi.h's sound section
 }
 
 function frame(): void {
@@ -903,6 +911,21 @@ function wireStaticUI(): void {
   connectLiveReload();
   wireTraceFile();
 
+  // AudioContext creation (and resuming a suspended one) must happen
+  // inside a real user gesture, per the browser's autoplay policy. Every
+  // pointerdown/keydown anywhere on the page qualifies; ensureContext() is
+  // idempotent, so wiring it broadly rather than guessing "the first
+  // click" is the simplest thing that is still always correct.
+  const unlockAudio = () => soundPlayer.ensureContext((text) => consoleLog.push(text));
+  document.addEventListener("pointerdown", unlockAudio);
+  document.addEventListener("keydown", unlockAudio);
+
+  $<HTMLButtonElement>("#btnMute").addEventListener("click", (e) => {
+    const muted = soundPlayer.toggleMute();
+    (e.currentTarget as HTMLElement).classList.toggle("active", muted);
+    (e.currentTarget as HTMLElement).title = muted ? "sound muted, click to unmute" : "mute";
+  });
+
   $<HTMLInputElement>("#overlayOn").addEventListener("change", (e) => {
     overlayEnabled = (e.target as HTMLInputElement).checked;
     if (!overlayEnabled) overlayCtx.clearRect(0, 0, overlayEl.width, overlayEl.height);
@@ -1000,6 +1023,7 @@ async function boot(): Promise<void> {
   // (see main.ts's gesture section), so this is how that code path gets
   // exercised at all today.
   rebuildGestures: () => device && buildGestures(device),
+  getSoundPlayer: () => soundPlayer,
 };
 
 void boot();

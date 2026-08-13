@@ -29,6 +29,18 @@ export interface EmuExports {
   // otherwise).
   emu_app_current?(): number;
   emu_app_switch?(index: number): void;
+  // Sound: two counters to diff against what was last seen, not a call the
+  // host makes (sound is an output, driven by firmware logic like the
+  // timer's alarm, never by the host directly). See emu_abi.h's "sound"
+  // section and audio.ts, which does the diffing. Optional, same reasoning
+  // as emu_app_current/emu_app_switch above: a device with no sound simply
+  // does not export these, and audio.ts must not assume every firmware has
+  // a speaker.
+  emu_sound_sample_rate?(): number;
+  emu_sound_play_seq?(): number;
+  emu_sound_stop_seq?(): number;
+  emu_sound_buffer?(): number;
+  emu_sound_frames?(): number;
 }
 
 export interface DeviceButton {
@@ -95,13 +107,16 @@ export interface DeviceDescriptor {
 
 export const DEFAULT_WASM_URL = "wasm/emu.wasm";
 
-// The eight math functions and the one logging call emu_abi.h documents as
+// The nine math functions and the one logging call emu_abi.h documents as
 // what a freestanding module imports, under the "env" module namespace the
-// header's own import list is written against. If the actual build uses
-// different names or a different namespace, WebAssembly.instantiate throws
-// naming exactly what it asked for and didn't get; that error is rethrown
-// verbatim by loadEmuModule rather than swallowed, which is the mechanism
-// emu_abi.h itself names for reconciling the two sides.
+// header's own import list is written against. expf joined the list for
+// the alarm chime's decay envelope (sound_synth.c) and is not needed by
+// anything drawn before sound existed. If the actual build uses different
+// names, a different namespace, or asks for an import not listed here,
+// WebAssembly.instantiate throws naming exactly what it asked for and
+// didn't get; that error is rethrown verbatim by loadEmuModule rather than
+// swallowed, which is the mechanism emu_abi.h itself names for reconciling
+// the two sides.
 function buildImportObject(onLog: (text: string) => void, getMemory: () => WebAssembly.Memory | undefined): WebAssembly.Imports {
   const readString = (ptr: number, len: number): string => {
     const memory = getMemory();
@@ -118,6 +133,7 @@ function buildImportObject(onLog: (text: string) => void, getMemory: () => WebAs
       floorf: Math.floor,
       fmodf: (a: number, b: number) => a % b,
       powf: Math.pow,
+      expf: Math.exp,
       js_log: (ptr: number, len: number) => onLog(readString(ptr, len)),
     },
   };

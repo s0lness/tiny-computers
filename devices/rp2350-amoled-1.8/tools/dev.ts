@@ -568,7 +568,7 @@ async function cmdErase() {
 // KEY takes a name (press/long/short), never a raw bit mask: see
 // tools/README-devlink.md's KEY section for why a hex mask at a prompt is
 // deliberately not offered.
-const KEY_NAMES = ["press", "long", "short"] as const;
+const KEY_NAMES = ["press", "long", "short", "release"] as const;
 
 async function cmdKey(args: string[]) {
   const name = (args[0] ?? "").toLowerCase();
@@ -687,7 +687,7 @@ function printUsage() {
       "  tap <x> <y>                   tap once",
       "  draw x1,y1 x2,y2 ...          down, move through each point, up",
       "  erase                         trigger the wipe animation",
-      "  key <press|long|short>        inject a PMIC key event",
+      "  key <press|long|short|release> inject a PMIC key event",
       "  boot <down|up|click>          inject the BOOT button's level or click",
       "  chord                         inject the BOOT+PWR app-menu gesture",
       "  log [seconds]                 stream device output (default 10s)",

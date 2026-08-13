@@ -9,8 +9,8 @@
  * apps/sketch.c and apps/timer.c `#include <math.h>` as real firmware code
  * compiled unmodified for this target. Two different things live here:
  *
- * 1. The eight functions emu_abi.h documents as host imports (env.sinf,
- *    env.cosf, ...): declared `extern`, given NO body, so the linker leaves
+ * 1. The nine functions emu_abi.h documents as host imports (env.sinf,
+ *    env.cosf, ..., env.expf): declared `extern`, given NO body, so the linker leaves
  *    them undefined and `-Wl,--import-symbols` (see build.ts) turns them
  *    into real wasm imports the JS host must supply. Deliberately not
  *    implemented locally - see emu_abi.h's own reasoning: a second,
@@ -45,6 +45,9 @@ extern float fabsf(float x);
 extern float floorf(float x);
 extern float fmodf(float x, float y);
 extern float powf(float x, float y);
+extern float expf(float x); // joined the import list for sound_synth.c's
+                             // decay envelope - see emu_abi.h's math-import
+                             // list comment.
 
 // Composed from floorf() alone - see this file's header comment, item 2.
 static inline float ceilf(float x) {

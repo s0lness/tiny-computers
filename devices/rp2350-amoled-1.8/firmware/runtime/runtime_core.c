@@ -378,9 +378,52 @@ static int g_menuReturnApp = 0;
  * set_brightness_if_changed() below is this file's own throttle on top of
  * that hook, so the ramp calls it only when the rounded percentage actually
  * moves, not once a frame.
+ *
+ * WHEN SHUTDOWN DOES NOTHING, AND WHY THAT ONCE LOOKED LIKE A DEAD DEVICE.
+ * sensors_request_poweroff() writes AXP2101 register 0x10 bit 0
+ * (sensors.c), sourced from a third-party reference driver rather than a
+ * datasheet page that would actually render as text (see sensors.h's
+ * "power off" section) - a real, disclosed uncertainty, not a hypothetical
+ * one. The first version of this gesture assumed that write would either
+ * work (power drops, nothing left to fix) or fail loudly (a timeout,
+ * counted in pmicTimeouts). On real hardware it did neither: the write
+ * completed without error and the rails stayed up. Firmware kept running,
+ * devlink kept answering `APP 0 chrono`, and the panel sat at zero
+ * brightness forever, because nothing looked at the clock again after
+ * calling sensors_request_poweroff() once. From across the room, and to
+ * the owner holding it, that is indistinguishable from a dead toy.
+ *
+ * The fix is not a better power-off write (still sourced the same way,
+ * still not verified against a readable datasheet - see sensors.h). It is
+ * the firmware-side assumption that a single write to a chip on the far
+ * side of an i2c bus can silently do nothing, paired with a recovery that
+ * does not need to know why. PWR_HOLD_HARD_CEILING_MS bounds how long
+ * brightness may EVER stay below baseline, counted from the press that
+ * started the current hold, regardless of what g_pwrDown/
+ * g_pwrChordTainted/g_pwrPoweroffSent currently believe. If firmware is
+ * still ticking once that ceiling passes, the shutdown did not take (or a
+ * release edge was lost somewhere - see sensors.h's PWR key section on how
+ * a bit can go missing), and either way the right response is the same:
+ * force brightness back up, forget the hold, and say so in the log. This
+ * check runs first in the function below, unconditionally, every tick -
+ * "checked every tick regardless of what the rest of the state machine
+ * believes" is deliberate, not an optimisation left for later.
  */
 #define PWR_HOLD_DIM_START_MS       1500u
 #define PWR_HOLD_POWEROFF_MS        5000u
+// How long to wait, after the panel reaches black and a shutdown command
+// has been sent, before concluding it did not take. The AXP2101 cutting its
+// own rails should be near-instant if it happens at all; 1.5s is generous
+// margin, not a tuned value, chosen for the same reason
+// PWR_HOLD_DIM_START_MS lines up with the PMIC's own long-press verdict -
+// a round number a reader does not have to look up twice.
+#define PWR_HOLD_RECOVER_MS         1500u
+// The hard ceiling the invariant enforces: how long brightness may ever
+// stay below baseline, full stop, counted from the press that started the
+// current hold. Deliberately a single derived constant rather than a
+// second independent number, so PWR_HOLD_POWEROFF_MS and
+// PWR_HOLD_RECOVER_MS cannot drift apart from what this actually bounds.
+#define PWR_HOLD_HARD_CEILING_MS    (PWR_HOLD_POWEROFF_MS + PWR_HOLD_RECOVER_MS)
 #define PWR_BASELINE_BRIGHTNESS_PCT 100 // what runtime.c's boot already sets
                                         // (AMOLED_1IN8_SetBrightness(180)
                                         // clamps to 100 internally - see its
@@ -422,6 +465,33 @@ static void poweroff_gesture_tick(uint32_t nowMs, uint8_t key) {
     }
     if (key & KEY_RELEASE) {
         g_pwrDown = false;
+    }
+
+    // THE INVARIANT. See "WHEN SHUTDOWN DOES NOTHING" above: this is what
+    // brought the owner's board back from a panel stuck at zero brightness
+    // with the firmware otherwise alive and answering devlink. Runs before
+    // anything else below, and the ACTION does not consult
+    // g_pwrChordTainted or g_pwrPoweroffSent - a hold this old resetting
+    // itself and forcing brightness to baseline is always correct, never a
+    // case that needs special-casing away, including a chord held (tainted,
+    // never dimmed) well past this same ceiling: nothing there was ever
+    // wrong, but there is no reason to keep tracking a hold this stale
+    // either, and the reset is free.
+    //
+    // The LOG line is narrower on purpose: only claim "shutdown did not
+    // take" when a shutdown was actually requested (g_pwrPoweroffSent).
+    // A long-held, BOOT-tainted chord also crosses this ceiling on a slow
+    // child, and did not attempt anything - saying otherwise would be a
+    // false alarm in the one log a real incident like the owner's is
+    // diagnosed from.
+    if (g_pwrDown && (nowMs - g_pwrPressStartMs) >= PWR_HOLD_HARD_CEILING_MS) {
+        if (g_pwrPoweroffSent) {
+            rt_log("poweroff: still running past the recovery window - shutdown did not take, restoring brightness");
+        }
+        g_pwrDown = false;
+        g_pwrChordTainted = false;
+        set_brightness_if_changed(PWR_BASELINE_BRIGHTNESS_PCT);
+        return;
     }
 
     if (!g_pwrDown) {

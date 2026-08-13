@@ -132,7 +132,7 @@ giving up the shared console's usefulness to a human.
 | `UP` | `OK` |
 | `TAP <x> <y>` | `OK` (internally: DOWN then UP) |
 | `ERASE` | `OK` |
-| `KEY PRESS` / `KEY LONG` / `KEY SHORT` | `OK` (or `ERR args` if the name is not one of the three) |
+| `KEY PRESS` / `KEY LONG` / `KEY SHORT` / `KEY RELEASE` | `OK` (or `ERR args` if the name is not one of the four) |
 | `BOOT DOWN` / `BOOT UP` / `BOOT CLICK` | `OK` (or `ERR args`) |
 | `CHORD` | `OK` |
 | `APP` | `APP <index> <name>` |
@@ -231,14 +231,23 @@ Without these, the app-switch chord (BOOT held with PWR long-pressed), the
 stopwatch's `KEY_SHORT` start/stop and the timer's `KEY_SHORT` pause could
 only ever be tested by a human physically pressing a contact.
 
-**`KEY <name>`** injects a PMIC key bit: `PRESS`, `LONG` or `SHORT`, matching
-`sensors.h`'s `KEY_PRESS`/`KEY_LONG`/`KEY_SHORT`. Named forms only, no raw
-hex mask, on purpose: `KEY 0x04` at an interactive prompt or in a hastily
-copy-pasted script is one fat-fingered digit away from injecting the wrong
-gesture with no complaint from anything, where `KEY LONG` either does what
-it says or fails to parse. The three bits are exactly the ones an app can
-ever see in `app_frame_t.key` (there is no `KEY_RELEASE`, see `sensors.h`'s
-PWR key section for why), so nothing is missing from this set.
+**`KEY <name>`** injects a PMIC key bit: `PRESS`, `LONG`, `SHORT` or
+`RELEASE`, matching `sensors.h`'s `KEY_PRESS`/`KEY_LONG`/`KEY_SHORT`/
+`KEY_RELEASE`. Named forms only, no raw hex mask, on purpose: `KEY 0x04` at
+an interactive prompt or in a hastily copy-pasted script is one
+fat-fingered digit away from injecting the wrong gesture with no complaint
+from anything, where `KEY LONG` either does what it says or fails to
+parse.
+
+`RELEASE` is the newest of the four, added alongside the PWR-held-5s
+power-off gesture (`runtime_core.c`): without it, `KEY PRESS` starts a hold
+that has no way to be completed or cancelled from devlink, which is exactly
+what made that gesture hard to test by injection before this existed - see
+`sensors.h`'s PWR key section for the fuller story of why `KEY_RELEASE` was
+removed from this firmware once and reinstated later. Before this, the
+three bits `PRESS`/`LONG`/`SHORT` were "exactly the ones an app can ever see
+in `app_frame_t.key`"; that is no longer true, and this table is the
+correction.
 
 **`BOOT DOWN`** / **`BOOT UP`** set the BOOT button's injected level, for
 gestures that need it *held* (the chord). **`BOOT CLICK`** injects a

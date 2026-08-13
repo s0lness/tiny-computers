@@ -77,9 +77,12 @@ typedef struct {
     bool     touchReleased;  // it came up this frame
     int      touchX, touchY; // panel coordinates, valid while touchDown
 
-    // Power key bits the runtime did not consume (KEY_SHORT, KEY_LONG,
-    // KEY_PRESS from sensors.h; there is no KEY_RELEASE - see sensors.h's
-    // PWR key section for why). Zero on most frames.
+    // Power key bits the runtime did not consume (KEY_SHORT, KEY_PRESS and
+    // KEY_RELEASE from sensors.h always pass through unchanged; a KEY_LONG
+    // that opened or closed the menu is missing by the time an app sees
+    // this - see sensors.h's PWR key section for why KEY_RELEASE exists at
+    // all, and runtime_core.c's frame.key comment for the pass-through
+    // list). Zero on most frames.
     uint8_t  key;
 
     // True on the frame BOOT was released, which is the conventional moment

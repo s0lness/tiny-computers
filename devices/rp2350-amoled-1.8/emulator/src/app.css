@@ -43,6 +43,7 @@
 .chrome-btn[disabled] { opacity: .4; cursor: default; }
 .deck-btn { font-size: 13px; padding: 4px 10px; }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; }
+.chrome-btn.active { color: var(--accent-dark); background: var(--accent-bg); }
 
 .divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; align-self: center; }
 

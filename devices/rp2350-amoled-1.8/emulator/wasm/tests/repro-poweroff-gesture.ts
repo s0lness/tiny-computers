@@ -64,6 +64,7 @@ async function loadDevice() {
             floorf: (x: number) => Math.floor(x),
             fmodf: (x: number, y: number) => x % y,
             powf: (x: number, y: number) => Math.pow(x, y),
+            expf: (x: number) => Math.exp(x), // sound_synth.c's decay envelope; see emu_abi.h
         },
     };
 
@@ -82,6 +83,9 @@ async function loadDevice() {
         appCurrent(): number { return exp.emu_app_current(); },
         poweredOffSince(sinceIndex: number): boolean {
             return logLines.slice(sinceIndex).some((l) => l.includes(POWEROFF_LOG_NEEDLE));
+        },
+        loggedSince(sinceIndex: number, needle: string): boolean {
+            return logLines.slice(sinceIndex).some((l) => l.includes(needle));
         },
         logCount(): number { return logLines.length; },
     };
@@ -177,7 +181,73 @@ async function main() {
         );
     }
 
-    // ---- scenario 5: a short PWR tap (KEY_SHORT territory) never dims or -
+    // ---- scenario 5: the shutdown write does nothing, and PWR is never ---
+    //      released - the exact failure the owner hit on real hardware.
+    //      sensors_request_poweroff() is ALWAYS a no-op in this wasm build
+    //      (no PMIC to command - emu_shim.c), so holding straight through
+    //      the decision point is a perfect, deterministic reproduction of
+    //      "the shutdown did not take": prove the panel is forced back to
+    //      baseline within the recovery window rather than staying dark
+    //      forever. RECOVER_MS/HARD_CEILING_MS mirror runtime_core.c's own
+    //      PWR_HOLD_RECOVER_MS (1500ms) and PWR_HOLD_HARD_CEILING_MS
+    //      (POWEROFF_MS + RECOVER_MS); if those constants change there,
+    //      this test's margins should be revisited.
+    {
+        const RECOVER_MS = 1500;
+        const HARD_CEILING_MS = POWEROFF_MS + RECOVER_MS;
+        const dev = await loadDevice();
+        dev.tick(0);
+        const mark = dev.logCount();
+        console.log("-- PWR held alone, straight through the decision, never released (shutdown does nothing in wasm) --");
+        dev.button(BTN_PWR, true);
+        for (let t = 0; t <= HARD_CEILING_MS + 500; t += 50) dev.tick(t);
+        check(
+            "still decides to power off at 5s (the write is attempted)",
+            dev.poweredOffSince(mark),
+        );
+        check(
+            "recovers on its own once the shutdown demonstrably did not take",
+            dev.loggedSince(mark, "restoring brightness"),
+        );
+
+        // Keep ticking with PWR still (physically) held, no new press event
+        // ever arriving (real hardware only edges on an actual press/release
+        // cycle) - the recovery must not re-fire the decision repeatedly.
+        const afterRecoverMark = dev.logCount();
+        for (let t = HARD_CEILING_MS + 550; t <= HARD_CEILING_MS + 4000; t += 50) dev.tick(t);
+        check(
+            "does not repeatedly re-decide to power off while still held with no new press",
+            !dev.poweredOffSince(afterRecoverMark),
+        );
+    }
+
+    // ---- scenario 6: a normal release right at the moment recovery would -
+    //      have been needed still leaves the device in a sane, undimmed
+    //      state - releasing is always at least as good as the automatic
+    //      recovery ------------------------------------------------------
+    {
+        const dev = await loadDevice();
+        dev.tick(0);
+        const mark = dev.logCount();
+        console.log("-- PWR held past 5s, released shortly after (before the recovery window elapses) --");
+        dev.button(BTN_PWR, true);
+        for (let t = 0; t <= POWEROFF_MS + 200; t += 50) dev.tick(t);
+        const decided = dev.poweredOffSince(mark);
+        dev.button(BTN_PWR, false);
+        dev.tick(POWEROFF_MS + 250);
+        const releaseMark = dev.logCount();
+        // Ticking well past what would have been the hard ceiling: since PWR
+        // is now up, the recovery invariant must not need to fire at all
+        // (release already handles it) - no "restoring brightness" line.
+        for (let t = POWEROFF_MS + 300; t <= POWEROFF_MS + 3000; t += 50) dev.tick(t);
+        check("still decided to power off before the release", decided);
+        check(
+            "a release after the decision needs no separate recovery log line",
+            !dev.loggedSince(releaseMark, "restoring brightness"),
+        );
+    }
+
+    // ---- scenario 7: a short PWR tap (KEY_SHORT territory) never dims or -
     //      powers off ----------------------------------------------------
     {
         const dev = await loadDevice();

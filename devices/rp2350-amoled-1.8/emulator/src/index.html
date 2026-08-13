@@ -16,6 +16,16 @@
       <div class="topbar">
         <b id="deviceName">device emulator</b>
         <span id="reloadDot" class="reload-dot" title="watching the wasm build for changes"></span>
+        <!-- Sound is a device OUTPUT (the same samples the firmware plays,
+             see audio.ts), so it sits with the device's own identity here,
+             not in the input group or the capture actions. -->
+        <button id="btnMute" class="chrome-btn icon-btn" title="mute">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 9v6h4l5 5V4L8 9H4z" />
+            <path d="M16 8.5a4.5 4.5 0 0 1 0 7" />
+            <path d="M19 6a8 8 0 0 1 0 12" />
+          </svg>
+        </button>
         <span class="spacer"></span>
         <!-- capture: quiet, text-only, grouped. "png" named a file format,
              not what pressing it does, so it is an icon (a camera) instead;

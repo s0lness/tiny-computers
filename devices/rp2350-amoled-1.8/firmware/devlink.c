@@ -259,6 +259,7 @@ static void devlink_dispatch(char *line) {
         if (devlink_word_is(args, "PRESS")) which = DEVLINK_KEY_PRESS;
         else if (devlink_word_is(args, "LONG")) which = DEVLINK_KEY_LONG;
         else if (devlink_word_is(args, "SHORT")) which = DEVLINK_KEY_SHORT;
+        else if (devlink_word_is(args, "RELEASE")) which = DEVLINK_KEY_RELEASE;
         else { printf("ERR args\r\n"); return; }
         if (g_hooks.inject_key) g_hooks.inject_key(which);
         printf("OK\r\n");
