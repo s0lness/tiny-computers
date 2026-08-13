@@ -3,14 +3,25 @@
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED in a
 small plastic puck.
 
-**Current app: a sketchpad.** Draw on the touchscreen with a finger, shake the
-puck to erase. Strokes are anti-aliased with variable width, shaped by a
-tldraw-style pressure model, so they read as ink rather than as pixels.
+**One binary, three apps, a menu.** This is a single-binary runtime
+(`firmware/runtime/`) holding an app table (`firmware/apps/`): a stopwatch
+(`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw") and a
+countdown timer (`timer.c`). Switching apps is a function call, not a reboot:
+holding BOOT and PWR together until PWR's long-press verdict fires opens a
+picture menu (`menu.c`) to pick another app; the same chord closes it again.
+See `docs/decisions/0002-runtime-architecture.md` for why this replaced an
+earlier two-flash-slot, reboot-to-switch design (`store/`, now a crash-recovery
+fallback rather than how apps change).
 
-Earlier apps, still reachable in git history and in `tools/`, replayed
-handwriting: first synthesised from a font (which always looked typeset), then
-a real capture of a hand drawing in a local tldraw. The capture rig is still
-useful and still works, see "Capturing real handwriting" below.
+The sketchpad is the oldest of the three and the most hardware-proven: draw on
+the touchscreen with a finger, shake the puck to erase. Strokes are
+anti-aliased with variable width, shaped by a tldraw-style pressure model, so
+they read as ink rather than as pixels. See "The sketchpad" below.
+
+Earlier apps than that, still reachable in git history and in `tools/`,
+replayed handwriting: first synthesised from a font (which always looked
+typeset), then a real capture of a hand drawing in a local tldraw. The capture
+rig is still useful and still works, see "Capturing real handwriting" below.
 
 ## The board (verify before assuming)
 
@@ -128,14 +139,52 @@ as gospel; the ratio is what matters and it is not close to the edge.
 ## Layout
 
 ```
-firmware/          the app: main.c, CMakeLists.txt, generated strokes.h
-firmware/lib/      Waveshare drivers, copied verbatim from the vendor demo
-docs/decisions/    why things are the way they are (AGENTS says how, this says why)
-tools/gen-strokes.ts   generates strokes.h + a PNG preview
-tools/fonts/       Hershey single-stroke fonts (public domain)
-preview/           host-rendered PNGs, for judging the look without flashing
-vendor/            the untouched Waveshare demo download, for reference
-backup/            factory firmware pulled off the board before first flash
+firmware/runtime/    the runtime: runtime.c (board entry point, startup,
+                      watchdog, devlink wiring, profiler), runtime_core.c
+                      (portable: arena, app table, switching, frame dispatch -
+                      compiles for both the board and wasm32-freestanding, see
+                      docs/decisions/0003), gfx.c (framebuffer + panel push,
+                      the one place the 8-pixel row rule lives), sensors.c
+                      (core1 owns i2c1: touch, IMU, PMIC)
+firmware/apps/        one file per app plus shared helpers: chrono.c
+                      (stopwatch), sketch.c (drawing), timer.c (countdown),
+                      menu.c (the app picker), digits.c (shared seven-segment
+                      numerals), shapes.c (round silhouettes built from
+                      rectangles, used by menu.c's icons)
+firmware/lib/         Waveshare drivers, copied from the vendor demo (with our
+                      patches - see "Gotchas that bite" below)
+firmware/bootbtn.c    reads the BOOT button by borrowing the flash chip select
+firmware/devlink.c    the USB screenshot/touch-injection/app-switch link an
+                      agent uses to drive the board without a human - see
+                      tools/README-devlink.md
+firmware/CMakeLists.txt   what actually builds; also documents what does NOT
+                      any more (appswitch.c, bootreq.h) and why
+vendor-baseline/      the untouched Waveshare demo download, for reference
+docs/decisions/       why things are the way they are (AGENTS says how, this
+                      says why): 0001 (the 8-pixel push rule), 0002 (the
+                      single-binary runtime), 0003 (the emulator runs the real
+                      apps)
+emulator/             runs the firmware's own C, compiled to WebAssembly, in a
+                      browser - see "The emulator" below
+emulator/wasm/tests/  regression tests that run against the real compiled
+                      firmware - see "Regression tests" below
+store/                the retired two-flash-slot app switcher; its partition
+                      machinery is kept as a golden-image crash-recovery
+                      fallback, not how apps change now (see store/README.md
+                      and docs/decisions/0002 section 6) - stale in places,
+                      read it critically
+tools/dev.ts          drives the board over USB: screenshot, tap, drag,
+                      buttons, the menu chord, app switching - see "Driving
+                      the board headlessly" below
+tools/cam.py          photographs the physical panel with a USB webcam - see
+                      "Photographing the panel" below
+tools/gen-strokes.ts  generates strokes.h + a PNG preview, for the retired
+                      handwriting-replay app (see "Capturing real handwriting")
+tools/fonts/          Hershey single-stroke fonts (public domain), used by
+                      gen-strokes.ts
+preview/              host-rendered PNGs, for judging the handwriting look
+                      without flashing
+backup/                factory firmware pulled off the board before first flash
 ```
 
 ## Running it
@@ -169,6 +218,163 @@ Useful flags: `--font` (any `.jhf` in `tools/fonts`), `--size` (glyph height),
 `--stroke` (tldraw stroke width), `--gap`, `--tracking`, `--space`, `--jitter`,
 `--rough`, `--seed`. Look at `preview/` before flashing.
 
+## Two build targets: the board, and WebAssembly for the emulator
+
+The board build above (`cmake -S firmware -B firmware/build`) is one target.
+The second compiles most of the same C to `wasm32-freestanding` for the
+emulator, per `docs/decisions/0003-emulator-runs-the-real-apps.md`:
+`firmware/runtime/runtime_core.c`, `gfx.c`, and every file under
+`firmware/apps/` (not `runtime.c`, `sensors.c`, `bootbtn.c` or `devlink.c` -
+those are the board's own entry point and hardware, not the portable core).
+
+```powershell
+bun run emulator/wasm/build.ts
+```
+
+Requires `zig` (a self-contained cross-compiler with no sysroot to install;
+`emulator/wasm/build.ts`'s own header comment explains why it was chosen over
+emscripten or wasi-sdk). Defaults to `C:\Users\sylve\tools\zig\zig.exe`;
+override with `ZIG_EXE`. Writes `emulator/wasm/dist/emu.wasm`. This is not the
+same artifact as `firmware/build/main.uf2` and does not get flashed anywhere;
+it is loaded by a browser page instead (see "The emulator" below).
+
+## The emulator
+
+`emulator/` compiles the firmware's own object code to WebAssembly and runs it
+in a browser, rather than reimplementing the apps in TypeScript (that was
+tried first and rotted the moment the firmware grew a runtime; see
+`docs/decisions/0003-emulator-runs-the-real-apps.md` for the full argument).
+Same C, same rasteriser, same arena and app-switch logic as the board; only
+the framebuffer surface, the touch/button input and the clock are supplied by
+the page instead of by silicon.
+
+```powershell
+cd emulator
+bun install
+bun run wasm/build.ts   # or: from the device root, bun run emulator/wasm/build.ts
+bun run server.ts       # http://127.0.0.1:5330
+```
+
+There is no console once this is backgrounded: quit from the page's **quit**
+button (`POST /api/quit`, guarded by a custom header a cross-origin page
+cannot set, closing the localhost-CSRF hole - see `emulator/server.ts`). The
+dev server watches `emulator/wasm/dist/` and live-reloads connected pages once
+a rebuilt module is stable on disk, so editing an app and re-running the wasm
+build shows up without a manual browser refresh.
+
+**What it is genuinely good for:** iterating on an app's layout, logic and
+redraw decisions without a flash cycle each time; reproducing a logic bug (an
+app that stops responding, a wrong arena reset) deterministically, one tick at
+a time; seeing the actual pushed windows as an overlay, which is what makes a
+decision-0001-shaped bug (a partial refresh corrupting only some window
+shapes) visible on screen instead of invisible until someone photographs the
+panel.
+
+**What it can never answer, per decision 0003, and this is not a minor
+caveat:** timing. The browser's clock drives the tick loop; nothing here
+reproduces the measured 695us I2C touch read, the ~12ms full-panel push, or
+core1 existing at all. **Any question of the shape "is this responsive / does
+this feel laggy / is the touch report rate good enough" is a question for the
+board, always**, never for the emulator, no matter how convincing the
+emulator's own timing looks. The emulator can also never exercise the real
+FT3168's actual dropouts and strays (the stand-in touch controller is a clean
+mouse drag, not real hardware defects), and there is no panel here to burn in,
+dim, or tear.
+
+## Driving the board headlessly: `tools/dev.ts`
+
+`firmware/devlink.c` is a small command interpreter riding the same USB CDC
+serial port the runtime already prints debug output to; `tools/dev.ts` is the
+host CLI that talks to it, so an agent can see the screen and drive the
+touchscreen and buttons without a human. Full wire protocol and design
+rationale in `tools/README-devlink.md`.
+
+```powershell
+bun tools/dev.ts ping                          # is the device alive
+bun tools/dev.ts shot out.png                  # screenshot (framebuffer, not the panel - see cam.py below)
+bun tools/dev.ts app                           # which app is running
+bun tools/dev.ts switch 0                      # switch to g_apps[0]
+bun tools/dev.ts tap 184 224
+bun tools/dev.ts draw 20,20 60,40 100,30 140,60
+bun tools/dev.ts erase                         # synthetic shake, reaches only apps that opted in (the sketchpad)
+bun tools/dev.ts key short                     # inject a PMIC key event (press/long/short)
+bun tools/dev.ts boot click                    # inject the BOOT button
+bun tools/dev.ts chord                         # the BOOT+PWR app-menu gesture
+bun tools/dev.ts log 15                        # stream device output for 15s
+```
+
+Port/baud default to `COM4` / `115200`; override with `DEVLINK_PORT` /
+`DEVLINK_BAUD`. `chord` is the one command worth calling out: it drives the
+exact condition `runtime_core.c`'s menu gesture checks (BOOT held, PWR's
+long-press verdict delivered), so it opens the menu with no human touching a
+button, and sent again while the menu is open it closes back to whatever was
+running before.
+
+**The honest gap: injected buttons cannot test the PMIC decode path.**
+`KEY`/`BOOT`/`CHORD` hand the runtime the bits a real press would have
+produced, as if the AXP2101 register read and write-1-to-clear had already
+happened and come out clean. They prove the runtime and the app underneath a
+gesture handle that bit correctly. They prove nothing about whether the
+AXP2101 will ever actually latch and deliver that bit on real silicon - the
+one real bug this project has already shipped in this exact area (several PMIC
+bits landing in one read and silently breaking the old menu gesture) lived
+precisely in the register read and the read-and-clear timing that injection
+skips. Only a human physically pressing the button checks that half. See
+`tools/README-devlink.md`'s "What injection cannot test" for the full
+argument, and note this is the mirror image of the emulator's own rule above:
+that rule stops a *simulated* board from lying about silicon; this is a gap in
+a test tool driving *real* firmware, with no simulated chip to blame.
+
+## Photographing the panel: `tools/cam.py`
+
+`tools/dev.ts shot` shows what the **framebuffer** holds. `tools/cam.py`
+photographs what the **panel** actually displays with a named USB webcam
+(matched by name, not by index, because the camera index is not stable on
+this machine - see the file's own header comment for the day it silently
+photographed the operator's face instead of the device).
+
+```powershell
+python tools/cam.py --list                     # find the camera's name first
+python tools/cam.py out.png --autocrop          # crops to the self-lit panel automatically
+```
+
+Needs `opencv-python` and `pygrabber`/`comtypes` (`pip install opencv-python
+pygrabber comtypes`); see the file's header for why this is the one tool in
+the repo written in Python rather than TypeScript (no `ffmpeg` on this
+machine's PATH, no usable native Node/Bun DirectShow binding on Windows-ARM64).
+
+**Why this matters, and it has already saved a wrong investigation once:**
+comparing a `dev.ts shot` framebuffer dump against a `cam.py` photograph of the
+same moment separates a drawing bug from a display bug immediately. If the
+dump is correct but the photo is wrong, the bug is downstream of the
+framebuffer (a push, a window, the panel itself - exactly the shape of the
+decision-0001 defect). If both are wrong the same way, the bug is upstream, in
+the app's own drawing code. Without both, a display-path bug reads exactly
+like a drawing bug, and this project has already spent real debugging time on
+that confusion once (see `docs/decisions/0001-push-min-width.md`'s "What this
+cost, and the lesson").
+
+## Regression tests
+
+`emulator/wasm/tests/` runs assertions against the real compiled firmware
+(`emulator/wasm/dist/emu.wasm`), driven through `emu_tick()` with a synthetic
+clock, exactly the way decision 0003 argues a reimplementation never could.
+Build the wasm module first, then run a test directly with `bun`:
+
+```powershell
+bun run emulator/wasm/build.ts
+bun run emulator/wasm/tests/repro-arena-not-zeroed.ts
+bun run emulator/wasm/tests/repro-ring-shrink-residue.ts
+bun run emulator/wasm/tests/repro-switch-input.ts
+```
+
+Each one is a reproduction of a real bug found on hardware or in the emulator,
+turned into a standing regression check rather than a one-off script: read the
+header comment at the top of each file for what it reproduces and why the
+assertions are shaped the way they are. They compare framebuffer hashes and
+`emu_app_current()`, never internal pointers, so a failure is something a
+person at the device could also have observed.
+
 ## Gotchas that bite
 
 - **We carry a patch to `AMOLED_1IN8_DisplayWindows`.** Upstream's DMA loop is
@@ -180,17 +386,32 @@ Useful flags: `--font` (any `.jhf` in `tools/fonts`), `--size` (glyph height),
   is fixed here to `i < Yend`. **If you ever re-copy the driver from the
   Waveshare zip, this patch is lost** and partial updates will start dropping
   their last row again.
-- **Never push a narrow window.** `push_dirty` pads every pushed rectangle to
-  at least 64 pixels wide and aligns it to 8. This is not tidiness, it is the
-  fix for the defect that made strokes look shredded, and removing it brings
-  the defect straight back. `AMOLED_1IN8_DisplayWindows` sends **one DMA
+- **Every pushed window's row length must be a multiple of 8 pixels (16
+  bytes), or `AMOLED_1IN8_DisplayWindows` corrupts the transfer.** This lives
+  in one place now, `gfx_push()` in `firmware/runtime/gfx.c`
+  (`PUSH_GRAN_W`/`PUSH_MIN_W`, both 8): it rounds every window's row length up
+  to a multiple of 8 and, when that would run the window off the right edge,
+  slides it left rather than clipping the width, because a clipped (shortened)
+  row is exactly what corrupts. The window's *start* is aligned only to 2, not
+  to 8 - the bisect that settled this (see below) showed an unaligned start
+  with a rounded row length is clean, so aligning the start too would only
+  widen the window for nothing. An earlier fix also forced a 64-pixel minimum
+  width; that was superseded once the real rule (row length, not width, must
+  be a multiple of 8) was isolated, and the minimum dropped to 8. If you ever
+  see a 64-pixel-minimum version of this function again, it has regressed to
+  the earlier, more expensive fix.
+
+  Why this exists at all: `AMOLED_1IN8_DisplayWindows` sends **one DMA
   transfer per row**, so a window's width is the size of each transfer. A
   vertical stroke produces a tall, narrow dirty rect, which becomes hundreds of
   transfers of a few dozen bytes, and those come out corrupted: the ink is
   displaced sideways in bands, so a vertical line reads as a ladder of
-  horizontal ticks. The diagnosis is in `docs/decisions/0001-push-min-width.md`.
-  Long-press PWR runs `push_bisect_test()`, which draws the same vertical
-  stroke under four alignment and width policies side by side.
+  horizontal ticks. The full bisect that isolated the row-length rule from the
+  minimum-width workaround is in `docs/decisions/0001-push-min-width.md`; its
+  `push_bisect_test()` tool (draws the same vertical stroke under four
+  alignment/width policies side by side) was a bring-up aid and is not part of
+  the current tree - if you need to re-bisect this, expect to rebuild
+  something like it rather than finding it still wired to a button.
 - **Judge display bugs by window shape, not by what the drawing code did.**
   This one was mistaken twice for a touch problem and two real but unrelated
   bugs were fixed chasing it. What broke it open was that the artifact tracked
@@ -247,26 +468,51 @@ Useful flags: `--font` (any `.jhf` in `tools/fonts`), `--size` (glyph height),
 - **Do not let a venv Python be first on PATH** when running SDK installers;
   ESP-IDF's refuses outright, and pico tooling gets confused too.
 - **AMOLED burn-in is real.** Anything that ends up always-on needs the image
-  to move or the panel to sleep. The current app wipes and redraws, which is
-  enough.
+  to move or the panel to sleep. None of the three shipped apps sit static:
+  the stopwatch and timer redraw their digits/ring continuously while running,
+  and the sketchpad wipes and redraws on erase. Power management (dim on idle,
+  sleep on long idle) is still an open item - see
+  `docs/decisions/0002-runtime-architecture.md` section 10 - so this has not
+  been re-examined for the menu screen or an app left idle and unattended.
 - **The factory firmware is in `backup/factory-firmware.uf2`.** Restore with
   `picotool load backup/factory-firmware.uf2 -f -x`.
 
-## The sketchpad (current `firmware/main.c`)
+## Touch, IMU and PMIC: all three live on core1
 
-Touch and IMU are both polled from the main loop. **Do not move either onto an
-interrupt.** The vendor demo drives touch from a GPIO IRQ and guards the shared
-`i2c1` bus with a plain `uint8_t i2c_lock` using `while(lock); lock=1;`. That is
-non-atomic check-then-act on a non-`volatile` flag, so an edge arriving in the
-gap lets the ISR start an I2C transaction on top of an in-flight one. Polling
-sidesteps it completely.
+Touch and the IMU were originally both polled from a single main loop,
+deliberately never on an interrupt: the vendor demo drives touch from a GPIO
+IRQ and guards the shared `i2c1` bus with a plain `uint8_t i2c_lock` using
+`while(lock); lock=1;`, which is non-atomic check-then-act on a non-`volatile`
+flag, so an edge arriving in the gap lets the ISR start an I2C transaction on
+top of an in-flight one. **Do not move any of this onto an interrupt** - that
+reasoning still holds and is why nothing here does.
 
-`FT3168_Get_Point()` does **not** tell you whether a finger is down; when the
-finger count is zero it returns without touching the struct, leaving the last
-coordinates in place. Read `FT3168_ReadState(FT3168_FINGER_NUMBER)` separately
-and treat that as the authority for stroke start and end. Clamp the coordinates
-too: they come straight from 12-bit touch registers and the driver never
-validates them.
+Polling has since moved off core0 entirely. `firmware/runtime/sensors.c`
+launches core1 to own `i2c1` exclusively (touch, the IMU and the PMIC),
+because the touch read alone measured at about 695us, roughly 98 percent of
+frame time, on the old single-core loop; see
+`docs/decisions/0002-runtime-architecture.md` section 3. **Once
+`sensors_start()` has run, core0 must never touch `i2c1` again** - not the
+touch controller, not the IMU, not the PMIC, not a debug read (see
+`sensors.h`'s ownership-rule banner, which is enforced by convention, not the
+compiler). Apps and the runtime read published signals
+(`sensors_touch_next()`, `sensors_key_take()`, `sensors_erase_seq()`,
+`sensors_boot_down()`/`sensors_boot_clicked()`) instead of touching chips
+directly; touch samples cross from core1 to core0 through a lock-free
+single-producer/single-consumer ring, never a lock, since a lock held across
+an I2C transaction is exactly the vendor bug above.
+
+The controller still does not tell you whether a finger is down from a stale
+read: with the finger count at zero, the coordinate registers still hold the
+last real touch. `sensors.c` reads the finger-count register separately from
+the X/Y burst and treats the count as the authority for stroke start and end,
+not the vendor driver's own `FT3168_Get_Point()` (which has this exact trap -
+avoid it if you ever touch that code path directly). Coordinates are clamped
+downstream, both in `runtime_core.c`'s touch resolution and again in
+`sketch.c`'s own stroke code: they come straight from 12-bit touch registers
+and the driver never validates them.
+
+## The sketchpad (`firmware/apps/sketch.c`)
 
 **No pressure signal.** Measured 2026-08-13 (see `firmware/runtime/sensors.h`):
 this FT3168 reports 0 for both its per-touch weight (0x07) and area (0x08)
@@ -293,7 +539,7 @@ Pen shape follows tldraw's draw tool: streamline the incoming points, derive a
 simulated pressure from speed (fast is light), rate-limit pressure changes so
 width does not flicker on noisy samples, then `radius = SIZE * easeOutSine(0.5 -
 THINNING * (0.5 - pressure))`. Tapered at both ends so strokes start and finish
-in a point. All the constants are `#define`s at the top of `main.c`.
+in a point. All the constants are `#define`s at the top of `firmware/apps/sketch.c`.
 
 Shake detection requires several jolts inside a rolling window rather than one
 big reading, because a single spike is indistinguishable from a firm tap. It is

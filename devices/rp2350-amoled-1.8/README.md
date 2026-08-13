@@ -1,12 +1,16 @@
 # rp2350-amoled-1.8
 
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED
-touchscreen in a small plastic puck. Currently a sketchpad: draw with a finger,
-shake to erase.
+touchscreen in a small plastic puck. A single-binary runtime holds three apps
+(a stopwatch, a sketchpad, a countdown timer) plus a menu, switched by a
+function call rather than a reboot; see `AGENTS.md` for the current shape.
 
 `AGENTS.md` says how to build, flash and work on it. `docs/decisions/` says why
 things are the way they are. This file is the bring-up log: what the hardware
-and the vendor code actually do, as opposed to what they claim to.
+and the vendor code actually do, as opposed to what they claim to. It predates
+the single-binary runtime (see its own "Bring-up log" note below on which
+vendor demo drop it applies to) and its findings are about the driver and the
+silicon, not about that later restructuring, so they still hold.
 
 ## Bring-up log
 
@@ -28,7 +32,7 @@ height is the number of them. That single fact explains all three.
 |---|---|---|---|
 | 1 | Loop bound is `i < Yend - 1`, one row short of the window it just declared, so the bottom row of every partial refresh never updates | patched in `firmware/lib/AMOLED/AMOLED_1in8.c` | [LCD-3.5#2](https://github.com/waveshareteam/RP2350-Touch-LCD-3.5/issues/2) |
 | 2 | Chip select is deasserted as soon as the DMA reports done, but that only means the PIO FIFO has been fed; the state machine is still shifting, so the tail of every transfer is truncated | patched in the same file (`AMOLED_1IN8_WaitShiftOut`) | [AMOLED-1.75#4](https://github.com/waveshareteam/RP2350-Touch-AMOLED-1.75/issues/4) |
-| 3 | Output is corrupted unless each row is a multiple of 8 pixels (16 bytes) long | our own `push_dirty()` in `main.c` | [AMOLED-1.75#3](https://github.com/waveshareteam/RP2350-Touch-AMOLED-1.75/issues/3) |
+| 3 | Output is corrupted unless each row is a multiple of 8 pixels (16 bytes) long | our own `gfx_push()` in `firmware/runtime/gfx.c` (formerly `push_dirty()` in the pre-runtime `main.c`) | [AMOLED-1.75#3](https://github.com/waveshareteam/RP2350-Touch-AMOLED-1.75/issues/3) |
 
 Two of those are patched **inside the vendor driver**, which means they are lost
 if the driver is ever re-copied from the zip. Number 3 is deliberately not:
@@ -60,8 +64,10 @@ responding, and it stops in the most confusing possible way: the chip still
 answers its WhoAmI, and the coordinate registers still hold the last real
 touch, so everything looks alive while the finger count never leaves zero.
 
-Fix, app level: write `0x00` (ACTIVE) after init. `main.c` also re-arms the
-chip if nothing has been reported for a while, which is belt and braces.
+Fix, app level: write `0x00` (ACTIVE) after init (`touch_set_active()` /
+`touch_set_active_to()` in `firmware/runtime/sensors.c`, formerly in
+`main.c`). `sensors.c` also re-arms the chip if nothing has been reported for
+a while (`touch_recover_core1()`, `TOUCH_STALL_MS`), which is belt and braces.
 
 Not filed upstream: this board's demo ships as a wiki zip with no repository,
 and the one Waveshare repo that does use an FT3168 has a different driver that
