@@ -80,6 +80,7 @@ const SOURCES = [
   join(FIRMWARE, "apps", "sketch.c"),
   join(FIRMWARE, "apps", "menu.c"),
   join(FIRMWARE, "apps", "timer.c"),
+  join(FIRMWARE, "apps", "shapes.c"),
 ];
 
 // shim/ goes FIRST: it is what makes the real firmware sources compile

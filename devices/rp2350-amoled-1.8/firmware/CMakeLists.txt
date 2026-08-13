@@ -38,6 +38,10 @@ target_sources(main PRIVATE
     apps/chrono.c
     apps/timer.c
     apps/digits.c
+    # Round-silhouette helpers (ring/wedge row math), used by menu.c's
+    # stopwatch icon. See shapes.h for why it is not also wired into
+    # timer.c yet.
+    apps/shapes.c
 
     # BOOT is not a GPIO on this part: reading it borrows the flash chip
     # select with interrupts off, so it lives in its own file with the
