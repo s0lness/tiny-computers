@@ -128,4 +128,16 @@ target_link_libraries(main PRIVATE
 pico_enable_stdio_usb(main 1)
 pico_enable_stdio_uart(main 1)
 
+# The board must never look dead just because a host opened the USB serial
+# port and is not reading it: pico-sdk's stdio_usb driver (stdio_usb.c,
+# stdio_usb_out_chars()) already bounds any ONE blocked write to
+# PICO_STDIO_USB_STDOUT_TIMEOUT_US before giving up and dropping it, default
+# 500ms. That is fine for a single stall nobody notices, but this board also
+# has a 4-second watchdog (runtime.c's RUNTIME_WATCHDOG_MS) and a once-a-
+# second profiler tick, so 500ms is a visible stutter for no benefit: a host
+# that IS draining sees a USB Full-Speed round trip in microseconds, not
+# milliseconds, so shortening this changes nothing for the case that works
+# today and removes the worst case for the one that does not.
+target_compile_definitions(main PRIVATE PICO_STDIO_USB_STDOUT_TIMEOUT_US=2000)
+
 pico_add_extra_outputs(main)

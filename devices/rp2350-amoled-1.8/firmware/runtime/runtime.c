@@ -225,6 +225,9 @@ static bool devlink_hook_app_switch(int index) {
 static uint32_t g_profLoops = 0;
 static uint32_t g_profLastMs = 0;
 static sensors_stats_t g_profLastStats;
+// TEMPORARY diagnostic: see sensors.h's sensors_debug_core1_loops() comment.
+// Remove alongside it once closed.
+static uint32_t g_profLastCore1Loops = 0;
 #endif
 
 int main(void) {
@@ -339,7 +342,7 @@ int main(void) {
             sensors_stats(&cur);
             const char *switchName = rtcore_last_switch_name();
             printf("prof app=%s switch=%luus | loops=%lu/s | touch reads=%lu timeouts=%lu drops=%lu recoveries=%lu "
-                   "| imu timeouts=%lu | pmic timeouts=%lu poweroff cmds=%lu\r\n",
+                   "| imu timeouts=%lu | pmic timeouts=%lu poweroff cmds=%lu reg10h=%02lx->%02lx | shot drops=%lu\r\n",
                    switchName ? switchName : "?",
                    (unsigned long)rtcore_last_switch_us(),
                    (unsigned long)g_profLoops,
@@ -349,7 +352,33 @@ int main(void) {
                    (unsigned long)(cur.touchRecoveries - g_profLastStats.touchRecoveries),
                    (unsigned long)(cur.imuTimeouts - g_profLastStats.imuTimeouts),
                    (unsigned long)(cur.pmicTimeouts - g_profLastStats.pmicTimeouts),
-                   (unsigned long)(cur.poweroffCmds - g_profLastStats.poweroffCmds));
+                   (unsigned long)(cur.poweroffCmds - g_profLastStats.poweroffCmds),
+                   // reg10h: NOT a delta, unlike everything else on this line - a
+                   // register readback is a snapshot, not a count, and printing a
+                   // difference of two register values would be meaningless. Reads
+                   // ffffffff->ffffffff until the first shutdown attempt this boot
+                   // (see sensors.h's sensors_stats_t comment on the two sentinels);
+                   // a real attempt prints actual register byte values instead.
+                   (unsigned long)cur.poweroffRegBefore,
+                   (unsigned long)cur.poweroffRegAfter,
+                   // shot drops: cumulative, not a delta - see devlink.h's
+                   // devlink_dropped_shots() comment. Bumped only when a SHOT
+                   // reply's body was cut short because the host stopped
+                   // draining the port mid-transfer (devlink.c's
+                   // DEVLINK_SHOT_BUDGET_US); this is the fix for the freeze
+                   // that used to reboot the board in exactly that situation
+                   // (see devlink.c's top-of-block comment), and this counter
+                   // is what proves a truncation happened rather than nothing
+                   // running at all.
+                   (unsigned long)devlink_dropped_shots());
+            // TEMPORARY diagnostic line, separate from the one above so it
+            // is trivially greppable and trivially removable. Remove
+            // alongside g_core1Loops/sensors_debug_core1_loops() once closed.
+            uint32_t core1Loops = sensors_debug_core1_loops();
+            printf("DBG core1 loops=%lu/s (raw=%lu)\r\n",
+                   (unsigned long)(core1Loops - g_profLastCore1Loops),
+                   (unsigned long)core1Loops);
+            g_profLastCore1Loops = core1Loops;
             g_profLastStats = cur;
             g_profLoops = 0;
         }

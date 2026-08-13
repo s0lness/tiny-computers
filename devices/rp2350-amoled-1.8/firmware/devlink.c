@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "pico/stdlib.h"
+#include "pico/time.h"
 
 #define DEVLINK_VERSION   1
 #define DEVLINK_LINE_MAX  96   // "MOVE -32768 -32768" style commands are
@@ -22,9 +23,51 @@
                                  // dropped and resynced on the next line.
 #define DEVLINK_B64_WRAP  76   // chars per base64 line, per the spec
 
+// A SHOT reply streams the whole framebuffer's base64 body through putchar()
+// (devlink_b64_flush_group() below), one call per output character, tens of
+// thousands of times for a full screenshot. pico-sdk's stdio_usb driver
+// bounds any ONE of those calls (see CMakeLists.txt's
+// PICO_STDIO_USB_STDOUT_TIMEOUT_US), but not their SUM: a host that asked
+// for a screenshot and then stopped draining the port (closed its reader,
+// crashed, or was never going to read at all) left every one of those calls
+// falling straight through its own bound, and the walk that drives them
+// never returns to devlink_poll(), never mind runtime.c's main loop -
+// which is where the watchdog lives. Measured on real hardware: this is what
+// actually rebooted the board when a client held the port open across a
+// SHOT request without draining it (see this file's git history and
+// tools/README-devlink.md); a bare idle open, with no SHOT in flight, does
+// not reproduce it, because there is no loop like this one anywhere else in
+// the firmware.
+//
+// The fix is a wall-clock budget on the reply as a whole, checked once per
+// base64 group (every 3 input bytes) rather than every character: cheap
+// enough that a draining host never notices it, and once it trips, the rest
+// of the walk still runs (pure CPU against the framebuffer, no I/O) but
+// produces no more output, so it finishes in microseconds instead of
+// blocking through the timeout on every remaining character one at a time.
+// 750ms is generous next to what a real, draining host actually needs
+// (tools/README-devlink.md's own bring-up decoded a full screenshot with
+// room to spare) and comfortably inside runtime.c's 4000ms watchdog even
+// after everything else that loop iteration still has to do.
+#define DEVLINK_SHOT_BUDGET_US 750000
+
 static devlink_hooks_t g_hooks;
 static char g_line[DEVLINK_LINE_MAX];
 static int g_lineLen = 0;
+
+// Bumped once per SHOT reply whose body was cut short by the budget above.
+// Surfaced by runtime.c's profiler line (via devlink_dropped_shots()) so a
+// truncated screenshot is never silently mistaken for a dead device: this
+// counter keeps climbing, once a second, on the same port, whether or not
+// anyone is actively driving devlink right now - see sensors_inject_key()'s
+// "THE HONESTY REQUIREMENT" comment in sensors.h for the same principle
+// applied elsewhere in this codebase: a dropped signal must say so, not go
+// quiet.
+static uint32_t g_droppedShots = 0;
+
+uint32_t devlink_dropped_shots(void) {
+    return g_droppedShots;
+}
 
 // Set by the CHORD command, serviced at the top of the NEXT devlink_poll()
 // call. See devlink.h's devlink_poll() comment for why this cannot just
@@ -96,10 +139,26 @@ typedef struct {
     uint8_t buf[3];
     int bufLen;
     int lineCol;
+    uint64_t deadlineUs; // set once, at the start of devlink_send_shot()
+    bool truncated;      // latched true the first time the deadline is missed
 } devlink_b64_stream_t;
 
 static void devlink_b64_flush_group(devlink_b64_stream_t *s) {
     if (s->bufLen == 0) return;
+    if (s->truncated) {
+        // Already dropping: skip the encode too, not just the write. The
+        // RLE walk driving this keeps running (see devlink_rle_walk()) so it
+        // can still finish and let devlink_send_shot() send its closing
+        // "END", but nothing past this point costs more than a comparison.
+        s->bufLen = 0;
+        return;
+    }
+    if (time_us_64() > s->deadlineUs) {
+        s->truncated = true;
+        g_droppedShots++;
+        s->bufLen = 0;
+        return;
+    }
     uint32_t n = ((uint32_t)s->buf[0] << 16) |
                  ((uint32_t)(s->bufLen > 1 ? s->buf[1] : 0) << 8) |
                  (uint32_t)(s->bufLen > 2 ? s->buf[2] : 0);
@@ -145,9 +204,16 @@ static void devlink_send_shot(void) {
     devlink_b64_stream_t s;
     s.bufLen = 0;
     s.lineCol = 0;
+    s.deadlineUs = time_us_64() + DEVLINK_SHOT_BUDGET_US;
+    s.truncated = false;
     devlink_rle_walk(devlink_rle_emit_b64_cb, &s);
     devlink_b64_flush_group(&s); // final partial group, if any
     if (s.lineCol != 0) printf("\r\n");
+    // Still send END even when truncated: tools/dev.ts already treats a
+    // short base64 body as a warning (decoded byte count vs. the header's
+    // promised count), rather than a hang waiting for a terminator that
+    // never comes. Nothing new to teach the host tool - see this file's
+    // top-of-block comment for where the truncation itself is counted.
     printf("END\r\n");
 }
 

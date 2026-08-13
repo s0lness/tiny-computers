@@ -221,6 +221,22 @@ the header as a sanity check (it should exactly match the decoded byte
 length; `tools/dev.ts` warns if it does not, since that means the transfer
 was corrupted or truncated).
 
+**A `SHOT` reply can end short of its own header on purpose.** Measured on
+real hardware: a client that sent `SHOT` and then stopped draining the port
+(closed its reader, crashed, or a bare terminal that opened the port and
+never read) used to reboot the board, because the body is written one
+character at a time (`putchar()` per output char) and pico-sdk's own
+per-write timeout bounds each of those individually, not their sum -
+runtime.c's 4-second watchdog was what actually ended the stall. `devlink.c`
+now caps the whole reply at `DEVLINK_SHOT_BUDGET_US` (750ms) of wall-clock
+time; past it, the remaining base64 body is silently dropped and the reply
+still closes with `END`, so a decoder sees exactly the "transfer was
+corrupted or truncated" case the paragraph above already tells it to check
+for - nothing new to implement host-side. `runtime.c`'s profiler line
+carries a cumulative `shot drops=N` counter (via `devlink_dropped_shots()`)
+so a truncated `SHOT` is never confused with a dead board even by someone
+just watching the console, not running `tools/dev.ts` at all.
+
 ### KEY, BOOT and CHORD
 
 These exist so an agent can drive the two physical buttons neither `devlink`

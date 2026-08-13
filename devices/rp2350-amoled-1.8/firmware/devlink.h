@@ -92,9 +92,16 @@ void devlink_init(const devlink_hooks_t *hooks);
 
 // Call once per main-loop iteration. Non-blocking: reads whatever is already
 // buffered on stdin with getchar_timeout_us(0) and returns as soon as
-// nothing more is waiting. The one exception is emitting a SHOT reply, which
-// is bounded (at most w*h RLE pairs, base64-encoded) and does not wait on
-// anything external, so it cannot stall the caller's main loop indefinitely.
+// nothing more is waiting. The one exception is emitting a SHOT reply: it is
+// bounded in SIZE (at most w*h RLE pairs, base64-encoded) but that alone does
+// not bound it in TIME against a host that opened the port and is not
+// draining it - every one of the many thousand putchar() calls a full
+// screenshot makes falls through pico-sdk's own per-write timeout
+// individually, and their sum blew well past runtime.c's 4-second watchdog
+// on real hardware before devlink.c's DEVLINK_SHOT_BUDGET_US existed. That
+// budget is the actual bound now: past it, the rest of the reply's body is
+// dropped (counted by devlink_dropped_shots() below) rather than attempted,
+// so devlink_poll() always returns.
 //
 // CHORD (see tools/README-devlink.md) needs BOOT to still read "held" on the
 // next call to rtcore_tick(), then released after. Since devlink_poll() must
@@ -105,5 +112,14 @@ void devlink_init(const devlink_hooks_t *hooks);
 // to land after, not during, the tick that consumed the held state. No sleep
 // anywhere in this file.
 void devlink_poll(void);
+
+// How many SHOT replies have had their body cut short because the host
+// stopped draining the port mid-transfer (see devlink_poll()'s comment
+// above and devlink.c's DEVLINK_SHOT_BUDGET_US). runtime.c's profiler line
+// reports this once a second so a truncated screenshot is never silently
+// mistaken for a dead device: a climbing counter next to an otherwise-stalled
+// exchange means output is being dropped on purpose, not that nothing is
+// running.
+uint32_t devlink_dropped_shots(void);
 
 #endif // DEVLINK_H
