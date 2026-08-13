@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>rp2350-amoled-1.8 emulator</title>
+    <title>device emulator</title>
     <!-- No <link rel="icon">: Bun's HTML bundler tries to resolve it as a
          build asset and fails the whole page. The browser auto-requests
          /favicon.ico, unhandled here on purpose (this is a dev tool, not a
@@ -14,45 +14,94 @@
   <body>
     <div id="root">
       <div class="topbar">
-        <b>rp2350-amoled-1.8</b> <span class="muted">device emulator</span>
+        <b id="deviceName">device emulator</b>
+        <span id="reloadDot" class="reload-dot" title="watching the wasm build for changes"></span>
+        <span id="reloadStatus" class="hint reload-status"></span>
         <span class="spacer"></span>
         <button id="btnPng" class="btn sec sm">save png</button>
-        <button id="btnDefines" class="btn sec sm">copy #defines</button>
+        <button id="btnFreeze" class="btn sec sm">freeze</button>
+        <button id="btnSaveTrace" class="btn sec sm">save trace</button>
+        <label class="btn sec sm filebtn">load trace<input id="traceFileInput" type="file" accept="application/json" /></label>
         <button id="btnQuit" class="btn danger sm">quit</button>
       </div>
+
+      <div id="wasmError" class="wasm-error hidden"></div>
 
       <div class="layout">
         <div id="stage" class="stage">
           <div id="deviceWrap" class="device-wrap">
             <div id="bezel" class="bezel">
-              <canvas id="panel" width="368" height="448" class="panel"></canvas>
-              <div id="pwrBtn" class="side-btn pwr" title="PWR (short press / hold 1.5s / hold 6s)"></div>
-              <div id="bootBtn" class="side-btn boot" title="BOOT (not wired at runtime)"></div>
-              <div id="offOverlay" class="off-overlay hidden">off</div>
+              <canvas id="panel" class="panel"></canvas>
+              <canvas id="overlay" class="overlay-canvas"></canvas>
+              <!-- buttons are inserted here at runtime, one per emu_device() entry -->
             </div>
           </div>
-          <div class="stage-controls">
-            <label class="rotlabel">rotate
-              <input id="rotate" type="range" min="-25" max="25" step="1" value="0" />
-            </label>
-            <button id="btnShake" class="btn sec sm">shake (erase)</button>
-            <span id="pwrEvent" class="pill hint"></span>
-          </div>
-          <div id="stats" class="stats"></div>
         </div>
 
         <div class="side controls">
+          <h3>device</h3>
+          <div id="deviceInfo" class="device-info"></div>
+
+          <h3>buttons</h3>
+          <div id="buttonShortcuts" class="shortcut-list"></div>
+          <div class="hint">hold two keys together to perform a two-button gesture; a mouse can only hold one button at a time</div>
+
+          <div id="gesturesWrap" class="hidden">
+            <h3>gestures</h3>
+            <div id="gesturesList" class="gestures-list"></div>
+          </div>
+
+          <h3>sensors</h3>
+          <div id="sensorControls" class="sensor-controls"></div>
+          <div id="shakeReadout" class="hint"></div>
+
+          <div id="appStripWrap" class="hidden">
+            <h3>apps</h3>
+            <div id="appStrip" class="app-strip"></div>
+          </div>
+
+          <h3>touch contact size</h3>
+          <div id="contactPreset" class="segtog"></div>
+          <div id="contactInfo" class="hint"></div>
+
           <h3>touch controller</h3>
+          <div class="toggle-row">
+            <input id="touchDefectsOn" type="checkbox" />
+            <label for="touchDefectsOn">simulate controller defects (off = clean pass-through)</label>
+          </div>
           <div id="touchControls"></div>
+          <button id="btnResetTouch" class="btn sec sm" style="margin-top:6px">reset to defaults</button>
 
-          <h3>pen</h3>
-          <div id="penSliders"></div>
+          <h3>console</h3>
+          <div id="consolePane" class="console-pane"></div>
 
-          <h3>touch robustness</h3>
-          <div id="touchSliders"></div>
-
-          <button id="btnReset" class="btn sec sm" style="margin-top:10px">reset to firmware defaults</button>
+          <h3>trace</h3>
+          <div id="traceStatus" class="hint"></div>
         </div>
+      </div>
+
+      <!-- Fixed to the viewport, not the device: the puck can be dragged
+           anywhere on the stage and stays the visual centre of the page,
+           but these controls (and their readouts) always stay put at the
+           bottom centre. -->
+      <div class="bottom-bar">
+        <div class="stage-controls">
+          <span class="segtog" id="rotQuick">
+            <button data-deg="0" class="active">0&deg;</button>
+            <button data-deg="90">90&deg;</button>
+            <button data-deg="-90">-90&deg;</button>
+            <button data-deg="180">180&deg;</button>
+          </span>
+          <label class="rotlabel">tilt
+            <input id="tilt" type="range" min="-25" max="25" step="1" value="0" />
+          </label>
+          <button id="btnPause" class="btn sec sm">pause</button>
+          <button id="btnStep" class="btn sec sm">step</button>
+          <span id="replayBar" class="pill hint hidden"></span>
+          <button id="btnStopReplay" class="btn sec sm hidden">stop replay</button>
+        </div>
+        <div id="touchReadout" class="readout"></div>
+        <div id="pushReadout" class="readout"></div>
       </div>
     </div>
     <script type="module" src="./main.ts"></script>

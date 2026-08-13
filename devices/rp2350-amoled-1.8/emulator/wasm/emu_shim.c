@@ -458,7 +458,9 @@ void emu_app_switch(int index) {
  * table in runtime_core.c makes it show up here too, same as decision
  * 0003's "adding an app means adding it to one table, and it appears in
  * both" promise. */
-static char g_deviceJson[512];
+// 512 was tight even before "gestures" existed; the gesture's "how" prose
+// alone is over 200 bytes. 1024 leaves real headroom.
+static char g_deviceJson[1024];
 
 static char *json_append(char *p, const char *s) {
     while (*s) *p++ = *s++;
@@ -482,7 +484,18 @@ int emu_device(void) {
         p = json_append(p, g_apps[i]->name);
         p = json_append(p, "\"");
     }
-    p = json_append(p, "]}");
+    p = json_append(p, "],");
+    // The one compound gesture this runtime recognises (runtime_core.c,
+    // "the BOOT+PWR long-press chord"): hold BOOT, then hold PWR until its
+    // long-press verdict lands while BOOT is still down. Described in
+    // device terms, not emulator terms, per emu_abi.h's note on
+    // gestures[].how - the emulator supplies its own keyboard shortcuts for
+    // "which key is BOOT" at render time.
+    p = json_append(p, "\"gestures\":[{\"id\":\"menu\",\"label\":\"menu\",");
+    p = json_append(p, "\"how\":\"Hold BOOT, then also hold PWR. Keep both held until PWR ");
+    p = json_append(p, "registers a long press (about 1.5s): that opens the app menu. ");
+    p = json_append(p, "Do the same chord again to close it and return to what was running.\"}]");
+    p = json_append(p, "}");
     *p = '\0';
     return (int)(intptr_t)g_deviceJson;
 }

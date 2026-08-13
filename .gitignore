@@ -20,6 +20,12 @@ capture/frames/
 *.MOV
 *.mp4
 
+# Emulator debugging artifacts: freeze bundles and input traces, written by
+# emulator/server.ts to a predictable path for an agent to read, not meant
+# to be committed (see devices/*/emulator/server.ts, /api/freeze /api/trace)
+emulator/freezes/
+emulator/traces/
+
 # Secrets, per the house convention
 .secrets.env
 *.secrets.env

@@ -68,7 +68,14 @@
  *   ],
  *   "touch":   { "points": 1 },
  *   "sensors": [ { "id": "shake", "kind": "event" } ],
- *   "apps":    [ "chrono", "draw", "timer" ]
+ *   "apps":    [ "chrono", "draw", "timer" ],
+ *   "gestures": [
+ *     { "id": "menu", "label": "menu",
+ *       "how": "Hold BOOT, then also hold PWR. Keep both held until PWR "
+ *              "registers a long press (about 1.5s): that opens the app "
+ *              "menu. Do the same chord again to close it and return to "
+ *              "what was running." }
+ *   ]
  * }
  *
  * Notes on the fields that are easy to get wrong:
@@ -94,6 +101,19 @@
  *   apps          optional. Purely so the emulator can offer a jump-to-app
  *                 control. A firmware with no such concept omits it, and the
  *                 emulator shows no strip.
+ *
+ *   gestures      optional. A compound gesture recognised across more than
+ *                 one input (a chord, a hold-then-something) belongs to no
+ *                 single button or sensor, so there is nowhere else in this
+ *                 JSON to hang a description of it on. "how" is prose
+ *                 describing the physical gesture in device terms (which
+ *                 buttons, held how); it is NOT expected to name a
+ *                 particular emulator's keyboard shortcuts, since those are
+ *                 assigned dynamically per session (see the emulator's
+ *                 shortcuts.ts) and would go stale here. A firmware with no
+ *                 gesture beyond its individual buttons/sensors omits this,
+ *                 and the emulator says plainly that none is declared
+ *                 rather than guessing at one.
  */
 int emu_device(void);
 

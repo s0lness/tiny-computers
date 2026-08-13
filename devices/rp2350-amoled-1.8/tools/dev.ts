@@ -3,9 +3,11 @@
 //
 // Talks to the RP2350's devlink firmware module (firmware/devlink.c) over
 // its USB CDC serial port. See tools/README-devlink.md for the wire
-// protocol and for the important caveat: the serial bridge below has not
-// been run against real hardware (the port was in use by another process
-// while this was written). Read that file before trusting this blind.
+// protocol. This has been run against real hardware; every read loop below
+// tolerates the runtime's own debug prints (profiler ticks, app-switch and
+// stroke logs, and anything else printed on the same port) by skipping any
+// line that does not match the reply shape it is currently waiting for,
+// rather than by assuming the first line back is the answer.
 //
 // Bun has no built-in serial port support on Windows and this repo carries
 // no native serial dependency, so this spawns a small PowerShell child
@@ -173,6 +175,57 @@ export async function readLineWithTimeout(
   }
 }
 
+// devlink shares its USB CDC port with the runtime's own debug prints (the
+// once-a-second profiler line, app-switch logs, sketchpad stroke traces, and
+// whatever gets added later): none of that is part of the devlink protocol,
+// so a reader waiting for a specific reply must not treat the first line it
+// receives as the answer. expectLine() reads lines until one matches the
+// shape the caller is waiting for, discarding anything else as noise, all
+// within a single overall deadline (noise does not get its own fresh
+// timeout budget, or a steady trickle of unrelated prints could stall a
+// caller indefinitely).
+//
+// Matching is done positively against the expected shape (not by
+// blacklisting known noise prefixes like "prof"/"switch"/"stroke") so a new
+// kind of debug print the firmware starts emitting later is tolerated the
+// same way without this file needing to change.
+export async function expectLine(
+  lines: LineReader,
+  shape: RegExp,
+  timeoutMs: number,
+  what = "reply"
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(
+        `no ${what} within ${timeoutMs}ms (is the device connected on ${PORT}? another process holding the port?)`
+      );
+    }
+    const line = await readLineWithTimeout(lines, remaining, what);
+    if (shape.test(line)) return line;
+    // Not the shape we are waiting for: noise sharing the port. Skip it and
+    // keep waiting against the same overall deadline.
+  }
+}
+
+// A devlink SHOT reply body line is a run of complete base64 4-char groups:
+// the firmware only ever wraps a line on a group boundary (DEVLINK_B64_WRAP
+// is 76, a multiple of 4), so a real payload line's length is always a
+// positive multiple of 4 and every character is in the base64 alphabet,
+// with '=' padding possible only in the last 1-2 characters of the very
+// last line. A profiler tick or any other debug print landing between two
+// payload lines will almost certainly contain a space, a pipe, or an '='
+// sign outside that trailing position, and will fail this check, so it is
+// safe to treat "not valid base64 shape" as "noise, skip it" rather than
+// "corrupted transfer".
+const BASE64_LINE_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
+export function isBase64Line(line: string): boolean {
+  return line.length > 0 && line.length % 4 === 0 && BASE64_LINE_RE.test(line);
+}
+
 // ---------------------------------------------------------------------
 // SHOT decoding: base64 -> RLE bytes -> greyscale pixels
 // ---------------------------------------------------------------------
@@ -306,7 +359,7 @@ export function encodeGreyPNG(pixels: Uint8Array, w: number, h: number): Uint8Ar
 interface Bridge {
   lines: LineReader;
   send(cmd: string): Promise<void>;
-  close(): void;
+  close(): Promise<void>;
 }
 
 let activeBridge: Bridge | null = null;
@@ -337,7 +390,15 @@ async function openBridge(): Promise<Bridge> {
       proc.stdin.write(cmd + "\n");
       await proc.stdin.flush();
     },
-    close() {
+    // The COM port is exclusive: as long as the PowerShell bridge process is
+    // still alive, it still holds the port open, and the next invocation of
+    // this tool will fail to open it. kill() only requests termination; it
+    // does not wait for the process (and with it, the OS handle on the
+    // port) to actually go away. So close() waits for proc.exited (bounded,
+    // in case the process is somehow wedged) before returning, and every
+    // caller awaits close() in its finally block, so the port is genuinely
+    // free again by the time this process exits.
+    async close() {
       try {
         proc.stdin.end();
       } catch {
@@ -347,6 +408,11 @@ async function openBridge(): Promise<Bridge> {
         proc.kill();
       } catch {
         // already dead
+      }
+      try {
+        await Promise.race([proc.exited, Bun.sleep(2000)]);
+      } catch {
+        // ignore: we tried to wait cleanly, but we are closing regardless
       }
       if (activeBridge === bridge) activeBridge = null;
     },
@@ -374,11 +440,45 @@ async function cmdPing() {
   const bridge = await openBridge();
   try {
     await bridge.send("PING");
-    const reply = await readLineWithTimeout(bridge.lines, 3000, "PING reply");
+    const reply = await expectLine(
+      bridge.lines,
+      /^(OK devlink \d+ \d+ \d+|ERR .*)$/,
+      3000,
+      "PING reply"
+    );
     console.log(reply);
     if (!reply.startsWith("OK")) process.exitCode = 1;
   } finally {
-    bridge.close();
+    await bridge.close();
+  }
+}
+
+async function cmdApp() {
+  const bridge = await openBridge();
+  try {
+    await bridge.send("APP");
+    const reply = await expectLine(bridge.lines, /^(APP -?\d+ \S+|ERR .*)$/, 3000, "APP reply");
+    console.log(reply);
+    if (!reply.startsWith("APP")) process.exitCode = 1;
+  } finally {
+    await bridge.close();
+  }
+}
+
+async function cmdSwitch(args: string[]) {
+  const idx = Number(args[0]);
+  if (!Number.isFinite(idx)) {
+    console.error("usage: bun tools/dev.ts switch <index>");
+    process.exit(1);
+  }
+  const bridge = await openBridge();
+  try {
+    await bridge.send(`SWITCH ${idx}`);
+    const reply = await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "SWITCH reply");
+    console.log(reply);
+    if (!reply.startsWith("OK")) process.exitCode = 1;
+  } finally {
+    await bridge.close();
   }
 }
 
@@ -390,7 +490,12 @@ async function cmdShot(outPath: string | undefined) {
   const bridge = await openBridge();
   try {
     await bridge.send("SHOT");
-    const header = await readLineWithTimeout(bridge.lines, 5000, "SHOT header");
+    const header = await expectLine(
+      bridge.lines,
+      /^(SHOT \d+ \d+ \d+|ERR .*)$/,
+      5000,
+      "SHOT header"
+    );
     const m = /^SHOT (\d+) (\d+) (\d+)$/.exec(header);
     if (!m) {
       console.error(`unexpected reply to SHOT: ${header}`);
@@ -401,10 +506,16 @@ async function cmdShot(outPath: string | undefined) {
     const h = Number(m[2]);
     const rleByteCount = Number(m[3]);
 
+    // A profiler tick (or any other debug print) can land in the middle of
+    // the base64 stream, between two real payload lines. Every non-noise
+    // line here is a run of complete base64 groups (see isBase64Line's
+    // comment), so a line that does not have that shape is skipped rather
+    // than appended, and does not corrupt the accumulated stream.
     let b64 = "";
     for (;;) {
       const line = await readLineWithTimeout(bridge.lines, 5000, "SHOT body");
       if (line === "END") break;
+      if (!isBase64Line(line)) continue;
       b64 += line;
     }
 
@@ -419,7 +530,7 @@ async function cmdShot(outPath: string | undefined) {
     await Bun.write(outPath, png);
     console.log(`wrote ${outPath} (${w}x${h}, ${png.length} bytes)`);
   } finally {
-    bridge.close();
+    await bridge.close();
   }
 }
 
@@ -434,11 +545,11 @@ async function cmdTap(args: string[]) {
   const bridge = await openBridge();
   try {
     await bridge.send(`TAP ${x} ${y}`);
-    const reply = await readLineWithTimeout(bridge.lines, 3000, "TAP reply");
+    const reply = await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "TAP reply");
     console.log(reply);
     if (!reply.startsWith("OK")) process.exitCode = 1;
   } finally {
-    bridge.close();
+    await bridge.close();
   }
 }
 
@@ -446,11 +557,11 @@ async function cmdErase() {
   const bridge = await openBridge();
   try {
     await bridge.send("ERASE");
-    const reply = await readLineWithTimeout(bridge.lines, 3000, "ERASE reply");
+    const reply = await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "ERASE reply");
     console.log(reply);
     if (!reply.startsWith("OK")) process.exitCode = 1;
   } finally {
-    bridge.close();
+    await bridge.close();
   }
 }
 
@@ -468,18 +579,18 @@ async function cmdDraw(args: string[]) {
   const bridge = await openBridge();
   try {
     await bridge.send(`DOWN ${points[0].x} ${points[0].y}`);
-    console.log(await readLineWithTimeout(bridge.lines, 3000, "DOWN reply"));
+    console.log(await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "DOWN reply"));
 
     for (let i = 1; i < points.length; i++) {
       await Bun.sleep(20); // paced like a real finger, not a single burst
       await bridge.send(`MOVE ${points[i].x} ${points[i].y}`);
-      console.log(await readLineWithTimeout(bridge.lines, 3000, "MOVE reply"));
+      console.log(await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "MOVE reply"));
     }
 
     await bridge.send("UP");
-    console.log(await readLineWithTimeout(bridge.lines, 3000, "UP reply"));
+    console.log(await expectLine(bridge.lines, /^(OK|ERR .*)$/, 3000, "UP reply"));
   } finally {
-    bridge.close();
+    await bridge.close();
   }
 }
 
@@ -501,7 +612,7 @@ async function cmdLog(secArg: string | undefined) {
       console.log(line);
     }
   } finally {
-    bridge.close();
+    await bridge.close();
   }
 }
 
@@ -512,6 +623,8 @@ function printUsage() {
       "",
       "  ping                          check the device is alive",
       "  shot <out.png>                grab a screenshot",
+      "  app                           report the running app",
+      "  switch <index>                switch to g_apps[index]",
       "  tap <x> <y>                   tap once",
       "  draw x1,y1 x2,y2 ...          down, move through each point, up",
       "  erase                         trigger the wipe animation",
@@ -530,6 +643,12 @@ async function main() {
       break;
     case "shot":
       await cmdShot(rest[0]);
+      break;
+    case "app":
+      await cmdApp();
+      break;
+    case "switch":
+      await cmdSwitch(rest);
       break;
     case "tap":
       await cmdTap(rest);

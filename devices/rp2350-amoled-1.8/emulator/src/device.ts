@@ -1,12 +1,13 @@
-// The device shell: dragging the puck around the page, rotating it, and the
-// two side buttons. None of this is a port of firmware code (the puck body
-// does not exist in main.c); it is the physical mock the panel sits inside.
+// The puck chrome: dragging it around the page, rotating it, and whatever
+// buttons the firmware declared. Nothing in here is a port of firmware
+// code or knows about a specific device; button shape, position and
+// press/hold behaviour all come from emu_device()'s declaration (see
+// wasm.ts's DeviceButton and main.ts's chrome-building).
 //
-// Dragging and rotating are scoped to explicit elements the user grabs
-// directly (the bezel background, a rotate handle), never the whole
-// document, so this does not fight markup's own pointer handling when the
-// page is served through markup/serve.ts (see README, "Serving through
-// markup").
+// Dragging is scoped to an explicit element the user grabs directly (the
+// bezel background), never the whole document, so this does not fight
+// markup's own pointer handling when the page is served through
+// markup/serve.ts (see README, "Serving through markup").
 
 export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement): void {
   let dragging = false;
@@ -39,57 +40,98 @@ export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement): void {
   bezel.addEventListener("pointercancel", stop);
 }
 
-export interface PwrEvents {
-  onShort: () => void;
-  onLong: () => void; // fires once, at 1.5s held (AXP2101 long-press IRQ threshold)
-  onHardOff: () => void; // fires once, at 6s held (AXP2101 hard power-off threshold)
+export interface ButtonEvents {
+  onDown?: () => void;
+  onUp?: () => void;
+  // Fired on release, after onUp: isLong tells the module which verdict
+  // this press earned. Only meaningful (and only called by main.ts) for a
+  // button that declared longPressMs; a button without one is a plain
+  // level switch and the firmware decides click/hold itself, exactly as
+  // real GPIO would.
+  onVerdict?: (isLong: boolean) => void;
 }
 
-// PWR button press-and-hold: short (<1.5s), long (>=1.5s, fires at the
-// threshold, still held), hard-off (>=6s). Mirrors the AXP2101 PMIC
-// thresholds noted in main.c's buttons_poll() comment (REG 27H: long-press
-// IRQ at 1.5s, hard cutoff at 6s).
-export function wirePwrButton(btn: HTMLElement, events: PwrEvents): void {
-  const LONG_MS = 1500;
-  const HARDOFF_MS = 6000;
-  let downAt = 0;
-  let longTimer: ReturnType<typeof setTimeout> | null = null;
-  let hardTimer: ReturnType<typeof setTimeout> | null = null;
+export interface WiredButton {
+  down(): void;
+  up(): void;
+}
 
-  function clearTimers() {
+// Generic press-and-hold wiring: down fires immediately, a long verdict
+// fires once at longPressMs while still held (if longPressMs is given),
+// and a verdict fires on release either way (long if the threshold was
+// already reached, short otherwise). A button with no longPressMs always
+// gets a "short" verdict on release, immediately, exactly matching a plain
+// button that has no concept of a hold at all.
+export function wireButton(el: HTMLElement, events: ButtonEvents, longPressMs?: number): WiredButton {
+  let longFired = false;
+  let longTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function clearTimer() {
     if (longTimer) { clearTimeout(longTimer); longTimer = null; }
-    if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
   }
 
-  btn.addEventListener("pointerdown", (e) => {
-    downAt = performance.now();
-    btn.classList.add("pressed");
-    btn.setPointerCapture(e.pointerId);
-    longTimer = setTimeout(() => { btn.classList.add("long"); events.onLong(); }, LONG_MS);
-    hardTimer = setTimeout(() => { events.onHardOff(); }, HARDOFF_MS);
-  });
-  btn.addEventListener("pointerup", () => {
-    const held = performance.now() - downAt;
-    btn.classList.remove("pressed", "long");
-    clearTimers();
-    if (held < LONG_MS) events.onShort();
-  });
-  btn.addEventListener("pointercancel", () => {
-    btn.classList.remove("pressed", "long");
-    clearTimers();
-  });
+  function down() {
+    if (el.classList.contains("pressed")) return; // already down (e.g. key auto-repeat)
+    longFired = false;
+    el.classList.add("pressed");
+    events.onDown?.();
+    if (longPressMs !== undefined) {
+      longTimer = setTimeout(() => {
+        longFired = true;
+        el.classList.add("long");
+        events.onVerdict?.(true);
+      }, longPressMs);
+    }
+  }
+  function up() {
+    if (!el.classList.contains("pressed")) return;
+    el.classList.remove("pressed", "long");
+    clearTimer();
+    events.onUp?.();
+    if (!longFired) events.onVerdict?.(false);
+  }
+
+  el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); down(); e.preventDefault(); });
+  el.addEventListener("pointerup", up);
+  el.addEventListener("pointercancel", up);
+
+  return { down, up };
 }
 
-// BOOT is wired only to the RP2350's bootloader-entry strap, sampled once
-// at power-on; the firmware itself never reads it at runtime (confirmed on
-// hardware, main.c's button-hunt comment). So this is inert by design, a
-// press-feedback flash and nothing else.
-export function wireBootButton(btn: HTMLElement): void {
-  btn.addEventListener("pointerdown", (e) => {
-    btn.classList.add("pressed");
-    btn.setPointerCapture(e.pointerId);
-  });
-  const stop = () => btn.classList.remove("pressed");
-  btn.addEventListener("pointerup", stop);
-  btn.addEventListener("pointercancel", stop);
+const BTN_LENGTH_PX = 40;
+const BTN_THICKNESS_PX = 8;
+const BTN_OFFSET_PX = -6; // how far it protrudes past the bezel edge
+
+// Creates the DOM element for one declared button and positions it along
+// its declared edge, at its declared fraction (0..1). Position is real
+// geometry, not decoration: emu_abi.h calls out button position as "a real
+// source of confusion when a device is held rotated, and a diagram beats a
+// paragraph", so this IS the diagram.
+export function createButtonElement(
+  edge: "left" | "right" | "top" | "bottom",
+  at: number,
+  bezelWidthPx: number,
+  bezelHeightPx: number
+): HTMLDivElement {
+  const el = document.createElement("div");
+  el.className = `dev-btn edge-${edge}`;
+  const clampedAt = Math.max(0, Math.min(1, at));
+  if (edge === "left" || edge === "right") {
+    const top = clampedAt * Math.max(0, bezelHeightPx - BTN_LENGTH_PX);
+    el.style.top = `${top}px`;
+    el.style.height = `${BTN_LENGTH_PX}px`;
+    el.style.width = `${BTN_THICKNESS_PX}px`;
+    el.style[edge] = `${BTN_OFFSET_PX}px`;
+  } else {
+    const left = clampedAt * Math.max(0, bezelWidthPx - BTN_LENGTH_PX);
+    el.style.left = `${left}px`;
+    el.style.width = `${BTN_LENGTH_PX}px`;
+    el.style.height = `${BTN_THICKNESS_PX}px`;
+    el.style[edge] = `${BTN_OFFSET_PX}px`;
+  }
+  return el;
+}
+
+export function applyRotation(bezel: HTMLElement, totalDeg: number): void {
+  bezel.style.transform = `rotate(${totalDeg}deg)`;
 }
