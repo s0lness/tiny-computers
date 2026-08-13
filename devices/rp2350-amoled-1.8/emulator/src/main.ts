@@ -68,6 +68,13 @@ const pushOverlay = new PushOverlay();
 const touchOverlay = new TouchOverlay();
 const shortcuts = new ShortcutRegistry();
 const windowShake = new WindowShakeDetector();
+// A second instance of the SAME detector shape, fed from dragging the puck
+// itself on the page (device.ts's makeDraggable, onDrag callback) rather
+// than the browser window's OS position. This is the reliable shake path:
+// see its wiring in wireStaticUI for why the window path cannot be trusted
+// on Windows (a real titlebar drag can stop the renderer from getting
+// animation frames at all, which no threshold tuning fixes).
+const puckDragShake = new WindowShakeDetector();
 const puckMotion = new PuckMotion();
 let shakeSensorIndex = -1;
 let centeredOnce = false;
@@ -578,7 +585,11 @@ function updateDiagStrip(): void {
     parts.push(`${lastTouchMapped.panel.x},${lastTouchMapped.panel.y}`);
   }
   parts.push(`push ${pushOverlay.lastCount}×${pushOverlay.lastWidth}px`);
-  parts.push(`shake ${windowShake.lastJoltCount}/${windowShake.cfg.joltMinCount}`);
+  // Whichever of the two detectors is actually seeing motion right now:
+  // this is the "tell the user whether their shaking is being seen at
+  // all" readout, and a person only ever tries one gesture at a time.
+  const shakeCount = Math.max(windowShake.lastJoltCount, puckDragShake.lastJoltCount);
+  parts.push(`shake ${shakeCount}/${windowShake.cfg.joltMinCount}`);
   if (device) parts.push(device.panel.format);
   parts.push(`${recorder.events.length.toLocaleString()} rec`);
   if (lastReloadStatus) parts.push(lastReloadStatus);
@@ -686,19 +697,45 @@ function frame(): void {
   requestAnimationFrame(frame);
 }
 
-// ---- shake by physically shaking the window ------------------------------
-// Item 2: the window jolt detector (windowshake.ts) fires the ABI event,
-// and puckMotion.tick() (called every frame above, unconditionally) reacts
-// to the SAME real screenX/screenY the detector reads, so what the page
-// shows and what the firmware receives come from one motion, not two.
+// ---- shake ----------------------------------------------------------------
+// Two independent triggers feed the same ABI call. Investigated after the
+// owner reported window-shaking simply did not work despite measuring fine
+// under a scripted (CDP-driven) window move: the firmware-receiving half
+// was confirmed working by a direct test (clicking the shake sensor button
+// erased a real scribble on the sketchpad, same emu_sensor_event() call a
+// jolt would make), which isolates the failure to "does a real drag ever
+// get detected at all". A real OS titlebar drag on Windows enters a
+// synchronous move loop (WM_ENTERSIZEMOVE) that can stop the renderer from
+// being scheduled, so requestAnimationFrame - and with it every per-frame
+// screenX/screenY sample - can simply never run while the drag is
+// happening, no matter the jolt threshold. This could not be safely
+// re-confirmed live in this environment (an attempt to drive a real OS-level
+// drag via SendInput risked, and once did, grab an unrelated window rather
+// than the test one), but it matches the owner's report exactly: window
+// shaking is not a tuning problem, it is a scheduling problem the page has
+// no way to work around. It stays wired (it may still work in some
+// environments/Chrome versions) but is no longer the recommended path.
+//
+// The reliable path: dragging the puck ITSELF is ordinary DOM pointer
+// input, which is never subject to a native modal loop and always gets
+// frames, and arguably reads as a better gesture besides (you are shaking
+// the device, not the window it happens to be displayed in). Wired below
+// via device.ts's makeDraggable onDrag callback, same jolt-detector shape.
+function fireShakeSensor(now: number, source: string): void {
+  if (!emu || shakeSensorIndex < 0 || replayer) return;
+  emu.emu_sensor_event(shakeSensorIndex);
+  recorder.record({ t: now, k: "sensor", i: shakeSensorIndex });
+  consoleLog.push(`shake: ${source} accepted`);
+}
+
 function pollWindowShake(now: number): void {
   const suppressed = liveTouch.fingers === 1 || pointerIdDown !== null;
-  const shaken = windowShake.poll(window.screenX, window.screenY, now, suppressed);
-  if (shaken && emu && shakeSensorIndex >= 0 && !replayer) {
-    emu.emu_sensor_event(shakeSensorIndex);
-    recorder.record({ t: now, k: "sensor", i: shakeSensorIndex });
-    consoleLog.push("shake: window jolt accepted");
-  }
+  if (windowShake.poll(window.screenX, window.screenY, now, suppressed)) fireShakeSensor(now, "window jolt");
+}
+
+function onPuckDrag(clientX: number, clientY: number): void {
+  const now = performance.now();
+  if (puckDragShake.poll(clientX, clientY, now, liveTouch.fingers === 1)) fireShakeSensor(now, "puck drag");
 }
 
 // ---- replay ----
@@ -860,7 +897,8 @@ function buildTouchControls(): void {
 function wireStaticUI(): void {
   wireContactSize();
 
-  makeDraggable(bezelEl, deviceWrapEl);
+  makeDraggable(bezelEl, deviceWrapEl, onPuckDrag);
+  bezelEl.title = "drag to move; shake it back and forth to trigger the shake sensor";
   wirePanelInput();
   connectLiveReload();
   wireTraceFile();

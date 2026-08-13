@@ -9,7 +9,14 @@
 // markup's own pointer handling when the page is served through
 // markup/serve.ts (see README, "Serving through markup").
 
-export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement): void {
+// onDrag (optional): every pointermove while actively dragging, with the
+// raw client coordinates, in ADDITION to repositioning the wrapper. This
+// is what lets main.ts feed the same jolt detector the window-shake path
+// uses (see puckDragShake there) from an in-page drag instead: dragging
+// the puck is ordinary DOM pointer input, which always gets delivered and
+// always gets animation frames, unlike a real OS titlebar drag (see
+// windowshake.ts's header comment on why that path cannot be trusted).
+export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement, onDrag?: (clientX: number, clientY: number) => void): void {
   let dragging = false;
   let startX = 0, startY = 0, origLeft = 0, origTop = 0;
 
@@ -34,6 +41,7 @@ export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement): void {
     const dy = e.clientY - startY;
     wrapper.style.left = `${origLeft + dx}px`;
     wrapper.style.top = `${origTop + dy}px`;
+    onDrag?.(e.clientX, e.clientY);
   });
   const stop = () => { dragging = false; };
   bezel.addEventListener("pointerup", stop);
