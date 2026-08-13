@@ -33,7 +33,31 @@ runtime are compiled to `wasm32-freestanding` with `zig cc`, and the page
 supplies what the board would have supplied: a surface to push pixels at, a
 touch controller, two buttons, and a clock.
 
-Not "the same algorithm". The same object code.
+Not "the same algorithm". The same source, compiled again.
+
+**Corrected 2026-08-13.** This line originally read "Not the same algorithm.
+The same object code." That was an overstatement and it is worth killing
+rather than softening, because the whole argument for this design rests on
+being precise about what is shared.
+
+The wasm module is the same C, compiled by a DIFFERENT compiler (`zig cc`) to
+a DIFFERENT target (`wasm32-freestanding`) than the one that ships (pico-sdk's
+arm-none-eabi toolchain, now with `copy_to_ram`). Two builds of one source,
+not one binary in two places.
+
+What that still buys is real and is the point: an app's logic, layout and
+redraw decisions cannot drift, because there is one source. What it does not
+buy is compiler-level identity, so a bug that depends on code generation,
+timing or the CPU is out of reach here and belongs on hardware.
+
+For contrast, Speculos (Ledger's emulator, the closest peer, see
+`emulator/docs/emulator-landscape.md`) genuinely does run the shipped binary:
+it executes the real app ELF under QEMU user-mode and traps one instruction
+to reimplement the OS syscalls. That is a stronger claim than ours, and it is
+available to them because a Ledger app never touches hardware directly, which
+is the same invariant `firmware/runtime/app.h` enforces here. It is not
+available to us today because nothing executes an RP2350 binary with working
+I2C and DMA.
 
 ### Why this is possible at all
 
