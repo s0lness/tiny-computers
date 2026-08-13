@@ -173,3 +173,23 @@ pico_enable_stdio_uart(main 1)
 target_compile_definitions(main PRIVATE PICO_STDIO_USB_STDOUT_TIMEOUT_US=2000)
 
 pico_add_extra_outputs(main)
+
+# Fail the build on a violation of tools/invariants (docs/decisions/0006):
+# static checks over the just-linked .elf/.map that catch regressions of
+# known hazards (decision 0005's flash/core1 collision, decision 0004's
+# stdio-lock-on-core1 finding) at build time instead of on hardware, days
+# later. Runs after pico_add_extra_outputs() above, which is what actually
+# produces the .map file this reads.
+find_program(BUN_EXECUTABLE bun)
+if(BUN_EXECUTABLE)
+    add_custom_command(TARGET main POST_BUILD
+        COMMAND ${BUN_EXECUTABLE} run
+                ${CMAKE_CURRENT_LIST_DIR}/../tools/invariants/runner.ts
+                $<TARGET_FILE:main>
+                $<TARGET_FILE:main>.map
+        COMMENT "Checking firmware invariants (tools/invariants, docs/decisions/0006)"
+        VERBATIM
+    )
+else()
+    message(WARNING "bun not found on PATH: tools/invariants did not run - see docs/decisions/0006")
+endif()

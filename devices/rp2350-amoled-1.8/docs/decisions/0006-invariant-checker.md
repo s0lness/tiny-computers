@@ -1,10 +1,13 @@
 # 0006: An invariant checker over the built firmware
 
 Date: 2026-08-13
-Status: plan, revised in review on 2026-08-13. The review measured the real
-artifact rather than estimating; the numbers below come from
-`firmware/build/main.elf` as built at the head of this branch and must be
-reproduced by the tool itself in phase 2, not trusted from here.
+Status: implemented 2026-08-14 (`tools/invariants/`). Phases 1-4 of "the
+first invariants to ship" are built and wired into `firmware/CMakeLists.txt`
+as a post-build step; phase 5 (static stack depth via `-fstack-usage`) is
+not, per its own "lands last" ordering below. The plan below is left as
+written, including the numbers that were provisional at review time; see
+"Phase 2/3, closed 2026-08-14" for what the tool itself reproduced and the
+one place a number changed.
 
 ## Why this exists
 
@@ -322,6 +325,113 @@ call graph.
    green.
 6. Extraction to `puck`, when `puck` exists and has a second firmware to
    serve.
+
+## Phase 2/3, closed 2026-08-14
+
+**The tool reproduced the review's own numbers, rebuilt from scratch.**
+523 functions in the image, 30 reached from `{core1_entry, core1_trampoline,
+core1_fault_handler}`, 5 indirect (`blx r*`) sites in the reached set, all
+five inside `__wrap_puts`/`weak_raw_vprintf`/`stdio_put_string`. Every
+number above matched on the first clean run, against a same-day rebuild of
+the same commit - the review's manual count and the tool's automated one
+agree.
+
+**The acceptance test passed as specified.** Rule 1 (placement) fails on
+commit `e11fafc` (`.text` at flash VMA 0x10000000, size 0xf900) and passes
+on `4869d00`, both built fresh in temporary worktrees with the installed
+toolchain. Per-rule mutation builds (also in a scratch worktree, never the
+working tree) confirmed the other three: removing `copy_to_ram` fails rule
+1; a function forced to a flash VMA via `__in_flash`/`section()` fails rule
+1 (through `.rodata` rather than `.text` - a useful confirmation that the
+rule checks section flags generically rather than hardcoding a section
+name); a direct `i2c_read_blocking()` call added to `core1_entry`'s loop
+fails rule 3, and is reported under its actual compiled name,
+`i2c_read_blocking_internal.constprop.0` - proof the clone-suffix stripping
+this document calls out below actually does its job on a real regression,
+not just in the abstract. A `printf()` added to the same loop was the one
+mutation that did NOT fail rule 2 on the first attempt: the forbidden list
+named `printf`/`puts` (the C source names) but the linked image never
+contains those symbols at all - `pico-sdk` wraps them
+(`-Wl,--wrap=printf,--wrap=puts,...`) into `__wrap_printf`/`__wrap_vprintf`/
+`__wrap_puts`, and only `__wrap_puts` had been anticipated (matching this
+document's own review, which found `puts` via the panic path first). Fixed
+by listing both the source and wrapped names; see
+`tools/invariants/rules/rp2350-amoled-1.8.ts`'s rule 2 for the corrected
+list and its own comment recording the miss.
+
+**The root-set question - does any IRQ fire on core1 - is answered: no.**
+`sleep_ms`/`sleep_us` on core1's path (`touch_recover_core1() ->
+FT3168_Reset()`) do reach `alarm_pool_add_alarm_at_force_in_context`,
+`alarm_pool_cancel_alarm` and `best_effort_wfe_or_timeout`, but never
+`alarm_pool_create` or `alarm_pool_init_default`. `nm` shows why:
+`runtime_init_default_alarm_pool` carries a `__pre_init_*` symbol -
+pico-sdk's `PICO_PREINIT`/init-array mechanism, run during core0's crt0
+startup, strictly before `main()` and therefore strictly before
+`sensors_start()` can call `multicore_launch_core1()`. Core1 never runs
+crt0's init-array (`multicore_launch_core1()` starts it straight at
+`core1_entry`), so it cannot race core0 for pool creation - it launches
+after the race is already decided, every time, by construction of how the
+SDK starts a core, not by observed timing. The taint requirement this
+document specified pending that answer (any core1-reachable call into
+`irq_set_exclusive_handler`/`exception_set_exclusive_handler`/
+`alarm_pool_create`/`alarm_pool_init_default` must be a root or annotated)
+is implemented anyway, folded into rule 0 rather than left as a one-time
+finding: it costs one set membership check per reached function, and it is
+what would catch this answer becoming wrong under a future refactor (moving
+`multicore_launch_core1()` earlier, for instance) instead of the checker
+staying silently green on a changed assumption.
+
+**The panic-path finding was not swallowed.** Rule 2 failed on the first
+real run, exactly as this document predicted: `hard_assertion_failure ->
+panic -> __wrap_puts`/`weak_raw_vprintf`/`stdio_put_string`, reachable from
+`core1_entry` via the SDK's assert-inside-sleep/alarm machinery. Decided in
+favour of the annotated exception, not a core1-specific panic hook -
+argued in full in `docs/decisions/0007-core1-panic-is-already-lost.md`,
+short version: the hazard a panic hook would need to close (a panicking
+core1 leaving `print_mutex` held forever) is not obviously closed by
+changing what core1's panic does, since core0's existing liveness guard
+(`sensors_restart_core1()`) already recovers a dead core1 for any reason
+and does not depend on its panic path cooperating; and an unverified new
+panic-path code change, with the device powered off and no way to test it
+on hardware right now, is exactly the "instrument reporting health without
+having looked" decision 0004 warns against. The exception is narrow (three
+named functions, reachable only via this one route today) and the residual
+gap it leaves open (`print_mutex` is not force-released on recovery) is
+written down in 0007, not hidden by the exception existing.
+
+**One scope boundary was hit and not crossed.** Rule 0 as specified covers
+`blx r*` only. Building against the real firmware surfaced `bx <reg other
+than lr>` sites (9 in the whole image, some reachable outside stdio) - the
+same hazard in spirit, a branch through a value the graph cannot see, that
+rule 0's literal wording does not gate. This is left open deliberately:
+widening rule 0's scope silently, mid-implementation, would be the same
+kind of undisclosed change this document elsewhere insists an invariant's
+`why`/`see` exist to prevent. Recorded in `tools/invariants/README.md`'s
+"What it cannot do" as a known, disclosed gap, not fixed here.
+
+**Final size against the estimate, counted with `wc -l`:** `model.ts`
+(156) + `disasm.ts` (128) - the ELF/map/disassembly parsers, budgeted
+implicitly as part of phase 1 - come to 284 lines, noticeably over "roughly
+one 50-line placement check": the placement check itself (rule 1's `check`
+function) is about 20 lines, but the binutils-output parsing underneath it,
+which the estimate did not separately break out, is most of the 284.
+`graph.ts` (the reachability BFS plus the rule-2/3 helper) is 84 lines,
+under the ~150-line estimate. `runner.ts` is 88. `types.ts` +
+`toolchain.ts` + `run-tool.ts` (small, load-bearing glue: the shared
+vocabulary, resolving binutils, and running a subprocess) add 117 more.
+Machinery total: 573 lines. `rules/rp2350-amoled-1.8.ts` (all five
+invariants, device-specific) is 313 lines - the plan's own placement-check
+estimate did not anticipate rule 0's escape-site annotation list or rule
+2's panic exception, both of which are reasoning-heavy by design (each
+annotation carries a "why", per this document's own requirement) rather
+than logic-heavy. Grand total, excluding the README: 886 lines. This is
+"a few hundred lines plus invariant files" only if read generously; the
+honest statement is that it grew to itself be "a few hundred" per major
+piece (parsers, graph, rules) rather than a few hundred altogether, and the
+growth is in exactly the two places this document already flagged as
+reasoning-shaped rather than code-shaped: the parsers (must handle every
+binutils output line, not just the common case - decision 0004's rule) and
+the annotations (must carry a real reason, not machinery).
 
 ## Questions raised in review, resolved
 
