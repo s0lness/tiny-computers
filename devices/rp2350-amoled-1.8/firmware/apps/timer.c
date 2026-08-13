@@ -983,7 +983,12 @@ static void timer_enter(void) {
 
 /* ---------------------------------------------------------------------
  * tick(): one state transition or one incremental update per call, never
- * both, so every visible change traces to exactly one input.
+ * both, so every visible change traces to exactly one input - with one
+ * deliberate exception: a BOOT release and a PWR short-press verdict
+ * landing on the same tick both apply, in that order (see the bootClicked
+ * branch below). That is not two inputs pretending to be one; it is two
+ * real, distinct inputs that genuinely arrived together, so both events get
+ * to act rather than one silently eating the other.
  * ------------------------------------------------------------------- */
 static void timer_tick(const app_frame_t *f) {
     timer_state_t *s = s_state;
@@ -1018,7 +1023,29 @@ static void timer_tick(const app_frame_t *f) {
             int sec = seconds_for_ticks(s->setTicks);
             printf("timer: BOOT recalled %02d:%02d\r\n", sec / 60, sec % 60);
         }
-        return;
+        // NOT an unconditional `return;` here any more - that was the bug
+        // (see docs/findings-app-fuzzing.md section 1). runtime_core.c's
+        // sensors_key_take() is read-and-clear, called exactly once per
+        // tick regardless of whether this app goes on to look at KEY_SHORT.
+        // BOOT is polled at only ~20Hz (bootbtn.h), so a BOOT release and a
+        // PWR short-press verdict landing in the same tick is easy to
+        // trigger by releasing both buttons together, and an unconditional
+        // return here used to throw the KEY_SHORT bit away for good: no log
+        // line, no state change, unrecoverable. chrono.c's bootClicked
+        // branch (chrono_tick) has no early return for the identical reason
+        // and this follows the same idiom: apply BOOT, then let a same-tick
+        // KEY_SHORT below act on the state BOOT produced (recall, then
+        // start; reset-to-setting, then start-from-there).
+        //
+        // Still return when there is no KEY_SHORT pending this tick, exactly
+        // as before: a plain BOOT click on its own must not newly fall
+        // through into the touch-drag dispatch further down (SETTING's
+        // `if (!f->touchDown) return;` block), which chrono has no
+        // equivalent of - chrono's own fallthrough only ever reaches an
+        // unconditional digit redraw, never live touch input. Gating the
+        // fallthrough on KEY_SHORT keeps that path exactly as narrow as the
+        // bug being fixed.
+        if (!(f->key & KEY_SHORT)) return;
     }
 
     if (f->key & KEY_SHORT) {
