@@ -81,6 +81,38 @@ A full framebuffer is 368*448*2 = 330KB and **fits** in the 520KB SRAM, so the
 firmware keeps one and pushes dirty rectangles. The ESP32-S3 sibling cannot do
 this and has to render in bands; do not copy that design here.
 
+## A finger is about 100 pixels wide, and that decides most layouts
+
+368x448 over a 1.8 inch diagonal is a diagonal of about 580 pixels, so roughly
+**322 pixels per inch, or 12.7 pixels per millimetre**.
+
+| | across | on this panel |
+|---|---|---|
+| adult fingertip contact | ~8 mm | **~100 px** |
+| child fingertip contact | ~6 mm | **~75 px** |
+
+A finger therefore covers **more than a quarter of the panel's width**. This
+device is a toy for a young child, so the child figure is the one that governs.
+
+Consequences worth having in mind before laying anything out:
+
+- The panel fits about **4 finger-widths across and 6 down**. That is the real
+  resolution of anything that has to be touched, not 368x448.
+- A menu of three tiles across the 448px landscape width gives each tile about
+  149px, which is only about two child fingers. That is usable, and it is much
+  closer to the limit than the pixel count suggests.
+- Anything a finger must land on precisely (a ring to drag, a small control)
+  is being asked for a precision the hardware cannot give. Prefer targets that
+  are forgiving in one dimension: an angle around a large ring is forgiving,
+  a 20px handle is not.
+- Ink is the exception, not the rule: the sketchpad draws a 5px pen from a
+  contact patch 15 times wider, because the controller reports a centroid. It
+  reports one for a child's finger too, so drawing works; tapping a small
+  target is what does not.
+
+Verify the diagonal against the product page before treating the exact figures
+as gospel; the ratio is what matters and it is not close to the edge.
+
 ## Layout
 
 ```
