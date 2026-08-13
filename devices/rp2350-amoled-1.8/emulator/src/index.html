@@ -59,6 +59,14 @@
             <input id="touchDefectsOn" type="checkbox" />
             <label for="touchDefectsOn" title="simulate a real touch controller: report rate, dropped contact, stray reports. Off = clean pass-through">defects</label>
           </div>
+          <!-- Finger size is a QUANTITY (contact diameter, mm); the
+               presets are shortcuts to a value, not the only values, so
+               the number is the primary control and they set it. -->
+          <div class="contact-row">
+            <input id="contactMm" type="number" min="1" max="20" step="0.5" class="control mm-input" title="contact diameter, millimetres" />
+            <span class="unit">mm</span>
+            <span id="contactPx" class="px-readout"></span>
+          </div>
           <div id="contactPreset" class="segtog seg-sm"></div>
           <details class="disclosure">
             <summary>tune</summary>

@@ -241,6 +241,11 @@
    secondary controls (rotation, contact size), not primary navigation. */
 .segtog.seg-sm button { padding: 3px 8px; font-size: 11px; }
 
+.contact-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
+.mm-input { width: 44px; padding: 3px 5px; font-size: 11px; }
+.contact-row .unit { font-size: 11px; color: var(--muted); }
+.contact-row .px-readout { margin-left: auto; font-size: 11px; color: var(--accent-dark); font-variant-numeric: tabular-nums; }
+
 .gesture-detail summary { font-weight: 600; color: var(--ink-soft); }
 .gesture-body { padding-left: 13px; font-size: 11px; }
 .gesture-body .how { color: var(--ink-soft); margin: 0 0 6px; max-width: 240px; }

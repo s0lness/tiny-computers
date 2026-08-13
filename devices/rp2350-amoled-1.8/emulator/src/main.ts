@@ -173,30 +173,44 @@ function derivePxPerMm(d: DeviceDescriptor): number {
   if (typeof p.hMm === "number" && p.hMm > 0) return d.panel.h / p.hMm;
   return DEFAULT_PX_PER_MM;
 }
-// The px/mm figure is real information (it decides how big the overlay
-// disc is), just not permanent-chrome information: it lives in each
-// preset button's title tooltip, not as a sentence under the toggle.
+// Finger size is a quantity (contact diameter, millimetres); naming only
+// "adult"/"child" hides that number and makes it unreachable, which is
+// backwards for a tool whose job is showing how big a finger really is
+// against a layout. The numeric input is the primary control; the presets
+// are one-click shortcuts to a value, not the only values. The px figure
+// is the one the layout is actually judged against (it depends on the
+// panel's declared geometry, not the millimetres alone), shown as a plain
+// number next to the mm input, no sentence around either.
 function refreshContactInfo(): void {
+  const mmInput = $<HTMLInputElement>("#contactMm");
+  // Never stomp what's mid-typed: only sync the field's displayed value
+  // when it is not the thing focused right now.
+  if (document.activeElement !== mmInput) mmInput.value = String(touchOverlay.contactMm);
+  const px = Math.round(touchOverlay.contactMm * touchOverlay.pxPerMm);
+  $("#contactPx").textContent = `${px}px`;
   $("#contactPreset")
     .querySelectorAll<HTMLButtonElement>("button")
-    .forEach((b) => {
-      const mm = Number(b.dataset.mm);
-      const px = Math.round(mm * touchOverlay.pxPerMm);
-      b.title = `${mm}mm ≈ ${px}px at this panel's scale`;
-    });
+    .forEach((b) => b.classList.toggle("active", Number(b.dataset.mm) === touchOverlay.contactMm));
 }
-function wireContactPresets(): void {
+function wireContactSize(): void {
+  const mmInput = $<HTMLInputElement>("#contactMm");
+  mmInput.addEventListener("input", () => {
+    const v = Number(mmInput.value);
+    if (Number.isFinite(v) && v > 0) {
+      touchOverlay.contactMm = v;
+      refreshContactInfo();
+    }
+  });
+
   const el = $("#contactPreset");
   el.innerHTML = "";
   CONTACT_PRESETS.forEach((preset) => {
     const b = document.createElement("button");
     b.textContent = preset.label;
     b.dataset.mm = String(preset.mm);
-    if (preset.mm === touchOverlay.contactMm) b.classList.add("active");
+    b.title = `${preset.mm}mm`;
     b.addEventListener("click", () => {
       touchOverlay.contactMm = preset.mm;
-      el.querySelectorAll("button").forEach((x) => x.classList.remove("active"));
-      b.classList.add("active");
       refreshContactInfo();
     });
     el.appendChild(b);
@@ -232,8 +246,11 @@ function buildChrome(d: DeviceDescriptor): void {
 
   $("#deviceName").textContent = d.name || "device emulator";
   // The name already shows in the topbar; the sidebar's job is the one
-  // fact that isn't there yet, the panel spec.
-  $("#deviceInfo").textContent = `${d.panel.w}×${d.panel.h} ${d.panel.format}`;
+  // fact that isn't there yet, the panel's dimensions. NOT the pixel
+  // format ("rgb565be"): that names an internal encoding, not something
+  // useful to a person looking at the puck, so it moved to the
+  // diagnostics strip (updateDiagStrip) instead of sitting here.
+  $("#deviceInfo").textContent = `${d.panel.w}×${d.panel.h}`;
 
   bezelEl.querySelectorAll(".dev-btn").forEach((el) => el.remove());
   wiredButtons = [];
@@ -392,6 +409,7 @@ function buildGestures(d: DeviceDescriptor): void {
   for (const g of d.gestures) {
     const det = document.createElement("details");
     det.className = "disclosure gesture-detail";
+    det.open = false; // explicit: this prose stays off the page until asked for
     const summary = document.createElement("summary");
     summary.textContent = g.label;
     det.appendChild(summary);
@@ -551,7 +569,9 @@ async function bringUp(bytes: ArrayBuffer, reason: string): Promise<void> {
 // diagnostics, and they read as one instrument when they live in one
 // place. The coordinate segment only appears while the overlay (item 1)
 // is switched on: it is part of that same toggle, not a separate readout
-// that happens to survive turning the overlay off.
+// that happens to survive turning the overlay off. The pixel format lives
+// here too now, not in the device section: it names an internal encoding
+// (a raw technical fact), which is exactly what this strip is for.
 function updateDiagStrip(): void {
   const parts: string[] = [];
   if (overlayEnabled && lastTouchMapped) {
@@ -559,6 +579,7 @@ function updateDiagStrip(): void {
   }
   parts.push(`push ${pushOverlay.lastCount}×${pushOverlay.lastWidth}px`);
   parts.push(`shake ${windowShake.lastJoltCount}/${windowShake.cfg.joltMinCount}`);
+  if (device) parts.push(device.panel.format);
   parts.push(`${recorder.events.length.toLocaleString()} rec`);
   if (lastReloadStatus) parts.push(lastReloadStatus);
   diagStripEl.textContent = parts.join("   ·   ");
@@ -837,7 +858,7 @@ function buildTouchControls(): void {
 
 // ---- static UI: everything not dependent on a loaded module ----
 function wireStaticUI(): void {
-  wireContactPresets();
+  wireContactSize();
 
   makeDraggable(bezelEl, deviceWrapEl);
   wirePanelInput();
