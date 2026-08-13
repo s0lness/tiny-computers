@@ -191,10 +191,13 @@
 .shortcut-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
 .shortcut-row { font-size: 12px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
 
-.gestures-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
+.gestures-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
 .gesture-row { font-size: 12px; }
 .gesture-row b { color: var(--accent-dark); }
 .gesture-row .how { color: var(--ink-soft); }
+.gesture-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.gesture-keys { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
+.gesture-keys .kbd { margin-left: 0; }
 
 .sensor-controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 .sensor-btn { display: inline-flex; align-items: center; }

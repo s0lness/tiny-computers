@@ -79,10 +79,26 @@ let touchSim: TouchSim | null = null;
 let liveTouch: TouchReport = { fingers: 0, x: 0, y: 0 };
 let pointerIdDown: number | null = null;
 
-let quickDeg = 0;
+// -90, not 0: the panel framebuffer is portrait, but every landscape app
+// (the menu, chrono, timer) draws through gfx.c's rotation into it, per
+// gfx.h's mapping landscape (lx, ly) -> panel (PANEL_W-1-ly, lx). Checked
+// empirically with a real screenshot of the menu, which has asymmetric text
+// (CHRONO / DRAW / TIMER) rather than trusting the geometry by eye: at
+// quickDeg=0 the words read sideways bottom-to-top, at +90 they read upside
+// down and right-to-left, and only -90 reads left-to-right, right way up.
+// A symmetric screen like chrono's "00:00" would have looked identical at
+// any of these and hidden the bug.
+let quickDeg = -90;
 let tiltDeg = 0;
 
 let wiredButtons: WiredButton[] = [];
+// Keyed by the declared button id (DeviceButton.id), not array index: a
+// gesture script names buttons by id (see wasm.ts's GestureStep), and this
+// is what lets runGestureScript resolve "hold pwr" back to the exact same
+// WiredButton a real pointer/keyboard press already drives, rather than
+// reimplementing button state a second time for scripted gestures.
+let wiredButtonById = new Map<string, WiredButton>();
+let buttonKeyById = new Map<string, string>();
 let appStripControl: AppStripControl | null = null;
 let lastAppIndex = 0;
 
@@ -199,6 +215,8 @@ function buildChrome(d: DeviceDescriptor): void {
 
   bezelEl.querySelectorAll(".dev-btn").forEach((el) => el.remove());
   wiredButtons = [];
+  wiredButtonById = new Map();
+  buttonKeyById = new Map();
   shortcuts.clear();
   const usedKeys = new Set<string>();
   const shortcutListEl = $("#buttonShortcuts");
@@ -219,6 +237,7 @@ function buildChrome(d: DeviceDescriptor): void {
       btn.longPressMs
     );
     wiredButtons.push(wired);
+    wiredButtonById.set(btn.id, wired);
 
     // Held via the keyboard, which is what makes a two-button gesture
     // (this device's app switch) actually performable: a mouse only has
@@ -226,7 +245,10 @@ function buildChrome(d: DeviceDescriptor): void {
     // physical keys can be held together on a real keyboard, exactly like
     // two fingers on two side buttons.
     const key = assignShortcut(btn.id, usedKeys);
-    if (key) shortcuts.bindHeld(key, { down: wired.down, up: wired.up });
+    if (key) {
+      shortcuts.bindHeld(key, { down: wired.down, up: wired.up });
+      buttonKeyById.set(btn.id, key);
+    }
 
     const row = document.createElement("div");
     row.className = "shortcut-row";
@@ -252,30 +274,124 @@ function buildChrome(d: DeviceDescriptor): void {
   centerDeviceOnce();
 }
 
-// ---- gestures: "how do I double press so I can really test this" -------
-// PROPOSED addition to emu_device()'s JSON (device.gestures, see wasm.ts):
-// a compound gesture the runtime recognises across multiple inputs (a menu,
-// an app switch) has no single button to hang a label on, and this device's
-// own gesture is actively changing (see the task report), so it must come
-// from the descriptor rather than prose written here that goes stale the
-// next time it changes.
+// ---- gestures: give every declared gesture a button that PERFORMS it ----
+//
+// "how" (see wasm.ts's DeviceGesture) is prose written for a person, and
+// this page must never try to derive a button sequence from it: wording
+// changes independently of behaviour (this device's own gesture has already
+// been reworded once, see git history), so a page that scraped prose would
+// go stale silently, which is exactly the kind of bug this emulator exists
+// to catch rather than commit. The only thing this page ever executes is
+// the OPTIONAL "script" field, a small machine-readable sequence the
+// firmware itself declares (proposed: emu_abi.h gains gestures[].script,
+// see this task's report - the change is drafted but not landed, because
+// landing it means editing emu_shim.c/emu_abi.h and rebuilding the wasm
+// module, and this task's repo is shared with another agent mid-edit on
+// firmware/apps/timer.c and friends right now; a rebuild here would compile
+// their in-progress code too, which is not this page's call to make).
+//
+// A gesture with no script degrades honestly: no button that silently does
+// nothing, a plain sentence saying automatic performing isn't available yet
+// and pointing at the manual two-key path instead.
+function scriptButtonIds(script: unknown): string[] | null {
+  if (!Array.isArray(script) || script.length === 0) return null;
+  const ids: string[] = [];
+  for (const step of script) {
+    if (typeof step !== "object" || step === null) return null;
+    const s = step as Record<string, unknown>;
+    if (typeof s.hold === "string") {
+      if (!wiredButtonById.has(s.hold)) return null;
+      ids.push(s.hold);
+    } else if (typeof s.release === "string") {
+      if (!wiredButtonById.has(s.release)) return null;
+    } else if (typeof s.waitMs === "number") {
+      if (!(s.waitMs > 0 && s.waitMs < 60000)) return null;
+    } else {
+      return null; // an unrecognised step shape: refuse to guess what it meant
+    }
+  }
+  return ids;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Executes a gesture's script through the SAME real input path a mouse or
+// keyboard chord uses (WiredButton.down()/up(), which is exactly what
+// device.ts's wireButton hands pointerdown/pointerup and shortcuts.ts's
+// bindHeld hands keydown/keyup) - never emu_app_switch() or any other
+// shortcut into app state. The gesture itself is under test here: a long
+// press still runs on its own real setTimeout inside wireButton, a waitMs
+// step still waits real milliseconds while the page's own requestAnimationFrame
+// loop keeps calling emu_tick() underneath, and BOOT+PWR's ordering, overlap
+// and timing are exactly what a physical chord would produce. A control that
+// bypassed this to call emu_app_switch(-1) directly would "work" every time
+// and hide exactly the class of bug this device has already had once (the
+// chord's own touch-state regression, see git history).
+async function runGestureScript(script: unknown, log: (t: string) => void): Promise<void> {
+  const steps = script as { hold?: string; release?: string; waitMs?: number }[];
+  for (const step of steps) {
+    if (step.hold !== undefined) {
+      wiredButtonById.get(step.hold)!.down();
+    } else if (step.release !== undefined) {
+      wiredButtonById.get(step.release)!.up();
+    } else if (step.waitMs !== undefined) {
+      await sleep(step.waitMs);
+    }
+  }
+  log("done");
+}
+
 function buildGestures(d: DeviceDescriptor): void {
   const wrap = $("#gesturesWrap");
   const list = $("#gesturesList");
   list.innerHTML = "";
   if (!d.gestures || d.gestures.length === 0) {
-    wrap.classList.remove("hidden");
-    list.innerHTML =
-      '<div class="hint">this build does not declare its gestures yet ' +
-      "(proposed: emu_device()'s JSON gains a <code>gestures</code> array of " +
-      "{id, label, how}; see this task's report). Ask on the board, don't guess from here.</div>";
+    wrap.classList.add("hidden");
     return;
   }
   wrap.classList.remove("hidden");
   for (const g of d.gestures) {
     const row = document.createElement("div");
     row.className = "gesture-row";
-    row.innerHTML = `<b>${escapeHtml(g.label)}</b><br><span class="how">${escapeHtml(g.how)}</span>`;
+    const head = document.createElement("div");
+    head.innerHTML = `<b>${escapeHtml(g.label)}</b><br><span class="how">${escapeHtml(g.how)}</span>`;
+    row.appendChild(head);
+
+    const holdIds = scriptButtonIds(g.script);
+    const actions = document.createElement("div");
+    actions.className = "gesture-actions";
+    if (holdIds) {
+      const uniqueIds = [...new Set(holdIds)];
+      const keys = uniqueIds.map((id) => buttonKeyById.get(id)?.toUpperCase()).filter((k): k is string => !!k);
+      if (keys.length > 0) {
+        const keysEl = document.createElement("div");
+        keysEl.className = "gesture-keys hint";
+        keysEl.innerHTML = `same as: ${keys.map((k) => `<span class="kbd">${escapeHtml(k)}</span>`).join(" + ")} held together`;
+        actions.appendChild(keysEl);
+      }
+      const btn = document.createElement("button");
+      btn.className = "btn sec sm";
+      btn.textContent = `perform "${g.label}"`;
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        const prevText = btn.textContent;
+        btn.textContent = "performing...";
+        consoleLog.push(`gesture: performing "${g.label}" through the real button path`);
+        void runGestureScript(g.script, (t) => consoleLog.push(`gesture: ${t}`)).finally(() => {
+          btn.disabled = false;
+          btn.textContent = prevText;
+        });
+      });
+      actions.appendChild(btn);
+    } else {
+      const note = document.createElement("div");
+      note.className = "gesture-keys hint";
+      note.textContent = 'this build does not declare a machine-readable script for this gesture; use the button/keyboard chord above instead of a "perform" button here.';
+      actions.appendChild(note);
+    }
+    row.appendChild(actions);
     list.appendChild(row);
   }
 }
@@ -678,6 +794,11 @@ function wireStaticUI(): void {
     tiltDeg = Number((e.target as HTMLInputElement).value);
     applyRotation(bezelEl, quickDeg + tiltDeg);
   });
+  // The "active" class on one #rotQuick button is just markup matching
+  // quickDeg's actual default above; nothing paints the rotation from CSS
+  // alone, so without this call the puck would sit at visual 0deg (wrong,
+  // see quickDeg's comment) until the first click on a rotate button.
+  applyRotation(bezelEl, quickDeg + tiltDeg);
 
   btnPause.addEventListener("click", () => {
     paused = !paused;
@@ -741,6 +862,14 @@ async function boot(): Promise<void> {
   getEmu: () => emu,
   getDevice: () => device,
   getRecorder: () => recorder,
+  // Re-renders the gestures panel from the current `device` object. Lets an
+  // ad hoc check mutate getDevice().gestures (e.g. attach a script to a
+  // gesture the loaded firmware did not declare one for) and see the
+  // "perform" button/honest-degrade text update without a real firmware
+  // rebuild - this device's own firmware build does not ship a script yet
+  // (see main.ts's gesture section), so this is how that code path gets
+  // exercised at all today.
+  rebuildGestures: () => device && buildGestures(device),
 };
 
 void boot();
