@@ -112,9 +112,8 @@ static int column_hit_test(int lx) {
  * ------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------
- * The chrono icon: a stopwatch, redrawn to match the owner's reference
- * glyph (a classic stopwatch pictogram) instead of the old stacked-bars-
- * with-gaps look, which read as a beehive rather than a clock. Four parts:
+ * The chrono icon: a stopwatch, matching the owner's reference glyph (a
+ * classic stopwatch pictogram). Four parts:
  *
  *   - a thick RING (an annulus, via shapes.h), not a filled disc and not a
  *     thin outline;
@@ -132,6 +131,18 @@ static int column_hit_test(int lx) {
  * macro below), which is also why CHRONO_TAB_OFF below uses a 707/1000
  * integer approximation of 1/sqrt(2) rather than a runtime sinf/cosf call
  * for what is, at compile time, a single fixed 45-degree offset.
+ *
+ * RENDERING: anti-aliased now (shapes.h's second generation), per the
+ * owner's "aplats d'encre, pas de petits pixels" rule - see shapes.h's
+ * header comment for the technique. The ring is a true circle
+ * (shapes_fill_annulus_aa_land), needing no half-width table at all - a
+ * genuine simplification over the old per-row-bar version, not just a
+ * different look. The wedge and the tab are both
+ * shapes_fill_between_curves_aa_land calls (see that function's header
+ * comment for why a circular wedge and a straight-sided diamond are the
+ * same primitive); the wedge still needs s_chronoHwInner for its curved
+ * edge's row widths, which is why that table (and
+ * shapes_fill_half_width_table itself) stays.
  * ------------------------------------------------------------------- */
 #define CHRONO_R_OUT   (ICON_W * 3 / 8)                    // 36
 #define CHRONO_R_IN    (CHRONO_R_OUT - CHRONO_R_OUT / 4)   // 27: 9px stroke
@@ -150,18 +161,15 @@ static int column_hit_test(int lx) {
 // Top of the crown to the bottom of the ring, centred in ICON_H.
 #define CHRONO_COMP_H (CHRONO_CROWN_H + CHRONO_NECK_H + 2 * CHRONO_R_OUT) // 90
 
-static int16_t s_chronoHwOuter[2 * CHRONO_R_OUT];
+// Only the inner circle's row widths are tabulated now (the ring itself is
+// drawn analytically - see this block's header comment); this table backs
+// only the wedge's curved edge, upper half of a 2*CHRONO_R_OUT-tall grid
+// centred on the ring's own centre, same convention as before.
 static int16_t s_chronoHwInner[2 * CHRONO_R_OUT];
 static bool s_chronoTablesReady = false;
 
 static void ensure_chrono_tables(void) {
     if (s_chronoTablesReady) return;
-    shapes_fill_half_width_table(s_chronoHwOuter, 2 * CHRONO_R_OUT, (float)CHRONO_R_OUT);
-    // Same row grid as the outer table (both 2*CHRONO_R_OUT tall, both
-    // centred on the ring's centre) but the smaller radius, so rows above
-    // and below the inner circle come out 0 - exactly the "no hole here"
-    // signal shapes_draw_annulus_row() needs, and the same table doubles
-    // as the wedge's row widths below.
     shapes_fill_half_width_table(s_chronoHwInner, 2 * CHRONO_R_OUT, (float)CHRONO_R_IN);
     s_chronoTablesReady = true;
 }
@@ -174,41 +182,68 @@ static void draw_icon_chrono(int ox, int oy, uint16_t color) {
     int ringTop = top + CHRONO_CROWN_H + CHRONO_NECK_H;
     int ccy = ringTop + CHRONO_R_OUT;
 
-    // Ring: one row of shapes.h's annulus drawer per table row.
-    for (int row = 0; row < 2 * CHRONO_R_OUT; row++) {
-        int y = ringTop + row;
-        shapes_draw_annulus_row(ccx, y, s_chronoHwOuter[row], s_chronoHwInner[row], color);
+    // Ring: a true circular annulus - analytic, both edges anti-aliased,
+    // no per-row table needed at all (see this block's header comment).
+    shapes_fill_annulus_aa_land((float)ccx, (float)ccy, (float)CHRONO_R_OUT, (float)CHRONO_R_IN, color);
+
+    // Wedge: top-right quadrant only, apex at the ring's centre - "a
+    // filled shape bounded by two curves" (shapes.h), whose two curves
+    // here are the straight vertical line x=ccx and the inner circle's own
+    // arc (s_chronoHwInner). Rows where the inner circle has not started
+    // yet (hw<=0, near the very apex) are skipped: there is nothing to
+    // fill above where the circle itself begins.
+    int rowStart = 0;
+    while (rowStart < CHRONO_R_OUT && s_chronoHwInner[rowStart] <= 0) rowStart++;
+    int wedgeRows = CHRONO_R_OUT - rowStart;
+    // WEDGE_SEAM_OVERLAP: the wedge's curved edge and the ring's own inner
+    // edge are meant to touch exactly, but they come from two independent
+    // AA computations of the "same" circle - the ring's is the exact float
+    // radius (shapes_fill_annulus_aa_land takes CHRONO_R_IN directly), the
+    // wedge's is s_chronoHwInner, which is that same radius rounded to the
+    // nearest INTEGER per row (shapes_fill_half_width_table's int16_t
+    // table, shared with timer.c - see shapes.h). The rounding is at most
+    // 0.5px, which is exactly the width of either curve's own AA fringe, so
+    // without this the wedge sometimes undershoots by a sub-pixel amount
+    // and leaves the ring's own inner-edge fringe peeking through as
+    // scattered grey dots along the seam (found by rendering this icon and
+    // inspecting the framebuffer: a dotted line a few pixels inside the
+    // visible arc, not on it - see this file's task history). Padding the
+    // wedge's own edge outward by one whole pixel pushes it past that
+    // rounding error in every case; the extra pixel lands on ground the
+    // ring already inks solid black, so nothing outside the ring is ever
+    // affected - this is a deliberate overlap ("trap"), not a widened
+    // wedge.
+    const int wedgeSeamOverlap = 1;
+    if (wedgeRows > 0) {
+        int16_t leftX[CHRONO_R_OUT], rightX[CHRONO_R_OUT];
+        for (int i = 0; i < wedgeRows; i++) {
+            leftX[i] = (int16_t)ccx;
+            rightX[i] = (int16_t)(ccx + s_chronoHwInner[rowStart + i] + wedgeSeamOverlap);
+        }
+        shapes_fill_between_curves_aa_land(ringTop + rowStart, wedgeRows, leftX, rightX, color);
     }
 
-    // Wedge: top-right quadrant only, apex at the ring's centre. Rows
-    // 0..CHRONO_R_OUT-1 are exactly the upper half of the same grid (dy <=
-    // 0), and s_chronoHwInner already holds the inner circle's half-width
-    // there, growing from 0 at the top to close to CHRONO_R_IN at the row
-    // touching the centre - one bar per row, from the centre out to that
-    // width, never past the ring's own inner edge.
-    for (int row = 0; row < CHRONO_R_OUT; row++) {
-        int hw = s_chronoHwInner[row];
-        if (hw <= 0) continue;
-        int y = ringTop + row;
-        gfx_fill_rect_land(ccx, y, hw, 1, color);
-    }
-
-    // Crown and neck: plain rectangles, no curve involved.
+    // Crown and neck: plain rectangles, already axis-aligned - nothing for
+    // anti-aliasing to buy here.
     gfx_fill_rect_land(ccx - CHRONO_CROWN_W / 2, top, CHRONO_CROWN_W, CHRONO_CROWN_H, color);
     gfx_fill_rect_land(ccx - CHRONO_NECK_W / 2, top + CHRONO_CROWN_H, CHRONO_NECK_W, CHRONO_NECK_H, color);
 
     // Tab: a small diamond (a square rotated 45 degrees) near one-thirty,
-    // offset clear of the ring - the "angled" reading the reference has,
-    // built the same bars-per-row way as everything else here but with
-    // Manhattan rather than Euclidean distance, since a diamond's edges are
-    // straight lines and need no sqrt.
+    // offset clear of the ring - the "angled" reading the reference has.
+    // Same "filled shape bounded by two curves" primitive as the wedge
+    // above, except both curves here are straight 45-degree edges
+    // (hw = R-|dy|, Manhattan rather than circular) instead of one curved
+    // and one straight - the primitive does not care which.
     int tcx = ccx + CHRONO_TAB_OFF;
     int tcy = ccy - CHRONO_TAB_OFF;
+    int16_t tabLeft[2 * CHRONO_TAB_R + 1], tabRight[2 * CHRONO_TAB_R + 1];
     for (int dy = -CHRONO_TAB_R; dy <= CHRONO_TAB_R; dy++) {
         int hw = CHRONO_TAB_R - (dy < 0 ? -dy : dy);
-        if (hw <= 0) continue;
-        gfx_fill_rect_land(tcx - hw, tcy + dy, 2 * hw, 1, color);
+        int i = dy + CHRONO_TAB_R;
+        tabLeft[i] = (int16_t)(tcx - hw);
+        tabRight[i] = (int16_t)(tcx + hw);
     }
+    shapes_fill_between_curves_aa_land(tcy - CHRONO_TAB_R, 2 * CHRONO_TAB_R + 1, tabLeft, tabRight, color);
 }
 
 /* ---------------------------------------------------------------------
@@ -218,9 +253,11 @@ static void draw_icon_chrono(int ox, int oy, uint16_t color) {
  * constructed - the test the owner set is literal ("does it look like
  * something a person drew quickly, or like a symbol someone built").
  *
- * A first version drew this as a straight-segment polyline (still true of
- * shapes_fill_thick_segment_land, kept below for whatever future icon
- * wants a plain diagonal) and failed that test twice: once because its
+ * A first version drew this as a straight-segment polyline (built from what
+ * was then shapes_fill_thick_segment_land, a plain fixed-thickness stamped
+ * diagonal - deleted along with the rest of shapes.h's first generation
+ * once every caller in this file moved to anti-aliased primitives; see
+ * shapes.h's header comment) and failed that test twice: once because its
  * corners sat within a few degrees of dead vertical/horizontal and read as
  * a lightning bolt, and again, after hand-tuning the angles, because
  * straight segments at a constant 12px thickness read as a deliberate "Z"
@@ -235,16 +272,19 @@ static void draw_icon_chrono(int ox, int oy, uint16_t color) {
  *     between three consecutive points with a quadratic Bezier through
  *     their midpoints, so consecutive curve segments meet exactly at a
  *     shared midpoint and the whole path reads as one continuous curve.
- *     shapes_fill_tapered_quad_land() below is that same construction as a
- *     reusable shapes.h helper (rectangle stamps instead of anti-aliased
- *     circles, since this panel is monochrome and needs no AA); this
- *     function calls it once per interior waypoint (P1, P2, P3), each time
- *     with that waypoint as the control point and the midpoints on either
- *     side of it as the segment's own endpoints - see shapes.c's header
- *     comment on shapes_fill_tapered_quad_land for exactly how that chains.
- *     P0->first-midpoint and last-midpoint->P4 are drawn straight, the same
- *     lead-in/lead-out sketch.c's stroke_begin()/stroke_end() use before
- *     enough history exists for a curve.
+ *     shapes_fill_tapered_quad_aa_land() below is that same construction as
+ *     a reusable shapes.h helper, anti-aliased circles now rather than
+ *     rectangle stamps (see shapes.h's header comment: this whole file
+ *     used to draw everything as rectangles, which is exactly what read as
+ *     a staircase rather than ink); this function calls it once per
+ *     interior waypoint (P1, P2, P3), each time with that waypoint as the
+ *     control point and the midpoints on either side of it as the
+ *     segment's own endpoints - see shapes.c's header comment on
+ *     shapes_fill_tapered_quad_aa_land for exactly how that chains.
+ *     P0->first-midpoint and last-midpoint->P4 are drawn straight (with
+ *     shapes_fill_capsule_aa_land), the same lead-in/lead-out
+ *     sketch.c's stroke_begin()/stroke_end() use before enough history
+ *     exists for a curve.
  *
  *   - TAPER: sketch.c's pressure model varies the pen radius continuously
  *     (thin at a stroke's start and end, fullest through a fast middle).
@@ -253,7 +293,7 @@ static void draw_icon_chrono(int ox, int oy, uint16_t color) {
  *     fullest (4px) at P2, back down to thin (1px, deliberately narrower
  *     than the start - an asymmetric taper reads more like a hand lifting
  *     the pen than a symmetric one) at P4 - and
- *     shapes_fill_tapered_quad_land/shapes_fill_tapered_segment_land
+ *     shapes_fill_tapered_quad_aa_land/shapes_fill_capsule_aa_land
  *     interpolate between those linearly along the path, the same way
  *     draw_capsule interpolates r0->r1 across sketch.c's own spans.
  *
@@ -308,27 +348,56 @@ static void draw_icon_sketch(int ox, int oy, uint16_t color) {
     int mx23 = (px[2] + px[3]) / 2, my23 = (py[2] + py[3]) / 2, mr23 = (pr[2] + pr[3]) / 2;
     int mx34 = (px[3] + px[4]) / 2, my34 = (py[3] + py[4]) / 2, mr34 = (pr[3] + pr[4]) / 2;
 
-    shapes_fill_tapered_segment_land(px[0], py[0], pr[0], mx01, my01, mr01, color);
-    shapes_fill_tapered_quad_land(mx01, my01, mr01, px[1], py[1], mx12, my12, mr12, color);
-    shapes_fill_tapered_quad_land(mx12, my12, mr12, px[2], py[2], mx23, my23, mr23, color);
-    shapes_fill_tapered_quad_land(mx23, my23, mr23, px[3], py[3], mx34, my34, mr34, color);
-    shapes_fill_tapered_segment_land(mx34, my34, mr34, px[4], py[4], pr[4], color);
+    shapes_fill_capsule_aa_land((float)px[0], (float)py[0], (float)pr[0],
+                                 (float)mx01, (float)my01, (float)mr01, color);
+    shapes_fill_tapered_quad_aa_land((float)mx01, (float)my01, (float)mr01,
+                                      (float)px[1], (float)py[1],
+                                      (float)mx12, (float)my12, (float)mr12, color);
+    shapes_fill_tapered_quad_aa_land((float)mx12, (float)my12, (float)mr12,
+                                      (float)px[2], (float)py[2],
+                                      (float)mx23, (float)my23, (float)mr23, color);
+    shapes_fill_tapered_quad_aa_land((float)mx23, (float)my23, (float)mr23,
+                                      (float)px[3], (float)py[3],
+                                      (float)mx34, (float)my34, (float)mr34, color);
+    shapes_fill_capsule_aa_land((float)mx34, (float)my34, (float)mr34,
+                                 (float)px[4], (float)py[4], (float)pr[4], color);
 }
 
 /* ---------------------------------------------------------------------
- * The TIMER icon: an hourglass with sand in the TOP chamber only, the
- * bottom drawn empty. The asymmetry is the whole point (time still to
- * come) and is kept unchanged from the previous version - see the sand-
- * drawing code below for why it stays solid, not hatched.
+ * The TIMER icon: an hourglass. Sand in the TOP bulb only, the bottom
+ * empty - that asymmetry is the whole point (time still to come).
  *
- * What changed: the owner's words were "l'icone de sablier est ultra
- * moche. elle devrait etre plus ronde" against a reference photo of a real
- * hourglass (see this file's task brief) - two ROUND, near-spherical
- * bulbs meeting at a narrow waist, not the previous version's two hard-
- * edged triangles (a schematic symbol, not an object).
+ * WEIGHT DISTRIBUTION - read this before touching fill vs outline here
+ * again. An earlier anti-aliased pass filled the WHOLE top chamber solid
+ * and left the bottom as an outline, on a literal reading of the owner's
+ * "que des aplats de couleur... comme si tout etait fait avec de l'encre"
+ * (only flat areas of colour, as if everything were made with ink) as "no
+ * outlines, only fills". Rendered, it read as an egg cup or a goblet: a
+ * heavy dome sitting on a wire dome, not an hourglass, because a filled
+ * bulb reads as the OBJECT rather than as glass with something inside it.
+ * The correction: an anti-aliased stroke is ALSO an aplat - a solid band
+ * of ink with a clean, soft edge, same as a filled region, just narrower.
+ * What the owner was rejecting was the jagged PIXEL STAIRCASE the old
+ * rectangle-bar renderer produced on every curve and diagonal (shapes.h's
+ * whole second generation exists to fix exactly that), not the concept of
+ * an outline. Do not re-fill the bulbs on the strength of that quote alone
+ * - the fix for "petits pixels nuls" was anti-aliasing, already done; this
+ * paragraph is the record of that being re-litigated once already.
  *
- * MIRROR SYMMETRY ABOUT THE WAIST is what makes an hourglass legible at a
- * glance: the top chamber is widest at its cap and narrows going down to
+ * So: BOTH bulbs are glass, drawn identically (same stroke weight, mirror
+ * images about the waist - see MIRROR SYMMETRY below, unchanged). The SAND
+ * is a separate, solid shape sitting INSIDE the top bulb's glass, in its
+ * lower portion only (see "THE SAND" below) - thin glass holding a heavy,
+ * solid mass is what actually reads as an hourglass: you can see the sand
+ * sitting in the glass, rather than the sand and the glass being the same
+ * material.
+ *
+ * MIRROR SYMMETRY ABOUT THE WAIST - two ROUND, near-spherical bulbs, not
+ * hard-edged triangles (a schematic symbol, not an object); unchanged from
+ * the original owner correction ("l'icone de sablier est ultra moche. elle
+ * devrait etre plus ronde") against a reference photo of a real hourglass.
+ * This is what makes an hourglass legible at a glance: the top chamber is
+ * widest at its cap and narrows going down to
  * the waist; the bottom chamber must be the exact opposite - narrowest at
  * the waist, widening going down to its own cap. s_timerBulbHw[] below is
  * filled ONCE for that shape (row 0 = cap/wide, last row = waist/narrow)
@@ -477,66 +546,213 @@ static void ensure_timer_bulb_table(void) {
     s_timerBulbReady = true;
 }
 
+// RENDERING: anti-aliased (shapes.h's second generation). BOTH bulbs are
+// GLASS - a stroke of the same weight, TIMER_OUTLINE wide, marched along
+// s_timerBulbHw's curve with shapes_fill_capsule_aa_land (chained so a
+// capsule's own round cap keeps consecutive stamps merged into one
+// continuous band, the same argument shapes_fill_capsule_aa_land's own
+// header comment makes - right past the waist this curve's own half-width
+// can jump more per row than TIMER_OUTLINE is wide, and a bar drawn only
+// at each row's own x, with nothing bridging to the next row's, breaks the
+// outline into visible dashes exactly there, confirmed on an old, non-AA
+// version of this icon - see git history). The two bulbs are mirror images
+// of the same table (row 0 = cap/wide, last row = waist/narrow - see
+// MIRROR SYMMETRY above): the top chamber walks it forwards from the cap,
+// the bottom walks it backwards from the waist, same table either way.
+//
+// THE OVERFLOW FIX applies to BOTH bulbs now, not just the bottom: a
+// stroke's rounded end sticks out past its own last sample point by the
+// stroke's own half-width, the same way any capsule's round cap always
+// does. Marching a curve all the way to its own cap row would let that
+// overhang poke straight through TIMER_MARGIN (measured on an earlier,
+// bottom-only version of this fix: top margin exactly TIMER_MARGIN=2px
+// while the top chamber was still a flat fill with no overhang to cause
+// this, bottom margin only 1px where it already was a stroke - an
+// asymmetry with nothing conceptual behind it, just this overhang). Both
+// bulbs now march their curve FROM the waist (safely mid-icon, never near
+// a margin) TOWARD their own cap, stopping outlineR rows short so the
+// round end always lands ON the flat cap rectangle rather than past it;
+// the flat cap itself (unchanged position/size either way) covers the
+// reserved gap. Checked on the rendered framebuffer, not by eye: with this
+// fix, both margins come out TIMER_MARGIN, symmetric.
 static void draw_icon_timer(int ox, int oy, uint16_t color) {
     ensure_timer_bulb_table();
 
     int cx = ox + ICON_W / 2;
     int top = oy + TIMER_MARGIN;
+    int outlineR = TIMER_OUTLINE / 2; // 2, TIMER_OUTLINE is even; both the
+                                       // stroke's half-width AND the row
+                                       // budget reserved at each bulb's own
+                                       // cap end - see THE OVERFLOW FIX.
+    int curveRows = TIMER_CHAMBER_H - outlineR;
 
-    // Top chamber: solid fill, the sand. Row 0 is the cap
-    // (s_timerBulbHw[0] == TIMER_HALF_OUT), bulging out WIDER still by
-    // TIMER_BULB_PEAK_ROW before curving back in and down to the waist
-    // (s_timerBulbHw[last] == TIMER_HALF_NECK) - see this block's header
-    // comment for why the peak sits past the cap's own width instead of
-    // exactly at it.
-    for (int row = 0; row < TIMER_CHAMBER_H; row++) {
-        int hw = s_timerBulbHw[row];
-        gfx_fill_rect_land(cx - hw, top + row, 2 * hw, 1, color);
+    // ---- TOP bulb: the glass. Flat cap first (axis-aligned, the sealed
+    // rim - a hard edge on purpose, nothing to anti-alias), then the
+    // curved sides marched from the waist up toward the cap.
+    gfx_fill_rect_land(cx - TIMER_HALF_OUT, top, 2 * TIMER_HALF_OUT, TIMER_OUTLINE, color);
+    {
+        float prevHw = (float)s_timerBulbHw[TIMER_CHAMBER_H - 1]; // the waist
+        float prevY = (float)(top + TIMER_CHAMBER_H - 1);
+        for (int step = 1; step < curveRows; step++) {
+            int tableRow = TIMER_CHAMBER_H - 1 - step; // walking the table
+                                                         // backwards, waist
+                                                         // toward cap
+            float hw = (float)s_timerBulbHw[tableRow];
+            float y = (float)(top + tableRow);
+            shapes_fill_capsule_aa_land(cx - prevHw, prevY, (float)outlineR,
+                                         cx - hw, y, (float)outlineR, color);
+            shapes_fill_capsule_aa_land(cx + prevHw, prevY, (float)outlineR,
+                                         cx + hw, y, (float)outlineR, color);
+            prevHw = hw;
+            prevY = y;
+        }
     }
 
-    // Neck: a short solid connector. It closes the bottom of the sand and
-    // the top of the empty chamber in the same rectangle, which is what
-    // gives the glass a pinch point instead of two chambers meeting at a
-    // single pixel.
+    /* -----------------------------------------------------------------
+     * THE SAND. A separate, solid shape sitting INSIDE the top bulb's
+     * glass - not the bulb's own fill, and not filled to the brim: it
+     * occupies roughly the lower half to two thirds of the chamber
+     * (measured from the waist up), per the reference. sandDepthRows is
+     * that fraction of TIMER_CHAMBER_H; rowSandTop is the table row (in
+     * the top chamber's own row-0-is-cap convention) where the sand
+     * begins.
+     *
+     * The sand's own top surface is not flat: sand settles into a shallow
+     * CONE as it drains through the neck, higher against the glass walls
+     * than in the middle, so the surface DIPS toward the centre - a
+     * crater, not a table top. In cross-section that means, for the rows
+     * right at the top of the sand, there are TWO separate spans of sand
+     * (a sliver against the left wall, a sliver against the right wall)
+     * with a gap between them, rather than one span across the full
+     * width; the gap narrows going down (dipRows of it) until the two
+     * slivers meet and the rest of the sand, down to the waist, is solid
+     * full width. shapes_fill_between_curves_aa_land only ever fills ONE
+     * span per row, so the two-sliver zone is drawn as two separate calls
+     * (left blob, right blob) rather than one - everything below the dip
+     * is the ordinary one-call mirrored fill the whole bulb used to use.
+     * ----------------------------------------------------------------- */
+    int sandDepthRows = TIMER_CHAMBER_H * 3 / 5; // ~60%: "half to two thirds"
+    int rowSandTop = TIMER_CHAMBER_H - sandDepthRows;
+    int sandInset = outlineR; // sand sits just inside the glass stroke's
+                               // own inner edge - touching it, not past it
+    int dipRows = 5;          // shallow on purpose: a handful of rows out
+                               // of sandDepthRows (~26), or this reads as
+                               // a bowl, not a dusting of settling sand
+    if (dipRows > sandDepthRows) dipRows = sandDepthRows;
+
+    int16_t sLeft[TIMER_CHAMBER_H], sRight[TIMER_CHAMBER_H];
+
+    if (dipRows > 1) {
+        int sandHwAtTop = s_timerBulbHw[rowSandTop] - sandInset;
+        if (sandHwAtTop < 0) sandHwAtTop = 0;
+        // How much sand shows at the very peak of the dip, against each
+        // wall: small enough to read as a sliver, wide enough (with its
+        // own AA fringe) not to be the "petit pixel nul" this whole file
+        // exists to avoid.
+        int sliverPx = 2;
+        int maxCutout = sandHwAtTop - sliverPx;
+        if (maxCutout < 0) maxCutout = 0;
+
+        // Left sliver, growing inward (its own RIGHT edge is the dip's
+        // moving boundary) as the row index increases.
+        for (int i = 0; i < dipRows; i++) {
+            int hw = s_timerBulbHw[rowSandTop + i] - sandInset;
+            if (hw < 0) hw = 0;
+            int cutout = maxCutout * (dipRows - 1 - i) / (dipRows - 1); // maxCutout -> 0
+            if (cutout > hw) cutout = hw;
+            sLeft[i] = (int16_t)(cx - hw);
+            sRight[i] = (int16_t)(cx - cutout);
+        }
+        shapes_fill_between_curves_aa_land(top + rowSandTop, dipRows, sLeft, sRight, color);
+
+        // Right sliver, the mirror.
+        for (int i = 0; i < dipRows; i++) {
+            int hw = s_timerBulbHw[rowSandTop + i] - sandInset;
+            if (hw < 0) hw = 0;
+            int cutout = maxCutout * (dipRows - 1 - i) / (dipRows - 1);
+            if (cutout > hw) cutout = hw;
+            sLeft[i] = (int16_t)(cx + cutout);
+            sRight[i] = (int16_t)(cx + hw);
+        }
+        shapes_fill_between_curves_aa_land(top + rowSandTop, dipRows, sLeft, sRight, color);
+    } else {
+        dipRows = 0; // degenerate case (a tiny chamber): no room for a
+                     // dip at all, fall straight through to the solid fill
+                     // below.
+    }
+
+    // Below the dip: solid, full width (inset from the glass), down to
+    // the waist - what connects the sand to the neck and to the falling
+    // grains, and what makes it read as sand SITTING in the glass rather
+    // than floating.
+    {
+        int fullRows = TIMER_CHAMBER_H - (rowSandTop + dipRows);
+        for (int i = 0; i < fullRows; i++) {
+            int row = rowSandTop + dipRows + i;
+            int hw = s_timerBulbHw[row] - sandInset;
+            if (hw < 0) hw = 0;
+            sLeft[i] = (int16_t)(cx - hw);
+            sRight[i] = (int16_t)(cx + hw);
+        }
+        shapes_fill_between_curves_aa_land(top + rowSandTop + dipRows, fullRows, sLeft, sRight, color);
+    }
+
+    // Neck: a short solid connector, already axis-aligned. It closes the
+    // bottom of the sand and the top of the empty chamber in the same
+    // rectangle, which is what gives the glass a pinch point instead of
+    // two chambers meeting at a single pixel.
     int neckY = top + TIMER_CHAMBER_H;
     gfx_fill_rect_land(cx - TIMER_HALF_NECK, neckY, 2 * TIMER_HALF_NECK, TIMER_NECK_H, color);
 
-    // Bottom chamber: outline only - nothing has fallen yet. Mirrored: its
-    // own row 0 (right below the neck) is the NARROW end, so it reads
-    // s_timerBulbHw in reverse (index TIMER_CHAMBER_H-1-row), same table
-    // the top chamber used, just walked the other way.
-    //
-    // Each edge is a march of shapes_fill_thick_segment_land() calls
-    // connecting one row's point to the next, not an independent bar per
-    // row: right past the waist this curve's own half-width can jump more
-    // per row than TIMER_OUTLINE is wide (the bulge rises fast right after
-    // the pinch - see this block's header comment on why), and a bar drawn
-    // only at each row's own x, with nothing bridging the horizontal gap to
-    // the next row's, breaks the outline into visible dashes exactly there.
-    // Confirmed empirically: rendering the old per-row-bar version showed a
-    // real gap on both edges a few rows past the neck, not just a
-    // theoretical risk. A marched thick segment is the same fix
-    // shapes_fill_thick_segment_land's own header comment already
-    // describes solving for a diagonal at any angle - see there for why its
-    // stamps are spaced to always overlap.
+    // ---- BOTTOM bulb: the glass, mirrored - empty, nothing has fallen
+    // yet. Its own row 0 (right below the neck) is the NARROW end, so it
+    // reads s_timerBulbHw in reverse (index TIMER_CHAMBER_H-1-row), same
+    // table the top bulb used, just walked the other way; same march,
+    // same overflow reservation, same flat cap treatment as the top bulb
+    // above (see this block's header comment for both).
     int bottomTop = neckY + TIMER_NECK_H;
-    int prevHw = s_timerBulbHw[TIMER_CHAMBER_H - 1]; // this chamber's own row 0 (waist)
-    for (int row = 1; row < TIMER_CHAMBER_H; row++) {
-        int hw = s_timerBulbHw[TIMER_CHAMBER_H - 1 - row];
-        int y0 = bottomTop + row - 1, y1 = bottomTop + row;
-        shapes_fill_thick_segment_land(cx - prevHw, y0, cx - hw, y1, TIMER_OUTLINE, color);
-        shapes_fill_thick_segment_land(cx + prevHw, y0, cx + hw, y1, TIMER_OUTLINE, color);
-        prevHw = hw;
+    {
+        float prevHw = (float)s_timerBulbHw[TIMER_CHAMBER_H - 1]; // this chamber's own row 0 (waist)
+        float prevY = (float)bottomTop;
+        for (int row = 1; row < curveRows; row++) {
+            float hw = (float)s_timerBulbHw[TIMER_CHAMBER_H - 1 - row];
+            float y = (float)(bottomTop + row);
+            shapes_fill_capsule_aa_land((float)cx - prevHw, prevY, (float)outlineR,
+                                         (float)cx - hw, y, (float)outlineR, color);
+            shapes_fill_capsule_aa_land((float)cx + prevHw, prevY, (float)outlineR,
+                                         (float)cx + hw, y, (float)outlineR, color);
+            prevHw = hw;
+            prevY = y;
+        }
     }
     gfx_fill_rect_land(cx - TIMER_HALF_OUT, bottomTop + TIMER_CHAMBER_H - TIMER_OUTLINE,
                         2 * TIMER_HALF_OUT, TIMER_OUTLINE, color);
 
     // A couple of grains just past the neck, already fallen into the empty
-    // chamber - small enough to read as grains rather than a blob at this
-    // size (see this block's header comment: hatching the sand itself was
-    // tried and rejected the same way, for the same reason).
-    gfx_fill_rect_land(cx - 2, bottomTop + 6, 3, 3, color);
-    gfx_fill_rect_land(cx - 1, bottomTop + 15, 2, 2, color);
+    // chamber - round dots, the same "aplats d'encre" rule as everything
+    // else in this icon (see this block's header comment: hatching the
+    // sand itself was tried and rejected the same way, for the same
+    // reason). They now connect two real things (the sand mass above, the
+    // empty glass below) instead of decorating an already-solid chamber.
+    shapes_fill_disc_aa_land((float)cx - 0.5f, (float)(bottomTop + 7), 1.6f, color);
+    shapes_fill_disc_aa_land((float)cx, (float)(bottomTop + 16), 1.1f, color);
+
+    // A small heap where the fallen grains would be landing, tried rather
+    // than assumed either way (see this file's task history): four rows,
+    // narrowest at its own peak and widest at its base, sitting just above
+    // the bottom cap. Kept because it still reads as a heap at 1x, not a
+    // smear - see the task report for the framebuffer check.
+    {
+        static const int16_t heapHw[4] = {1, 2, 3, 4};
+        int heapRows = 4;
+        int heapTop = bottomTop + TIMER_CHAMBER_H - TIMER_OUTLINE - heapRows;
+        int16_t hl[4], hr[4];
+        for (int i = 0; i < heapRows; i++) {
+            hl[i] = (int16_t)(cx - heapHw[i]);
+            hr[i] = (int16_t)(cx + heapHw[i]);
+        }
+        shapes_fill_between_curves_aa_land(heapTop, heapRows, hl, hr, color);
+    }
 }
 
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
