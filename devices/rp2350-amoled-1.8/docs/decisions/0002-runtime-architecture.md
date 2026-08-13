@@ -118,6 +118,45 @@ design never answered.
 something different, with nothing on screen saying so, that is a defect however
 fast it renders.
 
+### 4b. Each app is an object, and refers to nothing outside itself
+
+The owner's words, and it is an axiom rather than a preference: *chaque app est
+un objet et ne renvoie a rien en dehors de lui.*
+
+A stopwatch is a stopwatch. It is not a stopwatch sitting inside a system. So
+nothing belonging to the runtime may appear on an app's screen, ever.
+
+What this forbids, stated concretely because the violation will always arrive
+as a reasonable-sounding addition:
+
+- **no battery indicator.** This is the one someone will add. It is the most
+  defensible extradiegetic element there is, and it is still forbidden.
+- no clock, no app name, no page dots, no back arrow
+- no menu affordance. A corner glyph meaning "there are other apps" was
+  proposed, drawn, and rejected on exactly this ground: it says something
+  about the device rather than about the app, and it would have sat on the
+  sketchpad's drawing surface forever.
+- no notification, no toast, no status of any kind
+
+The menu is the one exception and only because it is not an app: it is the
+drawer, and naming apps is its entire job.
+
+**What this costs, and it is a real cost.** Discoverability has to leave the
+screen. The only way into the menu is a gesture (both buttons held, long
+press), and nothing on the device says so.
+
+Two things carry it instead. The object teaches the gesture: a mark on the
+case beside the two buttons, which is diegetic to the physical thing and
+pollutes no app. And the gesture has to be findable by accident, which this
+one plausibly is: a child fiddling with a two-button object will hold both of
+them long before an adult reasons their way to it. That makes the chord better
+suited to the actual user than to the person who built it.
+
+The consequence for the firmware is that the chord must be forgiving. "Both
+buttons held together" and "BOOT down at the exact instant PWR's long-press
+verdict fires" are not the same gesture, and the difference is felt by small
+hands. Verify which one is implemented rather than assuming.
+
 **Raise the PMIC's hard power-off threshold** (register `0x27`, default 6s).
 Children hold buttons, and a held PWR is currently 4.5 seconds away from an
 unannounced power cut.
