@@ -62,7 +62,7 @@ void *app_alloc(size_t bytes);
  * it, and leaves the rest in the frame struct below.
  *
  * The runtime consumes, and the app never sees:
- *   - the long-double-press that opens the menu;
+ *   - the BOOT+PWR long-press chord that opens the menu;
  *   - shake, unless the app set wants_shake.
  *
  * Everything else is the app's.

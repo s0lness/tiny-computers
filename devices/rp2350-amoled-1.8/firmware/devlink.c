@@ -9,6 +9,7 @@
 #include "devlink.h"
 
 #include <ctype.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ void devlink_init(const devlink_hooks_t *hooks) {
  * byte per pixel loses nothing that matters. Getting that byte out of a
  * stored RGB565 pixel needs the byte-swap undone first: the framebuffer is
  * kept byte-swapped relative to a CPU uint16_t because the panel wants the
- * opposite order and the buffer is DMA'd out raw (see main.c's px_swap).
+ * opposite order and the buffer is DMA'd out raw (see gfx.h's px_swap).
  * ------------------------------------------------------------------- */
 static inline uint8_t devlink_gray_at(int idx) {
     uint16_t px = g_hooks.fb[idx];
@@ -164,6 +165,17 @@ static int devlink_parse_two_ints(const char *s, int *a, int *b) {
     return 2;
 }
 
+// Parses one whitespace-separated int from s. Returns false if none found;
+// used by SWITCH, which takes just an index rather than DOWN/MOVE's x/y pair.
+static bool devlink_parse_one_int(const char *s, int *a) {
+    while (*s == ' ') s++;
+    char *end;
+    long v = strtol(s, &end, 10);
+    if (end == s) return false;
+    *a = (int)v;
+    return true;
+}
+
 static void devlink_dispatch(char *line) {
     char *p = line;
     while (*p == ' ') p++;
@@ -216,6 +228,15 @@ static void devlink_dispatch(char *line) {
     } else if (strcmp(cmd, "ERASE") == 0) {
         if (g_hooks.erase) g_hooks.erase();
         printf("OK\r\n");
+    } else if (strcmp(cmd, "APP") == 0) {
+        int idx = g_hooks.app_current ? g_hooks.app_current() : 0;
+        const char *name = g_hooks.app_name ? g_hooks.app_name(idx) : NULL;
+        printf("APP %d %s\r\n", idx, name ? name : "?");
+    } else if (strcmp(cmd, "SWITCH") == 0) {
+        int idx;
+        if (!devlink_parse_one_int(args, &idx)) { printf("ERR args\r\n"); return; }
+        bool ok = g_hooks.app_switch ? g_hooks.app_switch(idx) : false;
+        printf(ok ? "OK\r\n" : "ERR range\r\n");
     } else {
         printf("ERR unknown %s\r\n", cmd);
     }

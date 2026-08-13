@@ -20,6 +20,14 @@
 #include "FT3168.h"
 #include "QMI8658.h"
 
+// BOOT is not on i2c1 (see sensors.h's "BOOT button" section on why its two
+// functions live in this header anyway): it borrows the flash chip select,
+// which is what bootbtn.c actually does the reading. Included by relative
+// path for the same reason runtime.c used to (CMakeLists.txt owns the
+// include-path list, a relative path resolves regardless of how that list
+// is written).
+#include "../bootbtn.h"
+
 /* ---------------------------------------------------------------------
  * Touch power state.
  *
@@ -207,6 +215,72 @@ static inline bool touch_q_pop(touch_sample_t *out) {
     return true;
 }
 
+// Non-destructive read of the next sample, used only by the merge in
+// sensors_touch_next() below to compare timestamps before deciding which
+// ring to actually pop from.
+static inline bool touch_q_peek(touch_sample_t *out) {
+    uint32_t head = g_touchHead;
+    if (head == g_touchTail) return false; // empty
+    __dmb();
+    *out = g_touchQ[head];
+    return true;
+}
+
+/* ---- the injection ring: core0 (devlink) -> core0 (sensors_touch_next) --
+ *
+ * devlink_poll() runs on core0, inside the same main-loop iteration that
+ * calls sensors_touch_next() (see runtime.c). Pushing an injected sample
+ * straight into g_touchQ above from there would make core0 a second writer
+ * of a ring whose entire safety argument is "core1 is the only producer"
+ * (see the banner comment above touch_q_push()). So injected samples get
+ * their own ring instead: g_injectQ is written only by
+ * sensors_inject_touch() (core0) and read only by sensors_touch_next()
+ * (also core0, in the same thread of execution, not an interrupt). One core
+ * producing and consuming its own ring needs no barrier and no volatile:
+ * there is no other core and nothing asynchronous anywhere in this path to
+ * reorder against, unlike g_touchQ.
+ *
+ * sensors_touch_next() merges the two rings by timestamp rather than
+ * draining one first, so an agent-injected sample and a real one that land
+ * in the same frame come out in the order they actually happened, not
+ * "injected always wins". An exact tie (same tMs, which at 1ms resolution
+ * can genuinely happen) is broken toward the injected sample: which one a
+ * human would call "first" is not knowable at that resolution anyway, and a
+ * fixed, documented tie-break is all this needs. The practical takeaway for
+ * the one case that matters, driving devlink and a real finger at once
+ * (which tools/README-devlink.md already says not to do), is that the two
+ * streams interleave correctly rather than corrupting each other; it is
+ * still confusing to watch, just no longer unsafe.
+ */
+#define INJECT_Q_CAP 8
+_Static_assert((INJECT_Q_CAP & (INJECT_Q_CAP - 1)) == 0, "INJECT_Q_CAP must be a power of two");
+
+static touch_sample_t g_injectQ[INJECT_Q_CAP];
+static uint32_t g_injectHead = 0;
+static uint32_t g_injectTail = 0;
+
+static inline bool inject_q_push(const touch_sample_t *s) {
+    uint32_t tail = g_injectTail;
+    uint32_t next = (tail + 1) & (INJECT_Q_CAP - 1);
+    if (next == g_injectHead) return false; // full: drop, same policy touch_q_push() uses
+    g_injectQ[tail] = *s;
+    g_injectTail = next;
+    return true;
+}
+
+static inline bool inject_q_peek(touch_sample_t *out) {
+    if (g_injectHead == g_injectTail) return false; // empty
+    *out = g_injectQ[g_injectHead];
+    return true;
+}
+
+static inline bool inject_q_pop(touch_sample_t *out) {
+    if (g_injectHead == g_injectTail) return false; // empty
+    *out = g_injectQ[g_injectHead];
+    g_injectHead = (g_injectHead + 1) & (INJECT_Q_CAP - 1);
+    return true;
+}
+
 // How often to push a synthetic "no finger" sample while Touch_INT_PIN is
 // high, so core0's lift-debounce and stall-watchdog timing (both wall-clock
 // based) keep getting fresh timestamps without core1 spending any I2C time
@@ -237,6 +311,14 @@ static inline bool touch_q_pop(touch_sample_t *out) {
  */
 static volatile bool g_fingerDownShared; // core0 -> core1: suppress shake while drawing
 static volatile uint32_t g_eraseSeq;     // core1 -> core0: bumped once per accepted shake
+
+// core0-owned: devlink's synthetic shake (sensors_inject_erase()) bumps
+// this instead of g_eraseSeq above, so devlink is never a second writer of
+// a word core1 also writes. sensors_erase_seq() sums the two; that is safe
+// because each summand individually has exactly one writer and is
+// non-decreasing, so the sum is too, which is all a "did this change since
+// last time" comparison (see runtime.c) needs.
+static uint32_t g_injectEraseSeq;
 
 // Diagnostics, core1-increment-only, core0-read-only (via sensors_stats()).
 static volatile uint32_t g_touchReads;
@@ -423,7 +505,19 @@ static void core1_entry(void) {
  * ========================================================================= */
 
 bool sensors_touch_next(touch_sample_t *out) {
-    return touch_q_pop(out);
+    touch_sample_t realHead, injHead;
+    bool haveReal = touch_q_peek(&realHead);
+    bool haveInj = inject_q_peek(&injHead);
+    if (!haveReal && !haveInj) return false;
+
+    // See the injection-ring banner above for the tie-break rule.
+    bool takeInj = haveInj && (!haveReal || (int32_t)(injHead.tMs - realHead.tMs) <= 0);
+    return takeInj ? inject_q_pop(out) : touch_q_pop(out);
+}
+
+void sensors_inject_touch(uint8_t fingers, uint16_t x, uint16_t y) {
+    touch_sample_t s = { to_ms_since_boot(get_absolute_time()), fingers, x, y };
+    (void)inject_q_push(&s); // full: drop, agent can just send it again
 }
 
 void sensors_set_finger_down(bool down) {
@@ -437,7 +531,31 @@ uint8_t sensors_key_take(void) {
 }
 
 uint32_t sensors_erase_seq(void) {
-    return g_eraseSeq;
+    return g_eraseSeq + g_injectEraseSeq;
+}
+
+void sensors_inject_erase(void) {
+    g_injectEraseSeq++;
+}
+
+// bootbtn_poll_clicked() and bootbtn_poll_level() each gate their own
+// sampling on the same SAMPLE_INTERVAL_MS timer, independently (see
+// bootbtn.h): calling both once per rtcore_tick(), as runtime_core.c and
+// (via the level cache below) this function do, does not double the actual
+// borrow rate against calling just one of them.
+bool sensors_boot_clicked(void) {
+    return bootbtn_poll_clicked();
+}
+
+bool sensors_boot_down(void) {
+    static bool level = false;
+    bool sampled;
+    if (bootbtn_poll_level(&sampled)) level = sampled;
+    return level;
+}
+
+void sensors_boot_consume_click(void) {
+    bootbtn_consume_next_click();
 }
 
 void sensors_stats(sensors_stats_t *out) {

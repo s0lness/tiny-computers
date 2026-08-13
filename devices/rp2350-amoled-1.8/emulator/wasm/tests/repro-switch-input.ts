@@ -1,0 +1,267 @@
+// repro-switch-input: headless reproduction of the hardware bug reported by
+// the owner (see runtime_core.c's touch_resolver_reset() and its comment for
+// the fix, and the "BOOT+PWR long-press chord" comment for the gesture this
+// drives). Run with:
+//
+//   bun run emulator/wasm/tests/repro-switch-input.ts
+//
+// This loads the REAL firmware compiled to wasm (emulator/wasm/dist/emu.wasm,
+// built by emulator/wasm/build.ts) and drives it through emu_tick() with a
+// synthetic clock, never wall time - see emu_abi.h's comment on why nowMs is
+// the only time source a reproducible test can trust.
+//
+// It performs the actual sequence the owner described: boot, open the menu
+// through the real gesture (BOOT held, PWR held past its long-press
+// threshold - not a shortcut into app_switch_to()), tap a tile, and exercise
+// whatever app that lands on. No internals are touched directly; every
+// assertion is on what a person at the device could also observe: the
+// framebuffer changing (hashed with Bun.hash(), not inspected pixel by
+// pixel) and emu_app_current().
+//
+// History: this file originally drove the long-double-press gesture the
+// owner actually hit on hardware (a short PWR press, then a second PWR
+// press held long, within 500ms of the first) and that version is what
+// first reproduced the bug below - see this file's git history for the
+// exact trace and PASS/FAIL output before and after the fix. The gesture
+// itself was replaced (both buttons held, PWR long) once the double-press's
+// own timing window turned out to be a second, independent bug (see
+// runtime_core.c); this version drives the chord that replaced it.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
+
+// Panel geometry and app-table facts, lifted from gfx.h / runtime_core.c /
+// emu_shim.c rather than re-derived: this test drives the real module, it
+// does not reimplement it.
+const PANEL_W = 368;
+const PANEL_H = 448;
+const APP_INDEX_MENU = -1;
+const APP_CHRONO = 0;
+const APP_DRAW = 1;
+const BTN_BOOT = 0;
+const BTN_PWR = 1;
+const KEY_LONG_MS = 1500; // emu_device()'s declared longPressMs for PWR
+
+// menu.c's tile layout, landscape coordinates: TILE_MARGIN=16, TILE_GAP=16,
+// TILE_H=220, g_appCount=3, LAND_W=PANEL_H=448, LAND_H=PANEL_W=368. Recomputed
+// here (not read back from the module - there is no export for it) so a
+// touch can be aimed at a specific tile, the same way a finger would be aimed
+// at a specific spot on the glass.
+function tileCenterPanelXY(appIndex: number, appCount: number): [number, number] {
+    const TILE_MARGIN = 16, TILE_GAP = 16, TILE_H = 220;
+    const LAND_W = PANEL_H, LAND_H = PANEL_W;
+    const usableW = LAND_W - 2 * TILE_MARGIN - (appCount - 1) * TILE_GAP;
+    const tileW = Math.floor(usableW / appCount);
+    const bx = TILE_MARGIN + appIndex * (tileW + TILE_GAP);
+    const by = Math.floor((LAND_H - TILE_H) / 2);
+    const lx = bx + Math.floor(tileW / 2);
+    const ly = by + Math.floor(TILE_H / 2);
+    // menu.c's panel_to_land() inverted: lx=py, ly=PANEL_W-1-px -> px =
+    // PANEL_W-1-ly, py = lx.
+    const px = PANEL_W - 1 - ly;
+    const py = lx;
+    return [px, py];
+}
+
+let passCount = 0;
+let failCount = 0;
+function check(label: string, ok: boolean, detail?: string) {
+    const status = ok ? "PASS" : "FAIL";
+    if (ok) passCount++; else failCount++;
+    console.log(`[${status}] ${label}${detail ? " - " + detail : ""}`);
+}
+
+async function loadDevice() {
+    const bytes = readFileSync(WASM_PATH);
+    const mod = await WebAssembly.compile(bytes);
+
+    let memory!: WebAssembly.Memory;
+    const decoder = new TextDecoder();
+
+    const imports = {
+        env: {
+            js_log(ptr: number, len: number) {
+                const bytes = new Uint8Array(memory.buffer, ptr, len);
+                console.log(`    [fw] ${decoder.decode(bytes)}`);
+            },
+            // All eight take/return f32; wasm truncates at the call
+            // boundary, JS Math is float64 underneath either way (see
+            // emu_abi.h's note on this being a known, accepted numerical
+            // divergence from the board's single-precision FPU).
+            sinf: (x: number) => Math.sin(x),
+            cosf: (x: number) => Math.cos(x),
+            atan2f: (y: number, x: number) => Math.atan2(y, x),
+            sqrtf: (x: number) => Math.sqrt(x),
+            fabsf: (x: number) => Math.abs(x),
+            floorf: (x: number) => Math.floor(x),
+            fmodf: (x: number, y: number) => x % y,
+            powf: (x: number, y: number) => Math.pow(x, y),
+        },
+    };
+
+    const instance = await WebAssembly.instantiate(mod, imports);
+    memory = instance.exports.memory as WebAssembly.Memory;
+    const exp = instance.exports as any;
+
+    if (exp.emu_init() !== 1) {
+        throw new Error("emu_init() failed - see [fw] log lines above");
+    }
+
+    return {
+        tick(nowMs: number) {
+            exp.emu_tick(nowMs);
+        },
+        button(index: number, down: boolean) {
+            exp.emu_button(index, down ? 1 : 0);
+        },
+        buttonVerdict(index: number, isLong: boolean) {
+            exp.emu_button_verdict(index, isLong ? 1 : 0);
+        },
+        touch(down: boolean, x: number, y: number) {
+            exp.emu_touch(down ? 1 : 0, x, y);
+        },
+        appCurrent(): number {
+            return exp.emu_app_current();
+        },
+        fbHash(): number | bigint {
+            const ptr = exp.emu_fb();
+            const fb = new Uint8Array(memory.buffer, ptr, PANEL_W * PANEL_H * 2);
+            return Bun.hash(fb);
+        },
+    };
+}
+
+type Device = Awaited<ReturnType<typeof loadDevice>>;
+
+// A plain PWR short click: press, release, short verdict - each edge its own
+// tick, so a single sensors_key_take() read never sees more than one bit.
+function pwrShortClick(dev: Device, tPressMs: number) {
+    dev.button(BTN_PWR, true);
+    dev.tick(tPressMs);
+    dev.button(BTN_PWR, false);
+    dev.buttonVerdict(BTN_PWR, false);
+    dev.tick(tPressMs + 50);
+}
+
+// The real gesture, per runtime_core.c's "BOOT+PWR long-press chord" comment:
+// BOOT held down, PWR pressed and held past the PMIC's 1.5s threshold, both
+// still held at the instant the long-press verdict lands. Released in the
+// natural order (PWR first, then BOOT) afterward.
+function bootPwrChord(dev: Device, label: string, t0: number) {
+    console.log(`-- ${label} (BOOT+PWR chord, starting t=${t0}) --`);
+    dev.button(BTN_BOOT, true);
+    dev.tick(t0);
+    dev.button(BTN_PWR, true);
+    dev.tick(t0 + 10);
+    dev.buttonVerdict(BTN_PWR, true);
+    dev.tick(t0 + 10 + KEY_LONG_MS);
+    dev.button(BTN_PWR, false);
+    dev.tick(t0 + 10 + KEY_LONG_MS + 50);
+    dev.button(BTN_BOOT, false);
+    dev.tick(t0 + 10 + KEY_LONG_MS + 100);
+}
+
+async function main() {
+    console.log("=== reproduction + regression: switch-carried touch state, and the BOOT+PWR chord ===\n");
+
+    const dev = await loadDevice();
+
+    console.log("-- boot --");
+    dev.tick(0);
+    const bootApp = dev.appCurrent();
+    check("boots into chrono", bootApp === APP_CHRONO, `app_current()=${bootApp}`);
+
+    // ---- a PWR-only long press must NOT open the menu (the chord requires
+    // BOOT too) - sanity check that this really is a chord, not a relabelled
+    // single long press.
+    console.log("-- PWR long press alone (BOOT not held): must NOT open the menu --");
+    dev.button(BTN_PWR, true);
+    dev.tick(1000);
+    dev.buttonVerdict(BTN_PWR, true);
+    dev.tick(1000 + KEY_LONG_MS);
+    dev.button(BTN_PWR, false);
+    dev.tick(1000 + KEY_LONG_MS + 50);
+    const afterPwrAlone = dev.appCurrent();
+    check("PWR alone does not open the menu", afterPwrAlone === APP_CHRONO, `app_current()=${afterPwrAlone}`);
+
+    // ---- open the menu, the real way -----------------------------------
+    bootPwrChord(dev, "gesture #1: open menu from chrono", 3000);
+    const afterOpen1 = dev.appCurrent();
+    check("menu opens from chrono", afterOpen1 === APP_INDEX_MENU, `app_current()=${afterOpen1}`);
+
+    // ---- tap the draw tile, launching sketch -----------------------------
+    const appCount = 3; // g_apps[] = { chrono, sketch("draw"), timer }
+    const [drawX, drawY] = tileCenterPanelXY(APP_DRAW, appCount);
+    console.log(`-- tap "draw" tile at panel (${drawX}, ${drawY}) --`);
+    dev.touch(true, drawX, drawY);
+    dev.tick(5000);
+    const afterTapDraw = dev.appCurrent();
+    check("tapping the draw tile launches sketch", afterTapDraw === APP_DRAW, `app_current()=${afterTapDraw}`);
+
+    // The tap continues into a drag: the finger never left the glass. This
+    // is the exact moment the suspected mechanism targets: does the newly
+    // entered app's first tick see a stale "already down" and miss the
+    // press edge it needs to start a stroke?
+    const preDrawHash = dev.fbHash();
+    console.log("-- drag while still down, to draw a stroke --");
+    dev.touch(true, drawX + 8, drawY + 8);
+    dev.tick(5020);
+    dev.touch(true, drawX + 20, drawY + 20);
+    dev.tick(5040);
+    dev.touch(true, drawX + 34, drawY + 34);
+    dev.tick(5060);
+    dev.touch(false, 0, 0);
+    dev.tick(5200); // past LIFT_DEBOUNCE_MS, lift registers
+    const postDrawHash = dev.fbHash();
+    check(
+        "sketch actually drew something (framebuffer changed)",
+        preDrawHash !== postDrawHash,
+        `pre=${preDrawHash} post=${postDrawHash}`,
+    );
+
+    // ---- back to the menu, from inside sketch ----------------------------
+    bootPwrChord(dev, "gesture #2: open menu from sketch", 6000);
+    const afterOpen2 = dev.appCurrent();
+    check("menu opens again from sketch", afterOpen2 === APP_INDEX_MENU, `app_current()=${afterOpen2}`);
+
+    // ---- tap the chrono tile -----------------------------------------------
+    // THE critical check: this is exactly the tap the suspected mechanism
+    // predicts will be swallowed (a stale wasDown carried from the still-down
+    // finger that launched sketch, never cleared while sketch - a raw-touch
+    // consumer - was running). FAILS before the fix, PASSES after.
+    const [chronoX, chronoY] = tileCenterPanelXY(APP_CHRONO, appCount);
+    console.log(`-- tap "chrono" tile at panel (${chronoX}, ${chronoY}) --`);
+    dev.touch(true, chronoX, chronoY);
+    dev.tick(8000);
+    dev.touch(false, 0, 0);
+    dev.tick(8050);
+    const afterTapChrono = dev.appCurrent();
+    check("tapping the chrono tile launches chrono", afterTapChrono === APP_CHRONO, `app_current()=${afterTapChrono}`);
+
+    // ---- exercise the stopwatch: PWR-short should start it ---------------
+    const preRunHash = dev.fbHash();
+    console.log("-- PWR short-press: start the stopwatch --");
+    pwrShortClick(dev, 8500);
+    dev.tick(9550); // let a second of running time pass, so a digit changes
+    const postRunHash = dev.fbHash();
+    check(
+        "chrono responds to PWR-short (framebuffer changed as it runs)",
+        preRunHash !== postRunHash,
+        `pre=${preRunHash} post=${postRunHash}`,
+    );
+
+    // ---- the reported terminal symptom: does the menu still open? --------
+    bootPwrChord(dev, "gesture #3: open menu from chrono, again", 10000);
+    const afterOpen3 = dev.appCurrent();
+    check(
+        "menu still opens on a third chord (the reported terminal symptom)",
+        afterOpen3 === APP_INDEX_MENU,
+        `app_current()=${afterOpen3}`,
+    );
+
+    console.log(`\n${passCount} passed, ${failCount} failed`);
+    if (failCount > 0) process.exit(1);
+}
+
+main();

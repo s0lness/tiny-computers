@@ -24,10 +24,10 @@
 // is already set and safe to read.
 //
 // The runtime also keeps its own copy of this same value, for a reason
-// menu.c does not need to know about: closing the menu (the same
-// long-double-press gesture, fired again while already inside it) is a
-// runtime-level decision, not something menu.c requests, so the runtime
-// needs this value for its own use too, not just to hand to menu_enter().
+// menu.c does not need to know about: closing the menu (the same BOOT+PWR
+// chord, fired again while already inside it) is a runtime-level decision,
+// not something menu.c requests, so the runtime needs this value for its
+// own use too, not just to hand to menu_enter().
 void menu_set_return_app(int index);
 
 extern const app_t g_menuApp;

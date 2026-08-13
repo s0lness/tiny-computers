@@ -36,6 +36,12 @@
  * the only writer, core0 the only reader, with a barrier at the point the
  * new element becomes visible. No lock is taken anywhere near an I2C
  * transaction, deliberately.
+ *
+ * sensors_touch_next() also merges in a second ring, fed by
+ * sensors_inject_touch() below (the agent-facing devlink test link's
+ * synthetic touches). That ring is core0-owned on both ends, so it is not a
+ * second writer of the ring above; see sensors_inject_touch()'s comment and
+ * sensors.c for how the merge works.
  */
 typedef struct {
     uint32_t tMs;    // to_ms_since_boot() when core1 took this reading
@@ -48,6 +54,20 @@ typedef struct {
 // sample: several samples routinely arrive between two render iterations
 // now that core0 never blocks on the bus.
 bool sensors_touch_next(touch_sample_t *out);
+
+// Injects a synthetic touch sample, for the agent-facing test link. It
+// enters the same queue real samples do, so an app cannot tell the
+// difference and no app needs to know this exists.
+//
+// Callable only from core0 (devlink_poll() is the one caller, and it always
+// runs on core0's main loop, same as sensors_touch_next()). It does NOT push
+// into the real ring above: that ring's entire safety argument is "core1 is
+// the sole writer" (see the banner above), and a second writer from core0
+// would reintroduce the exact torn-sample race the barrier there exists to
+// prevent. Instead it pushes into a second, core0-owned ring that
+// sensors_touch_next() merges in by timestamp. See sensors.c for the merge
+// and for why that ring needs no barrier at all.
+void sensors_inject_touch(uint8_t fingers, uint16_t x, uint16_t y);
 
 // Core0 -> core1. While a finger is down, shake detection is suppressed, so
 // that resting a hand on the puck while drawing cannot erase the drawing.
@@ -93,6 +113,15 @@ uint8_t sensors_key_take(void);
  */
 uint32_t sensors_erase_seq(void);
 
+// Injects a synthetic shake, for the agent-facing test link's ERASE command.
+// Bumps the same counter sensors_erase_seq() reports, so it goes through the
+// identical wants_shake gate a real shake does and reaches an app only if
+// that app opted in; there is deliberately no direct "erase this app now"
+// call, for the same reason shake itself is opt-in above. Core0-owned end to
+// end (see sensors.c), so, like sensors_inject_touch(), this is not a second
+// writer of anything core1 also writes.
+void sensors_inject_erase(void);
+
 /* ---- diagnostics -------------------------------------------------------
  *
  * Core1 increments these and never prints them; core0 reads them and turns
@@ -109,6 +138,34 @@ typedef struct {
 } sensors_stats_t;
 
 void sensors_stats(sensors_stats_t *out);
+
+/* ---- BOOT button ---------------------------------------------------------
+ *
+ * Not a chip on i2c1 - BOOT is read by borrowing the flash chip select (see
+ * bootbtn.h on the board for what that costs and why it is sampled slowly
+ * and never in a hot loop) - but it widens this header rather than getting
+ * a header of its own, because app.h's rule is absolute: apps read signals,
+ * never chips, and the portable runtime core (runtime_core.c) is exactly as
+ * hardware-blind as an app is. Before this, the core reached past sensors.h
+ * into bootbtn.h directly, which is the one place it depended on anything
+ * outside {app.h, gfx.h, sensors.h} - see docs/decisions/0003.
+ */
+
+// True on the frame the BOOT button was released. See bootbtn.h on the board
+// for why this is sampled slowly and never in a hot loop.
+bool sensors_boot_clicked(void);
+
+// The BOOT button's current level, for gestures that need it held.
+bool sensors_boot_down(void);
+
+// Swallows whatever BOOT click is currently pending (or the next one to
+// complete), so that releasing BOOT as part of a chord (BOOT held with PWR
+// long-pressed, see runtime_core.c's menu gesture) does not ALSO deliver a
+// bootClicked to whichever app the chord just switched to. Without this, a
+// chord that closes the menu back into chrono would reset the stopwatch the
+// instant BOOT comes back up, purely as a side effect of how the chord was
+// released, not anything the child asked chrono to do.
+void sensors_boot_consume_click(void);
 
 /* ---- lifecycle --------------------------------------------------------- */
 

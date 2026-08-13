@@ -23,6 +23,11 @@ pico_generate_pio_header(main ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO/qspi.pio
 # Adding an app is one file here plus one entry in g_apps[] in runtime.c.
 target_sources(main PRIVATE
     # The runtime: owns the screen, the input and the main loop.
+    # runtime_core.c is the portable half (docs/decisions/0003): the arena,
+    # the app table, switching, and per-frame dispatch. It compiles for the
+    # board here and for wasm32-freestanding in emulator/wasm/build.ts, so
+    # do not add anything to it that depends on pico-sdk or hardware/*.
+    runtime/runtime_core.c
     runtime/runtime.c
     runtime/gfx.c
     runtime/sensors.c
@@ -38,15 +43,19 @@ target_sources(main PRIVATE
     # select with interrupts off, so it lives in its own file with the
     # explanation of what that costs.
     bootbtn.c
-)
 
-# devlink.c (the USB screenshot and touch-injection link) is out of the build
-# for now. Its hooks were the sketchpad's own inject_down/move/up functions,
-# which no longer exist at that layer: touch now arrives from core1 through a
-# queue, so injection has to become a synthetic producer on that queue rather
-# than a direct call into one app. That is worth doing, since screenshots are
-# how this gets verified without a human photographing the screen, but it is
-# not worth doing in the same change as the runtime itself.
+    # devlink: the USB screenshot / touch-injection / app-navigation link an
+    # agent uses to see and drive the board without a human. Its old hooks
+    # called straight into the sketchpad's own inject_down/move/up
+    # functions, which stopped existing when touch moved onto core1's
+    # lock-free queue; runtime.c now wires it to sensors_inject_touch() (a
+    # second, core0-owned ring merged into that same queue by timestamp, so
+    # devlink never becomes a second producer of core1's ring) instead, so
+    # every app gets injected touches for free, not just the sketchpad. See
+    # devlink.h, runtime.c's "devlink wiring" section and
+    # tools/README-devlink.md for the full story.
+    devlink.c
+)
 
 # appswitch.c and bootreq.h are deliberately NOT built any more. They existed
 # to reboot into the other flash slot, which is what this architecture

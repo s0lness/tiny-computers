@@ -17,7 +17,7 @@
  * two meanings ("move" vs "launch, once PWR is pressed") is live is never a
  * guess - see the header comment on "no modal state" in app.h and 0002.
  *
- * Opening and closing the menu (the long-double-press gesture) is entirely
+ * Opening and closing the menu (the BOOT+PWR long-press chord) is entirely
  * the runtime's business; this file never reads the PMIC and never calls
  * app_switch_to() with its own index. It only ever switches TO a real
  * g_apps[] entry, on a tap or on PWR-short.
