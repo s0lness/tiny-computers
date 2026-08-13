@@ -11,6 +11,7 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
 
 #include "pico/time.h"
 #include "pico/multicore.h"
@@ -80,6 +81,59 @@ static void buttons_init(void) {
     DEV_I2C_Write_Byte(AXP2101_ADDR, 0x4A, 0xFF);
 }
 
+// AXP2101 register 0x27, "IRQLEVEL/OFFLEVEL/ONLEVEL setting". Source: AXP2101
+// datasheet (X-Powers Ltd, Rev 0.1, 2019-04-28), register map + bitfield
+// table for REG 27H:
+//
+//   bits 7:6  reserved, reads 0
+//   bits 5:4  IRQLEVEL: long-press interrupt threshold.
+//             00=1s  01=1.5s (POR default)  10=2s  11=2.5s
+//   bits 3:2  OFFLEVEL: hard power-off threshold, the PWRON hold that cuts
+//             the rails with no firmware involvement.
+//             00=4s  01=6s (POR default)  10=8s  11=10s
+//   bits 1:0  ONLEVEL: how long POK must be held to power the board ON from
+//             off. 00=128ms  01=512ms (POR default)  10=1s  11=2s
+//
+// IRQLEVEL's and OFFLEVEL's POR defaults (1.5s, 6s) match what AGENTS.md
+// already documented from hardware measurement, before this function
+// existed. This function reads the register rather than assuming any
+// composite byte value for it, ONLEVEL's POR state included, so it is
+// correct regardless of what silicon actually shipped in that field.
+//
+// ONLEVEL is a different field from IRQLEVEL and governs cold power-on, not
+// the runtime long-press gesture; do not confuse the two when reading this
+// register.
+#define AXP2101_REG_LEVELS    0x27
+#define AXP2101_OFFLEVEL_MASK 0x0C // bits 3:2
+#define AXP2101_OFFLEVEL_10S  0x0C // 11b: the maximum, 10s
+
+// Raises OFFLEVEL (bits 3:2) to its maximum, 10s, and leaves every other bit
+// in the register untouched: read-modify-write, not a literal, so IRQLEVEL
+// (the 1.5s menu-gesture threshold, which the owner has explicitly decided
+// keeps its feel) and ONLEVEL survive exactly as silicon set them.
+//
+// Why this exists: the menu gesture is both buttons held until PWR's
+// long-press verdict fires at 1.5s. At the 6s default, a child holding PWR
+// past that verdict was only 4.5s from an unannounced power cut (see
+// docs/decisions/0002-runtime-architecture.md section 4). 10s is the most
+// margin this register can give without changing how the gesture feels.
+//
+// Runs on core0 in sensors_init(), before sensors_start() launches core1
+// (see the ownership rule in sensors.h): this is the only point in this
+// firmware's lifetime where touching i2c1 from core0 is safe.
+static void pmic_raise_poweroff_threshold(void) {
+    uint8_t before = DEV_I2C_Read_Byte(AXP2101_ADDR, AXP2101_REG_LEVELS);
+    uint8_t target = (uint8_t)((before & ~AXP2101_OFFLEVEL_MASK) | AXP2101_OFFLEVEL_10S);
+    DEV_I2C_Write_Byte(AXP2101_ADDR, AXP2101_REG_LEVELS, target);
+    uint8_t after = DEV_I2C_Read_Byte(AXP2101_ADDR, AXP2101_REG_LEVELS);
+    // Do not trust a write: read it back and print both values. Deliberately
+    // cheap, this runs exactly once at startup, not in any hot path.
+    printf("PMIC reg 0x27 (power-off threshold): before=0x%02X after=0x%02X\r\n", before, after);
+    if ((after & AXP2101_OFFLEVEL_MASK) != AXP2101_OFFLEVEL_10S) {
+        printf("PMIC reg 0x27: WRITE DID NOT TAKE, still not at 10s\r\n");
+    }
+}
+
 // Set by pmic_poll_core1() (core1), consumed by sensors_key_take() (core0),
 // which is where the framebuffer lives. Bits are REG 0x49's: 3 short press, 2
 // long press. A plain volatile byte is enough synchronisation for this: it is
@@ -89,6 +143,24 @@ static void buttons_init(void) {
 // events to lose since the PMIC itself already debounces press/release in
 // hardware.
 static volatile uint8_t g_keyEvent;
+
+// core0-owned: devlink's synthetic key bits (sensors_inject_key(), see
+// sensors.h for why this cannot just OR straight into g_keyEvent above)
+// land here instead. sensors_key_take() OR's the two together and clears
+// both; that is safe for the identical reason g_injectEraseSeq (below) is
+// safe next to g_eraseSeq: each word has exactly one writer, so there is
+// nothing for two cores to race over even without a barrier.
+static uint8_t g_injectKeyEvent;
+
+// core0-owned: devlink's synthetic BOOT level and click
+// (sensors_inject_boot() / sensors_inject_boot_click()). Not merged into
+// bootbtn.c's own state (see sensors.h's injection comment for why); OR'd on
+// top of the real read instead, inside sensors_boot_down() /
+// sensors_boot_clicked() below. BOOT sampling is core0-only already
+// (bootbtn.c borrows the flash chip select), so, like the key injection
+// above, this needs no barrier: everything that touches these two is core0.
+static bool g_injectBootDown;
+static bool g_injectBootClickPending;
 
 /* =========================================================================
  * Core 1: the sole owner of i2c1.
@@ -527,7 +599,13 @@ void sensors_set_finger_down(bool down) {
 uint8_t sensors_key_take(void) {
     uint8_t ev = g_keyEvent;
     g_keyEvent = 0;
-    return ev;
+    uint8_t injected = g_injectKeyEvent;
+    g_injectKeyEvent = 0;
+    return ev | injected;
+}
+
+void sensors_inject_key(uint8_t bits) {
+    g_injectKeyEvent |= bits;
 }
 
 uint32_t sensors_erase_seq(void) {
@@ -544,18 +622,35 @@ void sensors_inject_erase(void) {
 // (via the level cache below) this function do, does not double the actual
 // borrow rate against calling just one of them.
 bool sensors_boot_clicked(void) {
-    return bootbtn_poll_clicked();
+    // bootbtn_poll_clicked() rate-limits its own sampling internally and must
+    // still be called every loop so its debounce timer stays fed (see its
+    // own header comment); calling it even when an injected click is also
+    // pending costs nothing and keeps that timer honest.
+    bool real = bootbtn_poll_clicked();
+    if (g_injectBootClickPending) {
+        g_injectBootClickPending = false;
+        return true;
+    }
+    return real;
 }
 
 bool sensors_boot_down(void) {
     static bool level = false;
     bool sampled;
     if (bootbtn_poll_level(&sampled)) level = sampled;
-    return level;
+    return level || g_injectBootDown;
 }
 
 void sensors_boot_consume_click(void) {
     bootbtn_consume_next_click();
+}
+
+void sensors_inject_boot(bool down) {
+    g_injectBootDown = down;
+}
+
+void sensors_inject_boot_click(void) {
+    g_injectBootClickPending = true;
 }
 
 void sensors_stats(sensors_stats_t *out) {
@@ -577,11 +672,12 @@ void sensors_init(void) {
     gpio_pull_up(Touch_INT_PIN);
     touch_set_active();
     buttons_init();
+    pmic_raise_poweroff_threshold();
     // Everything above touches i2c1 (QMI8658_init, FT3168_Init,
-    // touch_set_active, buttons_init) and runs single-threaded on core0, so
-    // there is no ownership question yet. That changes the moment
-    // sensors_start() launches core1: from here on only core1 may touch
-    // i2c1 (see the banner comment above core1_entry()).
+    // touch_set_active, buttons_init, pmic_raise_poweroff_threshold) and runs
+    // single-threaded on core0, so there is no ownership question yet. That
+    // changes the moment sensors_start() launches core1: from here on only
+    // core1 may touch i2c1 (see the banner comment above core1_entry()).
 }
 
 void sensors_start(void) {

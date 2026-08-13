@@ -94,8 +94,11 @@ The real path, screen facing you and buttons on the right:
 - **BOOT is the upper button** and produces nothing at runtime.
 
 Long-press gestures are safe: register `0x27` holds the long-press interrupt
-threshold (1.5s default, measured at 1480ms) and the hard power-off threshold
-(6s default; a 4.5s hold did not cut power).
+threshold (`IRQLEVEL`, 1.5s default, measured at 1480ms; left alone) and the
+hard power-off threshold (`OFFLEVEL`; shipped at a 6s default that a 4.5s hold
+did not cut power at, now raised at boot to 10s, the field's maximum, since
+the menu gesture requires holding PWR past its long-press verdict and the
+device is a toy for a child; see `AGENTS.md`).
 
 Not filed upstream: this is board-specific. The ESP32-S3-Touch-AMOLED-1.75's
 own hardware reference documents its `SYS_OUT` as a genuine conditioned button

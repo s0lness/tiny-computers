@@ -153,11 +153,21 @@ from main.c:41-82): `STREAMLINE`, `DEDUPE_PX`, `SPEED_MAX`,
   read from the AXP2101 PMIC's interrupt status registers over I2C, not a
   GPIO edge (main.c:404-421, found the hard way — see main.c's own
   "Button hunt" comment). The emulator reproduces the *timing* that
-  matters (short press, the 1.5s long-press threshold, the 6s hard
-  power-off threshold, all real AXP2101 REG 27H defaults) with plain
+  matters (short press, the 1.5s long-press threshold) with plain
   `pointerdown`/`pointerup` timers, not an I2C simulation. BOOT is wired
   inert on purpose: confirmed on hardware that it produces nothing at
   runtime (it is a bootloader-entry strap sampled once at power-on).
+
+  **Stale as of 2026-08-13: the emulator still simulates the 6s hard
+  power-off threshold, described above as an AXP2101 REG 27H default. That
+  is no longer what the real board does.** `sensors_init()`
+  (`firmware/runtime/sensors.c`) now raises that field to 10s, its maximum,
+  on every boot, because the menu gesture holds PWR past its long-press
+  verdict and the device is a toy for a child (see AGENTS.md and
+  `docs/decisions/0002-runtime-architecture.md` section 4). This emulator's
+  simulated timer was not changed to match; if the power-off cutoff is ever
+  exercised in the emulator, its timing should not be trusted against real
+  hardware until this is ported.
 
 ## Constants duplicated across two languages (keep these in sync by hand)
 

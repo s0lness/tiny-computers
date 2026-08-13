@@ -15,8 +15,12 @@ instinctive, very simple to use.**
 
 That last sentence, "away from anyone who knows how it works", turns out to
 drive more of this design than the four requirements do. It is why there is a
-crash-recovery section, why destructive actions are interruptible, and why the
-menu is touched rather than chorded.
+crash-recovery section, and why destructive actions are interruptible.
+
+It used to also say "and why the menu is touched rather than chorded". That is
+no longer true: section 4b establishes that nothing belonging to the runtime
+may appear inside an app, which removes the on-screen affordance and leaves the
+chord as the only way in. The requirement did not change, the answer to it did.
 
 ## Decision
 
@@ -106,13 +110,25 @@ small hands.
 
 | Action | Primary | Backup |
 |---|---|---|
-| open the menu | tap the corner glyph | PWR long press with BOOT held |
-| choose an app | **tap its picture** | BOOT / PWR to move, PWR long to launch |
+| open the menu | **BOOT and PWR held together, long press** | none |
+| choose an app | **tap its picture** | BOOT / PWR to move, PWR short to launch |
 | the app's action | tap, or PWR short | |
 
 The menu shows pictures, not words: reading English should not be the entry fee.
 Tapping a picture also resolves what "confirm" means, which the button-only
 design never answered.
+
+**Corrected 2026-08-13.** This table used to say the menu opened by tapping a
+corner glyph, with the chord as backup, and this document's own opening
+paragraph used to cite that as an example of touch-first design. Both are now
+wrong, and the reason is section 4b: an affordance belonging to the runtime may
+not appear inside an app. So the chord is not the backup, it is the only way
+in, and the discoverability that the glyph was carrying has to be carried by
+the physical object instead.
+
+Everything else here still holds. Touch remains primary INSIDE the menu, which
+is where the choosing happens and where a child's finger is the right
+instrument.
 
 **No modal state.** If an app can enter a condition where the same input does
 something different, with nothing on screen saying so, that is a defect however
@@ -160,6 +176,16 @@ hands. Verify which one is implemented rather than assuming.
 **Raise the PMIC's hard power-off threshold** (register `0x27`, default 6s).
 Children hold buttons, and a held PWR is currently 4.5 seconds away from an
 unannounced power cut.
+
+**Done, 2026-08-13.** `sensors_init()` (`firmware/runtime/sensors.c`,
+`pmic_raise_poweroff_threshold()`) now raises `OFFLEVEL` (register `0x27`
+bits 3:2) from its 6s default to `11b` = 10s, the field's maximum, on every
+boot, read back and printed once to confirm the write took. `IRQLEVEL` (bits
+5:4, the 1.5s long-press verdict the menu gesture waits on) is left at its
+default: read-modify-write only touches `OFFLEVEL`'s two bits. Margin between
+the gesture and the power cut is now 8.5s instead of 4.5s. AGENTS.md's
+recovery procedure was updated to match (hold PWR 12s, not 10s, since the
+threshold it is timed against moved from 6s to 10s).
 
 ### 5. Destructive actions are per-app and interruptible
 

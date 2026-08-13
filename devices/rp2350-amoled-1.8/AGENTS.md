@@ -71,11 +71,23 @@ register `0x49`. Bits, from the datasheet and confirmed on hardware: `0x01`
 release, `0x02` press, `0x04` long press, `0x08` short press. Enable them in
 register `0x41` first; the two edge interrupts are disabled by default.
 
-**Long-press gestures are safe.** Register `0x27` holds both thresholds: the
-long-press interrupt at 1.5s (default) and the hard power-off at 6s (default).
-Measured on this board, the long-press interrupt arrived 1480ms after the press
-and a 4.5s hold did not cut power, so a 1.5s gesture has 4.5s of margin. Both
-thresholds are settable if that margin ever needs changing.
+**Long-press gestures are safe.** Register `0x27` holds three fields (AXP2101
+datasheet, X-Powers Rev 0.1, 2019-04-28): `IRQLEVEL` (bits 5:4, the long-press
+interrupt threshold), `OFFLEVEL` (bits 3:2, the hard power-off hold), and
+`ONLEVEL` (bits 1:0, how long POK must be held to power the board on from
+off, unrelated to the runtime gesture). `IRQLEVEL` stays at its 1.5s default,
+measured on this board at 1480ms after the press; the owner has decided the
+menu gesture's feel is settled and it is not touched.
+
+`OFFLEVEL` shipped at its 6s default, which a 4.5s hold did not cut power at,
+so a 1.5s gesture only had 4.5s of margin before the rails dropped with no
+warning. Since the menu gesture (both buttons held until the long-press
+verdict) became this device's primary navigation, and the user is a small
+child who holds buttons too long, `sensors_init()` now raises `OFFLEVEL` to
+its maximum, `11b` = 10s, on every boot (`pmic_raise_poweroff_threshold()` in
+`firmware/runtime/sensors.c`), read back and printed once at startup to
+confirm the write took. That gives the 1.5s gesture 8.5s of margin instead of
+4.5s.
 
 A full framebuffer is 368*448*2 = 330KB and **fits** in the 520KB SRAM, so the
 firmware keeps one and pushes dirty rectangles. The ESP32-S3 sibling cannot do
@@ -205,8 +217,11 @@ Useful flags: `--font` (any `.jhf` in `tools/fonts`), `--size` (glyph height),
 - **Recovering a board that will not boot.** Replugging USB does NOT reset this
   board: the PMIC holds the rails up, so a hung app keeps running and holding
   BOOT at plug-in does nothing, because BOOT is only sampled at reset. Unplug,
-  hold PWR for 10 seconds until the screen goes black (the PMIC's power-off
-  threshold is 6s), then hold BOOT while plugging the cable back in.
+  hold PWR for at least **12 seconds** until the screen goes black (the PMIC's
+  power-off threshold was raised from 6s to 10s, its maximum, see "Long-press
+  gestures are safe" above; 12s gives margin the same way the old "10 seconds"
+  instruction did over the old 6s threshold), then hold BOOT while plugging
+  the cable back in.
   Related: while an app is hung, `picotool` cannot reboot it into the
   bootloader either, since that request is serviced by the running app's USB
   interface. Loads appear to succeed and silently do nothing. Read flash back

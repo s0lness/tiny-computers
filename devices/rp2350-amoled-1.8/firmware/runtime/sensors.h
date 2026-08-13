@@ -83,9 +83,12 @@ void sensors_set_finger_down(bool down);
  *   0x04  long press        0x08  short press (verdict, latches on release)
  *
  * Both edge interrupts are disabled by default and are enabled in register
- * 0x41 at init. The long-press interrupt fires at 1.5s and the PMIC's hard
- * power-off at 6s (register 0x27), measured at 1480ms and no cut at 4.5s,
- * so a 1.5s gesture has 4.5s of margin before the rails drop.
+ * 0x41 at init. The long-press interrupt fires at 1.5s (measured at 1480ms).
+ * The PMIC's hard power-off (register 0x27, OFFLEVEL field) was silicon's
+ * 6s default, giving only 4.5s of margin between the menu gesture's
+ * long-press verdict and an unannounced power cut; sensors_init() now raises
+ * it to 10s, the field's maximum, on every boot (see
+ * pmic_raise_poweroff_threshold() in sensors.c), so the margin is 8.5s.
  *
  * NO MACRO FOR 0x01 (release edge), ON PURPOSE. Register 0x41 is written
  * 0xFF at init, so the PMIC already latches the release edge into 0x49 on
@@ -121,6 +124,52 @@ void sensors_set_finger_down(bool down);
 // The runtime is that caller, and it hands apps what it does not consume
 // itself (see app.h's app_key field).
 uint8_t sensors_key_take(void);
+
+// Injects PMIC key bits (any of KEY_PRESS/KEY_LONG/KEY_SHORT, OR'd
+// together), for the agent-facing devlink test link. Merged into whatever
+// sensors_key_take() next returns, with the same read-and-clear semantics a
+// real PMIC event has: call once per synthetic event, not once per frame you
+// want it to appear "held", or it is delivered more than once.
+//
+// Core0-owned end to end, like sensors_inject_erase() above, but for a
+// different reason: g_keyEvent (sensors.c) is written by core1
+// (pmic_poll_core1(), a plain assignment, not a read-modify-write) and
+// read-and-cleared by core0 (sensors_key_take()). Writing an injected bit
+// straight into that variable from core0 would make core0 a second writer of
+// something core1 also writes, exactly the hazard the ownership rule at the
+// top of this file exists to prevent, so injected bits instead go into their
+// own core0-owned word and get OR'd in only inside sensors_key_take() (see
+// sensors.c).
+//
+// THE HONESTY REQUIREMENT. This function starts downstream of the AXP2101
+// entirely. On real hardware, a press latches bits in PMIC register 0x49;
+// pmic_poll_core1() (sensors.c) is what actually issues the i2c1 read,
+// masks the result down to `s1 & 0x0E`, and write-1-to-clears the chip's
+// latch so the next event is distinguishable from this one. None of that
+// runs here: sensors_inject_key() hands sensors_key_take() the exact bits a
+// real read would have produced, as if the PMIC transaction had already
+// happened and come out clean. That is not a small omission. The one real
+// bug this codebase has already shipped in this exact area (several PMIC
+// bits landing in one read and silently breaking the old double-press menu
+// gesture, see runtime_core.c's chord comment) lived in the register read
+// and the read-and-clear timing, precisely the part injection skips. A
+// devlink chord that opens the menu proves the runtime and the menu app
+// handle a KEY_LONG bit correctly. It proves nothing about whether the
+// AXP2101 will ever actually hand the runtime that bit on real silicon. That
+// can only be checked by holding the real button.
+//
+// Mirror image of emu_abi.h's rule for the emulator ("must never deliver an
+// input the hardware cannot produce"). That rule polices a SIMULATED board
+// pretending to be hardware; this is a test tool driving REAL firmware on
+// REAL hardware through the same signals runtime_core.c already consumes,
+// with no simulated chip standing in for anything. So this is not a
+// violation of that rule, it is the other side of it: emu_abi.h exists to
+// stop a stand-in board from lying about what real silicon can do, and
+// sensors_inject_key() has no stand-in board to lie through. What it does
+// have is a real, documented gap of its own (the paragraph above), which is
+// why that gap is written down here rather than left for someone to
+// discover by trusting a green chord test too far.
+void sensors_inject_key(uint8_t bits);
 
 /* ---- shake -------------------------------------------------------------
  *
@@ -205,6 +254,41 @@ bool sensors_boot_down(void);
 // instant BOOT comes back up, purely as a side effect of how the chord was
 // released, not anything the child asked chrono to do.
 void sensors_boot_consume_click(void);
+
+// Injects the BOOT level and a BOOT click edge, for the agent-facing devlink
+// test link. Two separate entry points because the two consumers want two
+// different shapes of the same button: the chord above needs the LEVEL
+// ("is BOOT down right now", sensors_boot_down()), while an app like the
+// stopwatch or the timer needs the CLICK EDGE ("BOOT was just released",
+// sensors_boot_clicked()). A real press produces both, at different moments;
+// a test tool has to be able to drive either alone, since the chord
+// specifically depends on the level still being true at the instant the PWR
+// verdict lands, not on a click ever completing.
+//
+// Both are OR'd on top of whatever bootbtn.c's own physical read reports
+// (see sensors.c), rather than reaching into bootbtn.c's internal debounce
+// state (its static held/lastSampleMs). BOOT sampling already runs entirely
+// on core0 - bootbtn.c borrows the flash chip select, which this file's
+// "BOOT button" section above already explains is core0-only by nature, not
+// by the i2c1 ownership rule - so there is no cross-core race to guard
+// against here the way sensors_inject_touch() and sensors_inject_key() have
+// to. OR-ing at this wrapper is enough, and it keeps bootbtn.c exactly as
+// blind to devlink's existence as it always was.
+//
+// THE HONESTY REQUIREMENT, same as sensors_inject_key() above: this starts
+// downstream of the physical pad read. bootbtn.c's read_cs_low() is what
+// actually borrows the flash chip select, waits for the line to settle, and
+// decodes QSPI_CSN - real, timing-sensitive, flash-disturbing work that
+// injection never touches. Nothing here proves BOOT is actually wired to the
+// chip select the way bootbtn.h's header comment says it should be (that is
+// what bootbtn_selftest_poll() is for). A devlink chord that opens the menu
+// proves the runtime's chord logic and the app underneath it; it says
+// nothing about whether a real thumb on the real button still reaches this
+// code path. See sensors_inject_key()'s comment for why this is the mirror
+// image of emu_abi.h's rule, not a violation of it, and why the gap is
+// written down here rather than assumed away by a passing test.
+void sensors_inject_boot(bool down);
+void sensors_inject_boot_click(void);
 
 /* ---- lifecycle --------------------------------------------------------- */
 
