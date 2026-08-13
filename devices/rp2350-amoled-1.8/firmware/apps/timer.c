@@ -4,14 +4,28 @@
 // has been read and only restates it where the code needs to justify a
 // specific number.
 //
-// Setting: the egg-timer twist. A ring of discrete SQUARE ticks surrounds the
+// Setting: the egg-timer twist. A ring of FILLED CIRCLES surrounds the
 // landscape canvas; dragging a finger around it lights ticks up to the
-// finger's angle, snapped to a round value. Squares, not rotated bars,
-// because gfx rotates rectangles, not pixels (gfx.h): a square looks the
-// same at any angle, so it needs no per-pixel rotation and cannot shred the
-// way an approximated rotated rectangle could. Running: the same ring
-// empties, one tick at a time. The alarm: a full-panel flash, self-limiting,
-// dismissed by anything.
+// finger's angle, snapped to a round value. Running: the same ring shows
+// less remaining. The alarm: a full-panel flash, self-limiting, dismissed
+// by anything.
+//
+// Owner feedback, verbatim, on the previous look (square ticks, hollow
+// outline for "not yet chosen"): "i'd rather you didn't draw boxes and just
+// a full circle, or maybe many small circles with full color so that it
+// looks more full (rather than just the outline with no colour filled
+// inside). also use the same font, same interlines and spacing as the
+// chronometer". This file implements the "many small circles, always
+// filled" reading rather than one full circle: see the comment on
+// DOT_DIAM_LARGE/DOT_DIAM_SMALL below for why.
+//
+// A dot is still a RECTANGLE shape, not a pixel shape: gfx rotates
+// rectangles, not pixels (gfx.h). A filled circle here is a stack of
+// 1px-tall horizontal bars, each one a call to gfx_fill_rect_land, so it
+// gets correct rotation for free exactly like the old squares did. What
+// changed is that every bar's width now follows a circle's profile instead
+// of being constant, not that this file draws outside gfx's rectangle
+// contract.
 //
 // Digits are digits.c's, shared with chrono rather than redrawn here (see
 // digits.h): same numerals, same two hard-won corrections, one copy.
@@ -35,52 +49,133 @@
  * cannot set an absurd wait. Both the cap and the 5-minute knee are the
  * owner's words in the brief, not derived from anything; only the tick
  * count and the seconds arithmetic below follow from them.
+ *
+ * 65 ticks was checked against the new radius below (see RING_RADIUS) and
+ * still reads as separate dots rather than a merged ring; if that ever
+ * changes (a bigger radius, a smaller canvas), re-check the arc-spacing
+ * arithmetic in the "dots: diameter and radius" comment below before
+ * assuming 65 still fits.
  * ------------------------------------------------------------------- */
 #define FINE_TICKS      10
 #define FINE_STEP_S     30
 #define COARSE_STEP_S   60
 #define TICK_COUNT      (FINE_TICKS + 55)   // 65
 
-// Ring centre and radius, in LANDSCAPE coordinates (448 wide x 368 tall).
-// Centred on the canvas; radius 150 leaves 34px clearance to the top/bottom
-// edge (the tighter of the two, 368 tall) once the tick square's own half
-// width is added, and keeps the ring well clear of the digits in the middle
-// (see DIGIT_* below). Not measured on hardware, chosen to fit the geometry.
+// Ring centre, in LANDSCAPE coordinates (448 wide x 368 tall). Centred on
+// the canvas, same as before.
 #define RING_CX      224   // LAND_W / 2
 #define RING_CY      184   // LAND_H / 2
-#define RING_RADIUS  150
 
-// Tick square side and hollow-tick border thickness, in pixels. At radius
-// 150, 65 ticks are 2*pi*150/65 =~ 14.5px apart centre-to-centre; a 10px
-// square leaves ~4.5px of gap between neighbours, guessed to read as
-// separate ticks rather than a solid ring from across a room, not measured.
-#define TICK_SIZE    10
-#define TICK_BORDER  2
+/* ---------------------------------------------------------------------
+ * The dots: diameter and radius.
+ *
+ * The distinction between "chosen"/"remaining" and "unchosen"/"elapsed" is
+ * now SIZE, not fill: every one of the 65 positions is always a SOLID BLACK
+ * circle, small or large, never hollow and never blank. That is the direct
+ * fix for the owner's complaint ("just the outline with no colour filled
+ * inside") and it also fixes an inconsistency the old ring had: SETTING
+ * used to draw a hollow outline for the not-yet-chosen ticks so the dial
+ * looked whole, while RUNNING/PAUSED erased consumed ticks to nothing so
+ * the dial visibly emptied. Those were two different rules for the same
+ * ring. Now there is one rule, in every state: unchosen/elapsed is a small
+ * dot, chosen/remaining is a large dot, and the dial is always visibly
+ * whole, which is exactly the "many small circles... so it looks more
+ * full" the owner asked for.
+ *
+ * The owner also offered "just a full circle" as a simpler alternative.
+ * This file keeps the many-dots version instead: a full circle can only
+ * ever show ONE number (how far around it is filled), which is the same
+ * information a shrinking arc already gave in the old design and the same
+ * complaint stands against a solid pie wedge (it does not show the step
+ * size). 65 individually countable dots are a ring made of the actual
+ * units a drag snaps to; a child watching the ring fill or empty by ONE
+ * DOT AT A TIME can see, without reading the digits, that time here moves
+ * in fixed steps rather than continuously. That reading is worth the extra
+ * geometry below.
+ *
+ * DOT_DIAM_LARGE / DOT_DIAM_SMALL and RING_RADIUS were solved together, not
+ * picked independently, against three hard limits:
+ *
+ *   1. edge clearance: RING_RADIUS + DOT_RADIUS_LARGE must stay under 184
+ *      (RING_CY, the distance to the top/bottom canvas edge, the tighter of
+ *      the two: LAND_H is 368, LAND_W is 448).
+ *   2. digit clearance: RING_RADIUS - DOT_RADIUS_LARGE must clear the MM:SS
+ *      digit block's half-diagonal (see DIGIT_BLOCK_W below), with margin.
+ *   3. arc spacing: at TICK_COUNT ticks, neighbouring LARGE dots (the worst
+ *      case: a run of "remaining" ticks is contiguous) must not touch, or
+ *      the ring reads as one solid band instead of countable dots.
+ *
+ * Digit block: 4 digits at DIGIT_W=48 plus one SEP_W=24 colon plus four
+ * DIGIT_GAP=12 gaps = 264px wide, 120px tall (DIGIT_H). Half-extents
+ * 132 x 60; half-diagonal = sqrt(132^2 + 60^2) = sqrt(21024) = ~145.0px.
+ * That 145.0, not the digit box's straight half-height (60) or half-width
+ * (132) alone, is the number that matters: the ring is round and the box
+ * is not, so the closest a full circle of radius R can get to EVERY point
+ * of the box, at any angle, without ever dipping inside it, is R > 145.0
+ * (the box's farthest corner from the centre). Anything less only "mostly"
+ * clears it, which is exactly the collision the brief warned about.
+ *
+ * RING_RADIUS = 165, DOT_DIAM_LARGE = 10 (radius 5), DOT_DIAM_SMALL = 6:
+ *   edge:   165 + 5 = 170, vs the 184 limit -> 14px margin.
+ *   digit:  165 - 5 = 160, vs the 145.0 half-diagonal -> 15px margin.
+ *   arc:    circumference = 2*pi*165 = 1036.7px; /65 ticks = 15.95px
+ *           centre-to-centre. Two adjacent LARGE dots (10px each) leave
+ *           15.95 - 10 = 5.95px of white between them, about 37% of the
+ *           spacing: a real gap, not a rounding accident (position rounding
+ *           from lroundf is at most +-1px per dot, an order of magnitude
+ *           smaller than the gap).
+ * All three numbers are derived above, not guessed; RING_RADIUS is the one
+ * free choice that was searched (150, the old radius, fails #3 for any
+ * DOT_DIAM_LARGE worth calling "large"; 165 is the smallest radius tried
+ * that clears all three with double-digit margins).
+ * ------------------------------------------------------------------- */
+#define RING_RADIUS       165
+#define DOT_DIAM_LARGE    10
+#define DOT_DIAM_SMALL    6
+#define DOT_RADIUS_LARGE  (DOT_DIAM_LARGE / 2)
+#define DOT_RADIUS_SMALL  (DOT_DIAM_SMALL / 2)
 
 #define TIMER_PI       3.14159265358979323846f
 #define TIMER_HALF_PI  (TIMER_PI / 2.0f)
 #define TICK_ANGLE_STEP (2.0f * TIMER_PI / (float)TICK_COUNT)
 
 /* ---------------------------------------------------------------------
- * Digit layout, in LANDSCAPE coordinates. MM:SS, 4 digits + 1 colon,
- * comfortably inside the ring: half-diagonal of the digit block is about
- * 100px against a 150px ring radius, so there is no world in which a tick
- * square and a digit cell touch. DIGIT_H (90) and SEG_T (12) keep the same
- * proportion chrono uses (120:18, i.e. h/t =~ 6.7), just smaller, since this
- * app only ever shows 4 digits rather than 6 and has a ring to share the
- * canvas with.
+ * Digit layout, in LANDSCAPE coordinates. Owner feedback: "use the same
+ * font, same interlines and spacing as the chronometer". DIGIT_W, DIGIT_H,
+ * SEG_T, SEP_W and the 12px gap below are chrono.c's own constants
+ * (DIGIT_W/DIGIT_H/SEG_T/SEP_W and its X_* deltas, which are all +12),
+ * copied rather than guessed at a smaller size the way the old 40/90/12
+ * timer digits were. They are not shared via a header: chrono.c does not
+ * expose them, and a shared layout header for two apps is a bigger call
+ * than this task (see the owner's brief). If chrono.c's metrics ever
+ * change, this block has to change with it by hand; that duplication is
+ * accepted on purpose, not missed.
+ *
+ * MM:SS is 4 digits, not chrono's 6, and one colon, not two, so the block
+ * is narrower than chrono's; everything else (digit size, gap, colon
+ * width) is identical, which is what makes it read as the same typeface.
  * ------------------------------------------------------------------- */
-#define DIGIT_W   40
-#define DIGIT_H   90
-#define SEG_T     12
-#define SEP_W     20
-#define DIGIT_Y0  139   // RING_CY - DIGIT_H/2
+#define DIGIT_W   48   // chrono.c's DIGIT_W
+#define DIGIT_H   120  // chrono.c's DIGIT_H
+#define SEG_T     18   // chrono.c's SEG_T
+#define SEP_W     24   // chrono.c's SEP_W (colon cell width)
+#define DIGIT_GAP 12   // chrono.c's inter-element gap; every X_* delta in chrono.c is +12
 
-#define X_MM_TENS   134   // RING_CX - (4*DIGIT_W + SEP_W)/2
-#define X_MM_UNITS  174
-#define X_COLON     214
-#define X_SS_TENS   234
-#define X_SS_UNITS  274
+// MM:SS block: 2 digits, colon, 2 digits, 4 gaps between the 5 elements.
+#define DIGIT_BLOCK_W (4 * DIGIT_W + SEP_W + 4 * DIGIT_GAP)  // 264
+
+// Centred on the ring, both axes. DIGIT_Y0 comes out to 124, the same
+// number chrono.c uses for its own Y0, because both are centring the same
+// DIGIT_H in the same 368px landscape height; not a coincidence, a check
+// that the two derivations agree.
+#define DIGIT_Y0  (RING_CY - DIGIT_H / 2)          // 124
+#define DIGIT_X0  (RING_CX - DIGIT_BLOCK_W / 2)     // 92
+
+#define X_MM_TENS   (DIGIT_X0)
+#define X_MM_UNITS  (X_MM_TENS  + DIGIT_W + DIGIT_GAP)
+#define X_COLON     (X_MM_UNITS + DIGIT_W + DIGIT_GAP)
+#define X_SS_TENS   (X_COLON    + SEP_W   + DIGIT_GAP)
+#define X_SS_UNITS  (X_SS_TENS  + DIGIT_W + DIGIT_GAP)
 
 /* ---------------------------------------------------------------------
  * The alarm. No sound yet: the ES8311 codec is core1's, reserved but unused
@@ -102,19 +197,21 @@
  * signals, so the same physical inputs (drag, PWR short press, BOOT click)
  * are never ambiguous:
  *
- *   1. The ring shape.
- *      SETTING draws all 65 tick positions: filled up to the chosen value,
- *      HOLLOW (outlined, not blank) beyond it. The hollow outline is the
- *      "whole dial, still being set" cue and is never drawn in any other
- *      state.
- *      RUNNING and PAUSED draw ONLY the remaining ticks, filled; the
- *      consumed ones are blank, no outline. The ring visibly "empties" and
- *      never looks like the always-fully-outlined SETTING dial, even in the
- *      one case where the fill counts would otherwise coincide (a freshly
- *      started RUNNING timer looks, at that instant, like a maxed-out
- *      SETTING ring except for the missing outline).
- *   2. The digits' colour, which does not depend on the ring at all and so
- *      covers the case above on its own:
+ *   1. The ring shape, which now reads the SAME WAY in every non-alarm
+ *      state: small dot = unchosen (SETTING) or already elapsed
+ *      (RUNNING/PAUSED); large dot = chosen (SETTING) or still remaining
+ *      (RUNNING/PAUSED). There is no longer a hollow-vs-filled cue, and
+ *      deliberately no SETTING-only ring rule either: the old code drew a
+ *      fully-hollow-outlined dial in SETTING and an emptying, blank-past-
+ *      the-mark dial in RUNNING/PAUSED, two different rules for what is
+ *      conceptually the same "how much is set/left" reading. Collapsing
+ *      them to one rule is what makes the ring "stay whole" the way the
+ *      owner asked, and it means the ring ALONE no longer tells SETTING
+ *      apart from RUNNING/PAUSED (a freshly started RUNNING timer and a
+ *      maxed-out SETTING ring both show all 65 dots large).
+ *   2. The digits' colour, which therefore now carries the FULL weight of
+ *      telling SETTING, RUNNING and PAUSED apart, not just the tie-break it
+ *      used to be:
  *        SETTING  light grey ("not committed yet")
  *        RUNNING  solid black ("live, counting down")
  *        PAUSED   darker grey ("frozen")
@@ -175,36 +272,81 @@ static int ticks_for_seconds(int seconds) {
 }
 
 /* ---------------------------------------------------------------------
- * Ring drawing. Tick positions are fixed (angle = index * 2*pi/TICK_COUNT,
- * starting at 12 o'clock, increasing clockwise), so tick_rect() is the same
- * function whether painting the initial dial or reacting to a drag.
+ * Dot rasterisation: a filled circle as a stack of horizontal bars.
+ *
+ * Each diameter's per-row half-width is computed ONCE, lazily, the first
+ * time the ring is drawn, and cached here rather than calling sqrtf per dot
+ * per frame: a full ring redraw (enter(), and every state transition) draws
+ * all 65 positions, and this runs on a 150MHz part where a couple hundred
+ * sqrtf calls a frame is a real cost, not a rounding error. There are only
+ * two diameters, so the table is tiny (10 + 6 int8_t) and lives here at
+ * file scope; it holds no per-app state and so is exempt from the arena
+ * rule the same way chrono.c's DIGIT_X[] const array is.
  * ------------------------------------------------------------------- */
-static void tick_rect(int idx, int *x0, int *y0) {
-    float angle = -TIMER_HALF_PI + ((float)idx + 0.5f) * TICK_ANGLE_STEP;
-    int cx = RING_CX + (int)lroundf(RING_RADIUS * cosf(angle));
-    int cy = RING_CY + (int)lroundf(RING_RADIUS * sinf(angle));
-    *x0 = cx - TICK_SIZE / 2;
-    *y0 = cy - TICK_SIZE / 2;
+static int8_t s_halfWidthLarge[DOT_DIAM_LARGE];
+static int8_t s_halfWidthSmall[DOT_DIAM_SMALL];
+static bool s_dotTablesReady = false;
+
+static void fill_half_width_table(int8_t *table, int diam) {
+    float r = diam / 2.0f;
+    for (int row = 0; row < diam; row++) {
+        // Distance of this row's vertical centre from the circle's centre.
+        float dy = ((float)row + 0.5f) - r;
+        float underRoot = r * r - dy * dy;
+        float hw = underRoot > 0.0f ? sqrtf(underRoot) : 0.0f;
+        table[row] = (int8_t)lroundf(hw);
+    }
 }
 
-// lit: draw filled (black), always, in every state.
-// !lit && settingMode: draw hollow (outlined), the SETTING-only cue.
-// !lit && !settingMode: draw nothing, cleared to background: RUNNING/PAUSED
-// ticks that have been consumed simply vanish, which is "the ring empties".
-static void draw_ring_tick(int idx, bool lit, bool settingMode) {
-    int x0, y0;
-    tick_rect(idx, &x0, &y0);
-    if (lit) {
-        gfx_fill_rect_land(x0, y0, TICK_SIZE, TICK_SIZE, PX_BLACK);
-        return;
+static void ensure_dot_tables(void) {
+    if (s_dotTablesReady) return;
+    fill_half_width_table(s_halfWidthLarge, DOT_DIAM_LARGE);
+    fill_half_width_table(s_halfWidthSmall, DOT_DIAM_SMALL);
+    s_dotTablesReady = true;
+}
+
+// Draws one filled circle of the given diameter, centred at (cx, cy), as a
+// stack of 1px-tall horizontal bars: every bar is a gfx_fill_rect_land
+// call, so this obeys gfx's "rectangles only" contract exactly like the old
+// square ticks did.
+static void draw_filled_dot(int cx, int cy, int diam, const int8_t *halfWidth, uint16_t color) {
+    int r = diam / 2;
+    for (int row = 0; row < diam; row++) {
+        int hw = halfWidth[row];
+        if (hw <= 0) continue;
+        int y = cy - r + row;
+        gfx_fill_rect_land(cx - hw, y, 2 * hw, 1, color);
     }
-    gfx_fill_rect_land(x0, y0, TICK_SIZE, TICK_SIZE, PX_WHITE);
-    if (!settingMode) return;
-    int b = TICK_BORDER;
-    gfx_fill_rect_land(x0,                 y0,                 TICK_SIZE, b,          PX_BLACK); // top
-    gfx_fill_rect_land(x0,                 y0 + TICK_SIZE - b, TICK_SIZE, b,          PX_BLACK); // bottom
-    gfx_fill_rect_land(x0,                 y0,                 b,         TICK_SIZE,  PX_BLACK); // left
-    gfx_fill_rect_land(x0 + TICK_SIZE - b, y0,                 b,         TICK_SIZE,  PX_BLACK); // right
+}
+
+/* ---------------------------------------------------------------------
+ * Ring drawing. Tick positions are fixed (angle = index * 2*pi/TICK_COUNT,
+ * starting at 12 o'clock, increasing clockwise), so tick_center() is the
+ * same function whether painting the initial dial or reacting to a drag.
+ * ------------------------------------------------------------------- */
+static void tick_center(int idx, int *cx, int *cy) {
+    float angle = -TIMER_HALF_PI + ((float)idx + 0.5f) * TICK_ANGLE_STEP;
+    *cx = RING_CX + (int)lroundf(RING_RADIUS * cosf(angle));
+    *cy = RING_CY + (int)lroundf(RING_RADIUS * sinf(angle));
+}
+
+// Always paints a solid black dot: large if `big`, small otherwise. Clears
+// the full DOT_DIAM_LARGE bounding box first regardless of which size is
+// about to be drawn, because that box is the largest either size ever
+// occupies at this centre, so it is the only rect that is guaranteed to
+// erase whatever was there before (a large dot shrinking to a small one, or
+// vice versa).
+static void draw_ring_tick(int idx, bool big) {
+    int cx, cy;
+    tick_center(idx, &cx, &cy);
+    int bx0 = cx - DOT_RADIUS_LARGE;
+    int by0 = cy - DOT_RADIUS_LARGE;
+    gfx_fill_rect_land(bx0, by0, DOT_DIAM_LARGE, DOT_DIAM_LARGE, PX_WHITE);
+    if (big) {
+        draw_filled_dot(cx, cy, DOT_DIAM_LARGE, s_halfWidthLarge, PX_BLACK);
+    } else {
+        draw_filled_dot(cx, cy, DOT_DIAM_SMALL, s_halfWidthSmall, PX_BLACK);
+    }
 }
 
 // Touch angle to tick count. f->touchX/Y arrive in PANEL (portrait)
@@ -295,20 +437,20 @@ static void update_digits_if_changed(timer_state_t *s, int seconds) {
     s->lastDigitSeconds = seconds;
 }
 
-// Repaints and pushes only the tick squares between the old and new lit
-// count, individually: they are scattered around a circle, not contiguous,
-// so one bounding-box push would cover most of the ring for a one-tick
-// change. Each push here is a single TICK_SIZE square; gfx_push_land pads it
-// to a legal window on its own.
-static void update_ring_diff(timer_state_t *s, int newLit, bool settingMode) {
+// Repaints and pushes only the dots between the old and new lit count,
+// individually: they are scattered around a circle, not contiguous, so one
+// bounding-box push would cover most of the ring for a one-tick change.
+// Each push here is a single DOT_DIAM_LARGE square, the biggest either dot
+// size ever occupies; gfx_push_land pads it to a legal window on its own.
+static void update_ring_diff(timer_state_t *s, int newLit) {
     int oldLit = s->lastLit;
     int lo = oldLit < newLit ? oldLit : newLit;
     int hi = oldLit < newLit ? newLit : oldLit;
     for (int i = lo; i < hi; i++) {
-        draw_ring_tick(i, i < newLit, settingMode);
-        int x0, y0;
-        tick_rect(i, &x0, &y0);
-        gfx_push_land(x0, y0, TICK_SIZE, TICK_SIZE);
+        draw_ring_tick(i, i < newLit);
+        int cx, cy;
+        tick_center(i, &cx, &cy);
+        gfx_push_land(cx - DOT_RADIUS_LARGE, cy - DOT_RADIUS_LARGE, DOT_DIAM_LARGE, DOT_DIAM_LARGE);
     }
     s->lastLit = newLit;
 }
@@ -316,15 +458,14 @@ static void update_ring_diff(timer_state_t *s, int newLit, bool settingMode) {
 // Full repaint of the ring (all TICK_COUNT positions) and the digits, for
 // enter() and for every state transition. Does not push: callers that run
 // after enter() (i.e. every transition) follow this with gfx_push_all(),
-// since a transition changes the ring's whole style (outlined vs not) and
-// the digits' colour together, which is cheaper as one push than as up to
-// 65 tiny diffed ones.
+// since a transition changes the digits' colour, which is cheaper as one
+// push than as up to 65 tiny diffed ones.
 static void redraw_full(timer_state_t *s) {
+    ensure_dot_tables();
     int lit, seconds;
     current_lit_and_seconds(s, &lit, &seconds);
-    bool settingMode = (s->state == TS_SETTING);
     for (int i = 0; i < TICK_COUNT; i++) {
-        draw_ring_tick(i, i < lit, settingMode);
+        draw_ring_tick(i, i < lit);
     }
     s->lastLit = lit;
     draw_all_digits(seconds, digit_color_for_state(s->state));
@@ -375,9 +516,9 @@ static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
 }
 
 /* ---------------------------------------------------------------------
- * enter(): draws the initial SETTING screen (ring fully hollow, 00:00, light
- * grey) into the white framebuffer the runtime has just cleared. Does not
- * push: the runtime pushes the whole panel once after this returns.
+ * enter(): draws the initial SETTING screen (ring all small dots, 00:00,
+ * light grey) into the white framebuffer the runtime has just cleared. Does
+ * not push: the runtime pushes the whole panel once after this returns.
  * ------------------------------------------------------------------- */
 static void timer_enter(void) {
     s_state = APP_STATE(timer_state_t);
@@ -452,7 +593,7 @@ static void timer_tick(const app_frame_t *f) {
         int newLit = ring_tick_for_touch(f->touchX, f->touchY);
         if (newLit == s->setTicks) return;
         s->setTicks = newLit;
-        update_ring_diff(s, newLit, /*settingMode=*/true);
+        update_ring_diff(s, newLit);
         update_digits_if_changed(s, seconds_for_ticks(newLit));
         return;
     }
@@ -473,7 +614,7 @@ static void timer_tick(const app_frame_t *f) {
         }
         if (!changed) return;
         int newLit = ticks_for_seconds(s->remainingSeconds);
-        if (newLit != s->lastLit) update_ring_diff(s, newLit, /*settingMode=*/false);
+        if (newLit != s->lastLit) update_ring_diff(s, newLit);
         update_digits_if_changed(s, s->remainingSeconds);
         return;
     }

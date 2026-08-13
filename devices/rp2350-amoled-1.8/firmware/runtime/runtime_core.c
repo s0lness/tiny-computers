@@ -128,6 +128,31 @@ void *app_alloc(size_t bytes) {
     }
     void *p = &g_arena[aligned];
     g_arenaUsed = aligned + bytes;
+
+    // Zero only the bytes just handed out, not the whole 64KB arena. app.h
+    // promises app_alloc() returns zeroed memory, and chrono.c, timer.c and
+    // sketch.c all lean on that explicitly in their enter() comments ("APP_
+    // STATE zeroes", "lastDigit[i] is already 0"). do_switch() below only
+    // ever rewound g_arenaUsed to 0, which resets what counts as allocated
+    // without touching a single byte of the arena itself - so whatever the
+    // PREVIOUS app left behind at these addresses was hand-delivered to the
+    // NEXT app as its "fresh" state. That is exactly the bug reported
+    // against the timer: leaving it and coming back resumed the last app's
+    // paused countdown instead of showing a clean SETTING screen, and the
+    // shape of the corruption depends on whichever app happened to run
+    // before, since it is really just reading that app's old stack-shaped
+    // bytes.
+    //
+    // Zeroed HERE, in app_alloc(), rather than by memset-ing the whole arena
+    // in do_switch() on every switch: a switch is meant to complete inside
+    // one frame (see app.h's cold/warm switch numbers), and every app
+    // together allocates a tiny fraction of the 64KB budget, so clearing the
+    // full arena every time would spend real time zeroing thousands of bytes
+    // nothing is about to read. This loop only ever touches what was just
+    // handed out.
+    uint8_t *bytesOut = (uint8_t *)p;
+    for (size_t i = 0; i < bytes; i++) bytesOut[i] = 0;
+
     return p;
 }
 
@@ -213,7 +238,10 @@ static void do_switch(int target) {
     const app_t *to = app_for_index(target);
 
     if (from != NULL && from->leave != NULL) from->leave();
-    g_arenaUsed = 0;
+    g_arenaUsed = 0; // only rewinds the bump pointer; app_alloc() is what
+                      // actually zeroes a byte, and only the bytes it hands
+                      // out - see its comment for why that split is
+                      // deliberate rather than a memset here.
     touch_resolver_reset(); // see its comment above: per-run input state,
                              // reset alongside the arena it sits next to.
     gfx_fill_rect(0, 0, PANEL_W, PANEL_H, PX_WHITE);
