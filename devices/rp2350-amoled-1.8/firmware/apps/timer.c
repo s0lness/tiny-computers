@@ -462,6 +462,53 @@ static void draw_arc_caps(float fillDeg) {
     draw_cap(fillDeg);
 }
 
+// How far a cap's disc reaches, in DEGREES as seen from the ring's own
+// centre, past its exact centre angle. Bug found on real hardware: the
+// owner dragged the ring up near its max, then a second drag snapped it
+// down to a much smaller value, and the framebuffer (not just the panel -
+// checked with a USB dump, see the app's build/run instructions) kept a
+// trail of black one-pixel-tall dashes in the band the arc used to cover.
+//
+// Root cause was NOT the swept row range being too small for a big jump -
+// ring_sweep_row_range's own bound is exact for any single fromDeg/toDeg
+// pair, single jump or not (checked by brute force against every pixel the
+// real angle range touches, see the regression test). It is that the
+// MOVING cap is a real disc, not a point: draw_cap paints it a few degrees
+// wide on BOTH sides of its exact angle, on purpose, for the rounded-end
+// look (see this section's header comment). update_ring_to's very next
+// call computes its swept row range from the EXACT old/new angles, with no
+// allowance for the previous call's cap having physically painted a little
+// past the "old" edge. Once the arc has moved on, nothing ever sweeps that
+// sliver again: for a shrinking arc every future call's angle range only
+// gets smaller, so a sliver left past the old edge is stuck there for
+// good. Growing (dragging up, or any case where the far side of the old
+// cap is already inside the solid arc anyway) does not show it, which is
+// why this went unnoticed until a drag specifically shrank the value.
+//
+// The fix: update_ring_to pads the angle range it hands to
+// ring_sweep_row_range by this margin on both ends, so the previous call's
+// cap - wherever it was - is always inside the next call's sweep and gets
+// correctly reclassified against the new fillDeg.
+//
+// The margin itself: a disc of radius RING_HALF_THICK centred at distance
+// RING_RADIUS from the ring's origin subtends, at most, asin(RING_HALF_THICK
+// / RING_RADIUS) as seen from that origin (the standard tangent-line bound
+// for a circle of radius r at distance D: max half-angle = asin(r/D)) -
+// asin(8/165) ~= 2.78 degrees. Not computed at runtime: asinf is not in
+// this project's emulator ABI (emu_abi.h documents the exact math imports
+// a firmware may use, and asinf is not one of them - see
+// emulator/wasm/shim/math.h's header comment on why the gap is left visible
+// rather than silently added to), and there is no need to: RING_HALF_THICK
+// and RING_RADIUS are fixed compile-time constants, so this is one more
+// number computed once by reasoning, the same as RING_OUTER_R/RING_INNER_R
+// above. Rounded up to 3.5 degrees for headroom against this file's various
+// pixel roundings (lroundf in cap_center, the int row/column math
+// throughout) - verified sufficient (and that smaller values are not) by
+// brute-force simulation of the whole incremental path against a full
+// from-scratch redraw, both monotonic shrinks and long random walks; see
+// the regression test.
+#define CAP_SWEEP_MARGIN_DEG 3.5f
+
 // The track (whatever the arc is not currently covering) is the complement
 // of the arc within one continuous annulus, painted by the same
 // paint_ring_row calls that paint the arc: it is never "less than a full
@@ -520,6 +567,19 @@ static void ring_sweep_row_range(float fromDeg, float toDeg, int *yLo, int *yHi)
 // both the same way, correctness does not depend on the jump being small,
 // only the SIZE of the work does.
 //
+// The angle range handed to ring_sweep_row_range is padded by
+// CAP_SWEEP_MARGIN_DEG on both ends before it becomes a row range - see
+// that constant's comment for the bug this fixes: the PREVIOUS call's
+// moving cap is a disc, not a point, and paints a little past its exact
+// angle on purpose (the rounded-end look). Without the pad, a sweep whose
+// edge lands exactly on the old angle leaves that overshoot stranded
+// outside the row range forever, since a shrinking arc's future sweeps
+// only ever get smaller. The padded angle is used ONLY to size the row
+// range, never passed to paint_ring_row itself, which still classifies
+// every pixel it touches against the real newFillDeg - so this costs a
+// few extra rows of otherwise-correct repainting, not a correctness
+// change to what gets painted.
+//
 // Both caps are redrawn on every call, not only when the swept range
 // happens to reach them: ring_sweep_row_range bounds where the ARC EDGE
 // could have moved, but the fixed start cap (always at 0 degrees) never
@@ -538,8 +598,14 @@ static void update_ring_to(timer_state_t *s, float newFillDeg) {
 
     float fromDeg = newFillDeg < oldFillDeg ? newFillDeg : oldFillDeg;
     float toDeg = newFillDeg < oldFillDeg ? oldFillDeg : newFillDeg;
+
+    float sweepFromDeg = fromDeg - CAP_SWEEP_MARGIN_DEG;
+    float sweepToDeg = toDeg + CAP_SWEEP_MARGIN_DEG;
+    if (sweepFromDeg < 0.0f) sweepFromDeg = 0.0f;
+    if (sweepToDeg > 360.0f) sweepToDeg = 360.0f;
+
     int yLo, yHi;
-    ring_sweep_row_range(fromDeg, toDeg, &yLo, &yHi);
+    ring_sweep_row_range(sweepFromDeg, sweepToDeg, &yLo, &yHi);
     for (int y = yLo; y <= yHi; y++) paint_ring_row(y, newFillDeg);
     draw_arc_caps(newFillDeg);
 
