@@ -25,6 +25,7 @@ import { emptyJournal } from "./journal";
 import { TouchSim, type TouchReport } from "./touchsim";
 import { type TouchSimConfig, TOUCHSIM_DEFAULTS, TOUCH_DEFECTS_DEFAULT } from "./constants";
 import { WindowShakeDetector } from "./windowshake";
+import { PuckMotion } from "./puckmotion";
 
 const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)!;
 
@@ -44,13 +45,10 @@ const panelCtx = panelEl.getContext("2d", { willReadFrequently: true })!;
 const overlayCtx = overlayEl.getContext("2d")!;
 const wasmErrorEl = $("#wasmError");
 const consolePaneEl = $("#consolePane");
-const touchReadoutEl = $("#touchReadout");
-const pushReadoutEl = $("#pushReadout");
-const traceStatusEl = $("#traceStatus");
+const diagStripEl = $("#diagStrip");
 const replayBarEl = $("#replayBar");
 const btnStopReplay = $<HTMLButtonElement>("#btnStopReplay");
 const btnPause = $<HTMLButtonElement>("#btnPause");
-const shakeReadoutEl = $("#shakeReadout");
 const stageEl = $("#stage");
 
 // ---- state ----
@@ -70,8 +68,20 @@ const pushOverlay = new PushOverlay();
 const touchOverlay = new TouchOverlay();
 const shortcuts = new ShortcutRegistry();
 const windowShake = new WindowShakeDetector();
+const puckMotion = new PuckMotion();
 let shakeSensorIndex = -1;
 let centeredOnce = false;
+
+// The overlay toggle (item 1: disc, trail and coordinate readout together,
+// one switch). Default ON: it is what stops a layout flattering itself by
+// hiding how a real fingertip actually lands.
+let overlayEnabled = true;
+
+// Diagnostics kept for the one-line strip at the bottom of the page
+// (main.ts's redesign: coordinates, push counts, reload status and shake
+// jolts belong together, not scattered across the chrome).
+let lastTouchMapped: { panel: { x: number; y: number }; view: { x: number; y: number } } | null = null;
+let lastReloadStatus = "";
 
 const touchCfg: TouchSimConfig = { ...TOUCHSIM_DEFAULTS };
 let touchDefectsEnabled = TOUCH_DEFECTS_DEFAULT;
@@ -144,12 +154,13 @@ function failReload(err: unknown): void {
   if (emu) consoleLog.push(`reload failed, keeping previous session running: ${errMsg(err)}`);
 }
 
-// "reloaded at HH:MM:SS, N bytes" so a stale or failed reload is obvious
-// at a glance, without having to dig through the console pane.
+// "reloaded HH:MM:SS Nb" folded into the one diagnostics strip (see
+// updateDiagStrip) so a stale or failed reload is obvious at a glance
+// without a dedicated line of chrome for it.
 function updateReloadStatus(byteLength: number): void {
   const t = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
-  $("#reloadStatus").textContent = `reloaded ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}, ${byteLength.toLocaleString()} bytes`;
+  lastReloadStatus = `reloaded ${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())} ${byteLength.toLocaleString()}b`;
 }
 
 // ---- physical contact size ----
@@ -162,16 +173,25 @@ function derivePxPerMm(d: DeviceDescriptor): number {
   if (typeof p.hMm === "number" && p.hMm > 0) return d.panel.h / p.hMm;
   return DEFAULT_PX_PER_MM;
 }
+// The px/mm figure is real information (it decides how big the overlay
+// disc is), just not permanent-chrome information: it lives in each
+// preset button's title tooltip, not as a sentence under the toggle.
 function refreshContactInfo(): void {
-  const px = Math.round(touchOverlay.contactMm * touchOverlay.pxPerMm);
-  $("#contactInfo").textContent = `${touchOverlay.contactMm}mm @ ${touchOverlay.pxPerMm.toFixed(2)}px/mm = ~${px}px diameter`;
+  $("#contactPreset")
+    .querySelectorAll<HTMLButtonElement>("button")
+    .forEach((b) => {
+      const mm = Number(b.dataset.mm);
+      const px = Math.round(mm * touchOverlay.pxPerMm);
+      b.title = `${mm}mm ≈ ${px}px at this panel's scale`;
+    });
 }
 function wireContactPresets(): void {
   const el = $("#contactPreset");
   el.innerHTML = "";
   CONTACT_PRESETS.forEach((preset) => {
     const b = document.createElement("button");
-    b.textContent = `${preset.label} (${preset.mm}mm)`;
+    b.textContent = preset.label;
+    b.dataset.mm = String(preset.mm);
     if (preset.mm === touchOverlay.contactMm) b.classList.add("active");
     b.addEventListener("click", () => {
       touchOverlay.contactMm = preset.mm;
@@ -181,6 +201,7 @@ function wireContactPresets(): void {
     });
     el.appendChild(b);
   });
+  refreshContactInfo();
 }
 
 // ---- button ABI calls, recorded ----
@@ -210,8 +231,9 @@ function buildChrome(d: DeviceDescriptor): void {
   overlayEl.height = d.panel.h;
 
   $("#deviceName").textContent = d.name || "device emulator";
-  $("#deviceInfo").innerHTML =
-    `<div>${escapeHtml(d.name || "unnamed device")}</div>` + `<div class="hint">${d.panel.w}x${d.panel.h} px, ${escapeHtml(d.panel.format)}</div>`;
+  // The name already shows in the topbar; the sidebar's job is the one
+  // fact that isn't there yet, the panel spec.
+  $("#deviceInfo").textContent = `${d.panel.w}×${d.panel.h} ${d.panel.format}`;
 
   bezelEl.querySelectorAll(".dev-btn").forEach((el) => el.remove());
   wiredButtons = [];
@@ -252,14 +274,26 @@ function buildChrome(d: DeviceDescriptor): void {
 
     const row = document.createElement("div");
     row.className = "shortcut-row";
-    row.innerHTML =
-      `<span class="kbd">${key ? key.toUpperCase() : "-"}</span> ${escapeHtml(btn.label)} ` +
-      `<span class="hint">${btn.edge} @ ${(btn.at * 100).toFixed(0)}%${btn.longPressMs ? `, hold ${btn.longPressMs}ms = long` : ""}</span>`;
+    row.title = `${btn.edge} @ ${(btn.at * 100).toFixed(0)}%${btn.longPressMs ? `, hold ${btn.longPressMs}ms = long` : ""}`;
+    row.innerHTML = `<span class="kbd">${key ? key.toUpperCase() : "-"}</span> ${escapeHtml(btn.label)}`;
     shortcutListEl.appendChild(row);
   });
 
   if (emu) {
-    buildSensorControls($("#sensorControls"), d.sensors || [], emu, shortcuts, usedKeys, (t) => consoleLog.push(t));
+    buildSensorControls($("#sensorControls"), d.sensors || [], emu, shortcuts, usedKeys, (t) => consoleLog.push(t), (sensor) => {
+      // The one place a sensor click drives something visible beyond the
+      // firmware event itself: "shake" gets the same puck motion a real
+      // window shake produces, since there is no window motion behind a
+      // click to derive it from otherwise (see puckmotion.ts).
+      // Magnitude picked so the peak displacement lands close to
+      // PuckMotion's own maxOffset (a clearly visible jolt, not a twitch):
+      // for this spring's stiffness, a velocity kick V settles near a peak
+      // of V/sqrt(stiffness) px, so 300-400 px/s of kick reads as a real
+      // shake rather than a 1-2px flicker (measured with puppeteer: an
+      // earlier, gentler kick here was visually indistinguishable from
+      // noise).
+      if (sensor.id.toLowerCase() === "shake") puckMotion.impulse((Math.random() - 0.5) * 500, (Math.random() - 0.5) * 380);
+    });
     appStripControl = buildAppStrip($("#appStrip"), d.apps || [], emu);
   }
 
@@ -343,56 +377,73 @@ async function runGestureScript(script: unknown, log: (t: string) => void): Prom
   log("done");
 }
 
+// One <details> disclosure per declared gesture, closed by default: this
+// is the one place real prose (the "how" text) is unavoidable, since it
+// describes a physical action, so it stays out of permanent chrome and
+// only appears when opened.
 function buildGestures(d: DeviceDescriptor): void {
   const wrap = $("#gesturesWrap");
-  const list = $("#gesturesList");
-  list.innerHTML = "";
+  wrap.innerHTML = "";
   if (!d.gestures || d.gestures.length === 0) {
     wrap.classList.add("hidden");
     return;
   }
   wrap.classList.remove("hidden");
   for (const g of d.gestures) {
-    const row = document.createElement("div");
-    row.className = "gesture-row";
-    const head = document.createElement("div");
-    head.innerHTML = `<b>${escapeHtml(g.label)}</b><br><span class="how">${escapeHtml(g.how)}</span>`;
-    row.appendChild(head);
+    const det = document.createElement("details");
+    det.className = "disclosure gesture-detail";
+    const summary = document.createElement("summary");
+    summary.textContent = g.label;
+    det.appendChild(summary);
+
+    const body = document.createElement("div");
+    body.className = "gesture-body";
+    const how = document.createElement("p");
+    how.className = "how";
+    how.textContent = g.how;
+    body.appendChild(how);
 
     const holdIds = scriptButtonIds(g.script);
     const actions = document.createElement("div");
     actions.className = "gesture-actions";
+
+    // One control either way, "perform": present but disabled when this
+    // build has not declared a script, rather than a second, differently
+    // worded element ("no script" named the missing DATA, not what the
+    // person should do instead, which the button's own disabled state and
+    // title already say).
+    const btn = document.createElement("button");
+    btn.className = "chrome-btn";
+    btn.textContent = "perform";
     if (holdIds) {
-      const uniqueIds = [...new Set(holdIds)];
-      const keys = uniqueIds.map((id) => buttonKeyById.get(id)?.toUpperCase()).filter((k): k is string => !!k);
-      if (keys.length > 0) {
-        const keysEl = document.createElement("div");
-        keysEl.className = "gesture-keys hint";
-        keysEl.innerHTML = `same as: ${keys.map((k) => `<span class="kbd">${escapeHtml(k)}</span>`).join(" + ")} held together`;
-        actions.appendChild(keysEl);
-      }
-      const btn = document.createElement("button");
-      btn.className = "btn sec sm";
-      btn.textContent = `perform "${g.label}"`;
       btn.addEventListener("click", () => {
         btn.disabled = true;
         const prevText = btn.textContent;
-        btn.textContent = "performing...";
+        btn.textContent = "...";
         consoleLog.push(`gesture: performing "${g.label}" through the real button path`);
         void runGestureScript(g.script, (t) => consoleLog.push(`gesture: ${t}`)).finally(() => {
           btn.disabled = false;
           btn.textContent = prevText;
         });
       });
-      actions.appendChild(btn);
     } else {
-      const note = document.createElement("div");
-      note.className = "gesture-keys hint";
-      note.textContent = 'this build does not declare a machine-readable script for this gesture; use the button/keyboard chord above instead of a "perform" button here.';
-      actions.appendChild(note);
+      btn.disabled = true;
+      btn.title = "not available yet: this build does not declare a script for this gesture. Use the chord above instead";
     }
-    row.appendChild(actions);
-    list.appendChild(row);
+    actions.appendChild(btn);
+
+    const uniqueIds = holdIds ? [...new Set(holdIds)] : [];
+    const keys = uniqueIds.map((id) => buttonKeyById.get(id)?.toUpperCase()).filter((k): k is string => !!k);
+    if (keys.length > 0) {
+      const keysEl = document.createElement("span");
+      keysEl.className = "gesture-keys";
+      keysEl.title = "same as holding these together";
+      keysEl.innerHTML = keys.map((k) => `<span class="kbd">${escapeHtml(k)}</span>`).join("+");
+      actions.appendChild(keysEl);
+    }
+    body.appendChild(actions);
+    det.appendChild(body);
+    wrap.appendChild(det);
   }
 }
 
@@ -495,12 +546,22 @@ async function bringUp(bytes: ArrayBuffer, reason: string): Promise<void> {
   updateReloadStatus(bytes.byteLength);
 }
 
-// ---- readouts ----
-function updateTouchReadout(mapped: { panel: { x: number; y: number }; view: { x: number; y: number }; viewW: number; viewH: number }): void {
-  touchReadoutEl.textContent = `panel ${mapped.panel.x},${mapped.panel.y}   view ${mapped.view.x},${mapped.view.y} (${mapped.viewW}x${mapped.viewH})`;
-}
-function updatePushReadout(): void {
-  pushReadoutEl.textContent = `pushes ${pushOverlay.lastCount}   last w ${pushOverlay.lastWidth}px`;
+// ---- readouts: one quiet monospace strip, not scattered chrome ----------
+// Coordinates, push counts, reload status and shake jolts are all
+// diagnostics, and they read as one instrument when they live in one
+// place. The coordinate segment only appears while the overlay (item 1)
+// is switched on: it is part of that same toggle, not a separate readout
+// that happens to survive turning the overlay off.
+function updateDiagStrip(): void {
+  const parts: string[] = [];
+  if (overlayEnabled && lastTouchMapped) {
+    parts.push(`${lastTouchMapped.panel.x},${lastTouchMapped.panel.y}`);
+  }
+  parts.push(`push ${pushOverlay.lastCount}×${pushOverlay.lastWidth}px`);
+  parts.push(`shake ${windowShake.lastJoltCount}/${windowShake.cfg.joltMinCount}`);
+  parts.push(`${recorder.events.length.toLocaleString()} rec`);
+  if (lastReloadStatus) parts.push(lastReloadStatus);
+  diagStripEl.textContent = parts.join("   ·   ");
 }
 function updateReplayBar(): void {
   if (!replayer) {
@@ -523,7 +584,7 @@ function wirePanelInput(): void {
     const m = mapClientPoint(e.clientX, e.clientY, panelEl, quickDeg, tiltDeg, panelW, panelH);
     liveTouch = { fingers: 1, x: m.panel.x, y: m.panel.y };
     touchSim?.setPointer(true, m.panel.x, m.panel.y);
-    updateTouchReadout(m);
+    lastTouchMapped = m;
     e.preventDefault();
   });
   panelEl.addEventListener("pointermove", (e) => {
@@ -532,10 +593,10 @@ function wirePanelInput(): void {
     if (pointerIdDown === e.pointerId) {
       liveTouch = { fingers: 1, x: m.panel.x, y: m.panel.y };
       touchSim?.setPointer(true, m.panel.x, m.panel.y);
-      updateTouchReadout(m);
+      lastTouchMapped = m;
     } else if (pointerIdDown === null && !replayer) {
-      touchOverlay.recordHover(m.panel.x, m.panel.y);
-      updateTouchReadout(m);
+      if (overlayEnabled) touchOverlay.recordHover(m.panel.x, m.panel.y);
+      lastTouchMapped = m;
     }
   });
   function release(e: PointerEvent): void {
@@ -587,25 +648,31 @@ function afterTick(now: number): void {
   while (pushHistory.length > PUSH_HISTORY_MAX) pushHistory.shift();
   if (device?.apps && device.apps.length > 0 && emu.emu_app_current) lastAppIndex = emu.emu_app_current();
   appStripControl?.refresh();
-  updatePushReadout();
 }
 
 function frame(): void {
   if (emu && !paused) stepOnce();
   const now = performance.now();
   overlayCtx.clearRect(0, 0, overlayEl.width, overlayEl.height);
-  pushOverlay.paint(overlayCtx, now, accentColor);
-  touchOverlay.paint(overlayCtx, now, accentColor);
-  traceStatusEl.textContent = `${recorder.events.length.toLocaleString()} events recorded`;
+  if (overlayEnabled) {
+    pushOverlay.paint(overlayCtx, now, accentColor);
+    touchOverlay.paint(overlayCtx, now, accentColor);
+  }
   pollWindowShake(now);
+  puckMotion.tick(window.screenX, window.screenY, now);
+  applyRotation(bezelEl, quickDeg + tiltDeg, puckMotion.offsetX, puckMotion.offsetY);
+  updateDiagStrip();
   requestAnimationFrame(frame);
 }
 
 // ---- shake by physically shaking the window ------------------------------
+// Item 2: the window jolt detector (windowshake.ts) fires the ABI event,
+// and puckMotion.tick() (called every frame above, unconditionally) reacts
+// to the SAME real screenX/screenY the detector reads, so what the page
+// shows and what the firmware receives come from one motion, not two.
 function pollWindowShake(now: number): void {
   const suppressed = liveTouch.fingers === 1 || pointerIdDown !== null;
   const shaken = windowShake.poll(window.screenX, window.screenY, now, suppressed);
-  shakeReadoutEl.textContent = `window jolts: ${windowShake.lastJoltCount}/${windowShake.cfg.joltMinCount} (shake the whole browser window, or press the button/key above)`;
   if (shaken && emu && shakeSensorIndex >= 0 && !replayer) {
     emu.emu_sensor_event(shakeSensorIndex);
     recorder.record({ t: now, k: "sensor", i: shakeSensorIndex });
@@ -771,12 +838,16 @@ function buildTouchControls(): void {
 // ---- static UI: everything not dependent on a loaded module ----
 function wireStaticUI(): void {
   wireContactPresets();
-  refreshContactInfo();
 
   makeDraggable(bezelEl, deviceWrapEl);
   wirePanelInput();
   connectLiveReload();
   wireTraceFile();
+
+  $<HTMLInputElement>("#overlayOn").addEventListener("change", (e) => {
+    overlayEnabled = (e.target as HTMLInputElement).checked;
+    if (!overlayEnabled) overlayCtx.clearRect(0, 0, overlayEl.width, overlayEl.height);
+  });
 
   $("#rotQuick")
     .querySelectorAll<HTMLButtonElement>("button")
@@ -787,17 +858,17 @@ function wireStaticUI(): void {
           .querySelectorAll("button")
           .forEach((x) => x.classList.remove("active"));
         b.classList.add("active");
-        applyRotation(bezelEl, quickDeg + tiltDeg);
+        applyRotation(bezelEl, quickDeg + tiltDeg, puckMotion.offsetX, puckMotion.offsetY);
       });
     });
   $<HTMLInputElement>("#tilt").addEventListener("input", (e) => {
     tiltDeg = Number((e.target as HTMLInputElement).value);
-    applyRotation(bezelEl, quickDeg + tiltDeg);
+    applyRotation(bezelEl, quickDeg + tiltDeg, puckMotion.offsetX, puckMotion.offsetY);
   });
   // The "active" class on one #rotQuick button is just markup matching
   // quickDeg's actual default above; nothing paints the rotation from CSS
   // alone, so without this call the puck would sit at visual 0deg (wrong,
-  // see quickDeg's comment) until the first click on a rotate button.
+  // see quickDeg's comment) until the first frame runs.
   applyRotation(bezelEl, quickDeg + tiltDeg);
 
   btnPause.addEventListener("click", () => {

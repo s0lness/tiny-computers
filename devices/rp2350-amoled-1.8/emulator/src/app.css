@@ -2,6 +2,13 @@
    device panel itself stays pure device output, styled below outside the
    family-budget palette on purpose: it is a framebuffer, not UI.
 
+   Redesign brief (see docs/decisions or the task that produced this):
+   the panel is the subject of this page, everything else is furniture.
+   Furniture stays quiet: smaller, lower contrast, terracotta reserved for
+   genuine "this is active" state, never decorative. No control carries a
+   sentence; anything longer than two words lives behind a title tooltip
+   or a <details> disclosure.
+
    --panel-w / --panel-h are set from the firmware's own emu_device()
    descriptor at runtime (see main.ts, buildChrome): nothing here hardcodes
    a panel size, because this emulator is generic across devices. */
@@ -10,37 +17,72 @@
   --panel-w: 368px;
   --panel-h: 448px;
   --bezel-pad: 18px;
-  --sidebar-w: 300px;
+  --sidebar-w: 280px;
 }
 
-/* height, not min-height: the sidebar's content (device/buttons/gestures/
-   sensors/apps/touch controller/console/trace) is easily taller than the
+/* height, not min-height: the sidebar's content is easily taller than the
    viewport, and without a definite height here .layout's flex children have
    nothing definite to stretch/shrink into, so the WHOLE PAGE grows to fit
    the sidebar instead of the sidebar scrolling on its own (.side.controls
-   already has overflow-y:auto, but that is a no-op without this). That
-   inflation also threw off centering the puck over the stage (main.ts,
-   centerDeviceOnce): it was centering over a stage box that had grown to
-   match the oversized page, not the actual visible viewport. */
+   already has overflow-y:auto, but that is a no-op without this). */
 #root { height: 100vh; display: flex; flex-direction: column; }
 
+/* ---------- quiet chrome controls: text only, no border/fill until
+   hovered, so the top and bottom bars do not compete with the device ---- */
+.chrome-btn {
+  font: inherit;
+  font-size: 11px;
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 4px 7px;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.chrome-btn:hover { background: var(--row-hover); color: var(--ink-soft); }
+.chrome-btn[disabled] { opacity: .4; cursor: default; }
+.deck-btn { font-size: 13px; padding: 4px 10px; }
+.icon-btn { display: inline-flex; align-items: center; justify-content: center; }
+
+.divider { width: 1px; height: 16px; background: var(--border); margin: 0 4px; align-self: center; }
+
+/* ---------- disclosure: the one mechanism for anything longer than two
+   words (touch tuning, a gesture's prose) ---------- */
+.disclosure { margin: 4px 0 8px; }
+.disclosure summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  user-select: none;
+}
+.disclosure summary::-webkit-details-marker { display: none; }
+.disclosure summary::before { content: "\25B8"; font-size: 9px; display: inline-block; transition: transform .1s; }
+.disclosure[open] summary::before { transform: rotate(90deg); }
+.disclosure[open] summary { color: var(--ink-soft); }
+.disclosure > *:not(summary) { margin-top: 6px; }
+
 .topbar {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 16px;
+  display: flex; align-items: center; gap: 2px;
+  padding: 8px 14px;
   background: var(--card);
   border-bottom: 1px solid var(--border-soft);
 }
 .topbar .spacer { flex: 1; }
-.muted { color: var(--muted); }
+.topbar b { font-size: 13px; }
 
 .reload-dot {
-  width: 7px; height: 7px; border-radius: 50%;
+  width: 6px; height: 6px; border-radius: 50%;
   background: var(--border-dashed);
   display: inline-block;
+  margin-left: 6px;
 }
 .reload-dot.connected { background: var(--positive); }
 
-.filebtn { position: relative; overflow: hidden; cursor: pointer; }
+.filebtn { position: relative; overflow: hidden; }
 .filebtn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
 .wasm-error {
@@ -58,8 +100,6 @@
 }
 .wasm-error-text { white-space: pre-wrap; word-break: break-word; }
 .hidden { display: none !important; }
-
-.reload-status { font-size: 11px; }
 
 .layout { display: flex; flex: 1; min-height: 0; }
 
@@ -126,96 +166,101 @@
   box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .4);
   border-radius: 4px;
 }
-.dev-btn.edge-left, .dev-btn.edge-right { border-radius: 4px; }
 .dev-btn.pressed { background: linear-gradient(90deg, #7a7a80, #4a4a4e); }
 .dev-btn.long { background: linear-gradient(90deg, var(--accent), var(--accent-dark)); }
 
-/* Fixed to the viewport (not the stage's scroll/drag content), centred in
-   the space left of the sidebar, so it stays put at the bottom centre of
-   the window regardless of where the puck gets dragged to. */
+/* ---------- bottom bar: view + time deck, and one diagnostics strip.
+   Fixed to the viewport (not the stage's scroll/drag content), centred in
+   the space left of the sidebar, so it stays put regardless of where the
+   puck gets dragged. Quiet: a thin card, small text, no accent unless a
+   control is genuinely active (segtog's own .active). ---------- */
 .bottom-bar {
   position: fixed;
   left: 0;
-  bottom: 14px;
+  bottom: 12px;
   width: calc(100% - var(--sidebar-w));
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   z-index: 5;
 }
 
 .stage-controls {
-  display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
   background: var(--card);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-tab);
-  padding: 6px 12px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, .10);
+  padding: 4px 8px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .08);
 }
-.rotlabel { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.tilt-slider { width: 64px; }
 
-.readout {
-  font-size: 11px;
-  color: var(--muted);
+.diag-strip {
+  font-size: 10.5px;
+  color: var(--faint);
   font-variant-numeric: tabular-nums;
+  white-space: pre;
 }
 
 /* ---------- sidebar ---------- */
-.side.controls { width: var(--sidebar-w); overflow-y: auto; }
-.slider-row { margin-bottom: 10px; }
-.slider-row .row-head { display: flex; justify-content: space-between; font-size: 12px; }
+.side.controls { width: var(--sidebar-w); overflow-y: auto; padding: 14px 12px; }
+.side.controls h3:first-child { margin-top: 0; }
+.side.controls h3 { margin: 16px 0 6px; }
+
+.slider-row { margin-bottom: 8px; }
+.slider-row .row-head { display: flex; justify-content: space-between; font-size: 11px; }
 .slider-row .row-head b { font-weight: 600; }
 .slider-row .row-head span { color: var(--accent-dark); font-variant-numeric: tabular-nums; }
 .slider-row input[type=range] { width: 100%; }
-.slider-row .row-note { font-size: 11px; color: var(--hint); }
 
-.toggle-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.toggle-row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; }
 .toggle-row input[type=checkbox] { margin: 0; }
 
-.device-info { font-size: 12px; margin-bottom: 4px; }
+.device-info { font-size: 11px; color: var(--muted); margin-bottom: 8px; }
 
 .kbd {
   display: inline-block;
-  min-width: 16px;
+  min-width: 15px;
   text-align: center;
   font-size: 10px;
   padding: 1px 4px;
-  margin-left: 5px;
   border-radius: 4px;
   background: var(--chip-bg);
   color: var(--chip-text);
   border: 1px solid var(--border);
 }
 
-.shortcut-list { display: flex; flex-direction: column; gap: 4px; margin-bottom: 4px; }
-.shortcut-row { font-size: 12px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.shortcut-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+.shortcut-row { font-size: 11px; display: flex; align-items: center; gap: 6px; }
 
-.gestures-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; }
-.gesture-row { font-size: 12px; }
-.gesture-row b { color: var(--accent-dark); }
-.gesture-row .how { color: var(--ink-soft); }
-.gesture-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
-.gesture-keys { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; }
-.gesture-keys .kbd { margin-left: 0; }
+.sensor-controls { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 4px; }
+.sensor-btn { display: inline-flex; align-items: center; gap: 4px; }
 
-.sensor-controls { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
-.sensor-btn { display: inline-flex; align-items: center; }
+/* Segmented toggle, a size down from family-budget's default: these are
+   secondary controls (rotation, contact size), not primary navigation. */
+.segtog.seg-sm button { padding: 3px 8px; font-size: 11px; }
 
-.app-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.gesture-detail summary { font-weight: 600; color: var(--ink-soft); }
+.gesture-body { padding-left: 13px; font-size: 11px; }
+.gesture-body .how { color: var(--ink-soft); margin: 0 0 6px; max-width: 240px; }
+.gesture-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.gesture-keys { display: flex; align-items: center; gap: 2px; color: var(--muted); }
+
+.app-strip { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .app-strip-btn.active { background: var(--accent); color: #fff; }
 
 .console-pane {
-  height: 140px;
+  height: 100px;
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  padding: 6px 8px;
-  font-size: 11px;
+  padding: 5px 7px;
+  font-size: 10.5px;
   line-height: 1.5;
 }
-.console-line { white-space: pre-wrap; word-break: break-word; color: var(--ink-soft); }
+.console-line { white-space: pre-wrap; word-break: break-word; color: var(--hint); }
 .console-line + .console-line { border-top: 1px dashed var(--border-fine); }
 
 /* ---------- freeze annotation modal ---------- */

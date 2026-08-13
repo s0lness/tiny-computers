@@ -24,7 +24,11 @@ export function buildSensorControls(
   emu: EmuExports,
   shortcuts: ShortcutRegistry,
   usedKeys: Set<string>,
-  log: (text: string) => void
+  log: (text: string) => void,
+  // Fired right after emu_sensor_event(), so a button/keyboard press can
+  // drive something visible (the puck-motion shake, for the "shake"
+  // sensor) even though there is no real window motion behind a click.
+  onFire?: (sensor: DeviceSensor, index: number) => void
 ): void {
   container.innerHTML = "";
   sensors.forEach((sensor, index) => {
@@ -32,6 +36,7 @@ export function buildSensorControls(
     const fire = () => {
       emu.emu_sensor_event(index);
       log(`sensor: ${sensor.id}`);
+      onFire?.(sensor, index);
     };
     const key = assignShortcut(sensor.id, usedKeys);
     const btn = document.createElement("button");

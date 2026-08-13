@@ -16,12 +16,21 @@
       <div class="topbar">
         <b id="deviceName">device emulator</b>
         <span id="reloadDot" class="reload-dot" title="watching the wasm build for changes"></span>
-        <span id="reloadStatus" class="hint reload-status"></span>
         <span class="spacer"></span>
-        <button id="btnPng" class="btn sec sm">save png</button>
-        <button id="btnFreeze" class="btn sec sm">freeze</button>
-        <button id="btnSaveTrace" class="btn sec sm">save trace</button>
-        <label class="btn sec sm filebtn">load trace<input id="traceFileInput" type="file" accept="application/json" /></label>
+        <!-- capture: quiet, text-only, grouped. "png" named a file format,
+             not what pressing it does, so it is an icon (a camera) instead;
+             see the redesign report for the rest of that audit. -->
+        <button id="btnPng" class="chrome-btn icon-btn" title="save a screenshot of the panel">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="7" width="18" height="13" rx="2" />
+            <path d="M8 7l1.5-3h5L16 7" />
+            <circle cx="12" cy="13.5" r="3.5" />
+          </svg>
+        </button>
+        <button id="btnFreeze" class="chrome-btn" title="freeze: screenshot + state + recent input, written for an agent to read">freeze</button>
+        <button id="btnSaveTrace" class="chrome-btn" title="save the full input trace (replayable)">save</button>
+        <label class="chrome-btn filebtn" title="load a saved trace and replay it">load<input id="traceFileInput" type="file" accept="application/json" /></label>
+        <span class="divider"></span>
         <button id="btnQuit" class="btn danger sm">quit</button>
       </div>
 
@@ -39,69 +48,57 @@
         </div>
 
         <div class="side controls">
+          <h3>input</h3>
+          <div class="toggle-row">
+            <input id="overlayOn" type="checkbox" checked />
+            <!-- "overlay" named the rendering mechanism, not what it shows
+                 you; "contact" says what a fingertip is doing. -->
+            <label for="overlayOn" title="show the touch disc, trail and coordinates on the panel">contact</label>
+          </div>
+          <div class="toggle-row">
+            <input id="touchDefectsOn" type="checkbox" />
+            <label for="touchDefectsOn" title="simulate a real touch controller: report rate, dropped contact, stray reports. Off = clean pass-through">defects</label>
+          </div>
+          <div id="contactPreset" class="segtog seg-sm"></div>
+          <details class="disclosure">
+            <summary>tune</summary>
+            <div id="touchControls"></div>
+            <button id="btnResetTouch" class="chrome-btn">reset</button>
+          </details>
+
           <h3>device</h3>
           <div id="deviceInfo" class="device-info"></div>
-
-          <h3>buttons</h3>
           <div id="buttonShortcuts" class="shortcut-list"></div>
-          <div class="hint">a mouse can only hold one button at a time. A real keyboard can hold several: press and hold the letter keys above together, the same way you would hold two physical side buttons. See "gestures" below for a button that performs a declared chord for you, or for which keys to hold when none is declared yet.</div>
-
-          <div id="gesturesWrap" class="hidden">
-            <h3>gestures</h3>
-            <div id="gesturesList" class="gestures-list"></div>
-          </div>
-
-          <h3>sensors</h3>
           <div id="sensorControls" class="sensor-controls"></div>
-          <div id="shakeReadout" class="hint"></div>
-
+          <div id="gesturesWrap" class="hidden"></div>
           <div id="appStripWrap" class="hidden">
-            <h3>apps</h3>
             <div id="appStrip" class="app-strip"></div>
           </div>
 
-          <h3>touch contact size</h3>
-          <div id="contactPreset" class="segtog"></div>
-          <div id="contactInfo" class="hint"></div>
-
-          <h3>touch controller</h3>
-          <div class="toggle-row">
-            <input id="touchDefectsOn" type="checkbox" />
-            <label for="touchDefectsOn">simulate controller defects (off = clean pass-through)</label>
-          </div>
-          <div id="touchControls"></div>
-          <button id="btnResetTouch" class="btn sec sm" style="margin-top:6px">reset to defaults</button>
-
           <h3>console</h3>
           <div id="consolePane" class="console-pane"></div>
-
-          <h3>trace</h3>
-          <div id="traceStatus" class="hint"></div>
         </div>
       </div>
 
       <!-- Fixed to the viewport, not the device: the puck can be dragged
            anywhere on the stage and stays the visual centre of the page,
-           but these controls (and their readouts) always stay put at the
-           bottom centre. -->
+           but these controls stay put at the bottom centre. -->
       <div class="bottom-bar">
         <div class="stage-controls">
-          <span class="segtog" id="rotQuick">
+          <span class="segtog seg-sm" id="rotQuick" title="view rotation">
             <button data-deg="0">0&deg;</button>
             <button data-deg="90">90&deg;</button>
             <button data-deg="-90" class="active">-90&deg;</button>
             <button data-deg="180">180&deg;</button>
           </span>
-          <label class="rotlabel">tilt
-            <input id="tilt" type="range" min="-25" max="25" step="1" value="0" />
-          </label>
-          <button id="btnPause" class="btn sec sm">pause</button>
-          <button id="btnStep" class="btn sec sm">step</button>
+          <input id="tilt" type="range" min="-25" max="25" step="1" value="0" title="tilt" class="tilt-slider" />
+          <span class="divider"></span>
+          <button id="btnPause" class="chrome-btn deck-btn" title="pause the tick loop">&#10074;&#10074;</button>
+          <button id="btnStep" class="chrome-btn deck-btn" title="advance one frame">&#9654;&#124;</button>
           <span id="replayBar" class="pill hint hidden"></span>
-          <button id="btnStopReplay" class="btn sec sm hidden">stop replay</button>
+          <button id="btnStopReplay" class="chrome-btn hidden">stop replay</button>
         </div>
-        <div id="touchReadout" class="readout"></div>
-        <div id="pushReadout" class="readout"></div>
+        <div id="diagStrip" class="diag-strip"></div>
       </div>
     </div>
     <script type="module" src="./main.ts"></script>

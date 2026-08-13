@@ -132,6 +132,12 @@ export function createButtonElement(
   return el;
 }
 
-export function applyRotation(bezel: HTMLElement, totalDeg: number): void {
-  bezel.style.transform = `rotate(${totalDeg}deg)`;
+// dx/dy (default 0) are the puck-motion shake offset (see puckmotion.ts),
+// in screen pixels. translate() is listed before rotate() on purpose: CSS
+// applies the transform list right to left, so the element rotates about
+// its own centre FIRST and is then shifted by (dx, dy) in the parent's
+// (screen) space, meaning the shake always reads as moving in real screen
+// directions regardless of the puck's current rotation setting.
+export function applyRotation(bezel: HTMLElement, totalDeg: number, dx = 0, dy = 0): void {
+  bezel.style.transform = `translate(${dx}px, ${dy}px) rotate(${totalDeg}deg)`;
 }
