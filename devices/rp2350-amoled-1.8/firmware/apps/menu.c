@@ -47,6 +47,7 @@
 extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
+extern const app_t g_fourApp;
 
 /* ---------------------------------------------------------------------
  * Layout, landscape coordinates (LAND_W x LAND_H = 448 x 368). Icons sit in
@@ -87,10 +88,10 @@ static void panel_to_land(int px, int py, int *lx, int *ly) {
 
 // THE TOUCH TARGET. Not the icon's own ~96px box - a full-height column,
 // LAND_H (368px, the panel's entire landscape height) tall and one column
-// width (LAND_W/g_appCount, ~149px for today's 3 apps) wide. AGENTS.md's
+// width (LAND_W/g_appCount, 112px for today's 4 apps, 149px when there were
+// three) wide. AGENTS.md's
 // finger-size section measures a child's fingertip contact at ~75px on this
-// panel; 149px is about two finger-widths across (the same width the old
-// bordered tile already used, so no regression there), and 368px is the
+// panel; 112px is still comfortably over one finger-width across, and 368px is the
 // WHOLE screen top to bottom - there is no way to miss vertically at all,
 // which is the actual gain over the old ~220px-tall tile: a child aiming
 // only roughly at an icon, anywhere in its column, still launches it. ly is
@@ -1086,10 +1087,22 @@ static void draw_icon_lucide_chrono(int ox, int oy, uint16_t color) {
     // It runs from inside the bar's own ink down past the ring's outer edge,
     // so both joins overlap rather than abut, which is what MIN composition
     // needs to merge them into one mark.
+    //
+    // WHERE IT ENDS, and this is the whole of it: a round cap extends a full
+    // radius past the point you give it. The first version ended at y=27 with
+    // a 4px radius, so its ink actually reached y=31, while the ring's INNER
+    // edge is at y=29 (centre 56, radius 32, half-stroke 5). Two pixels of
+    // the neck therefore hung inside the dial, which is what the owner saw:
+    // "y a des bouts qui descendent trop bas a l'interieur de la bordure".
+    //
+    // Ending at 24 puts the cap's far edge at 28, inside the ring's band
+    // (19 to 29) rather than through it. Still overlapping, so the join
+    // holds, without a millimetre in the white.
     {
         const float neckHalf = 4.0f;
+        const float neckEndY = 24.0f;  // + neckHalf = 28, and the band ends at 29
         float sx[2] = { dx + 48.0f, dx + 48.0f };
-        float sy[2] = { dy + 10.0f, dy + 27.0f };
+        float sy[2] = { dy + 10.0f, dy + neckEndY };
         shapes_stroke_polyline_aa_land(sx, sy, 2, neckHalf, color);
     }
 }
@@ -1198,6 +1211,58 @@ static void draw_icon_lucide_timer_loadercircle(int ox, int oy, uint16_t color) 
 #define SKETCH_ICON_LUCIDE 1 // 0=off, 1=pencil, 2=pencil-line
 #define TIMER_ICON_LUCIDE  1 // 0=off, 1=hourglass, 2=loader-circle
 
+/* ---------------------------------------------------------------------
+ * The Connect Four icon (apps/four.c).
+ *
+ * NOT Lucide, and that is decision 0009's own instruction rather than an
+ * inconsistency: its exception for this file covers "the case where a
+ * matching Lucide source exists to convert", and Lucide has no Connect
+ * Four glyph - grid-3x3 is a ruled grid of lines (which is exactly what
+ * four.c's board deliberately is not), and grip/circle-dot are nine
+ * identical dots that say nothing about the game. So this one goes back to
+ * that document's original rule: the float brush, shapes.h's anti-aliased
+ * disc and annulus, no ruler and no straight line anywhere in it.
+ *
+ * The silhouette is the app's own board, reduced until it still reads at
+ * 96px: a 4x3 arrangement of holes with the bottom row of FOUR filled -
+ * the game's name, drawn. Four columns rather than seven because seven
+ * holes across a 96px box is 13px each and dissolves into a texture;
+ * three rows rather than six for the same reason. A filled cell is drawn
+ * at the ring's OUTER radius, so a played hole and an empty one are the
+ * same size and the row reads as four of one thing rather than as four
+ * smaller things.
+ *
+ * Stroke weight is FOUR_STROKE_HALF rather than LUCIDE_STROKE_HALF: at
+ * r=7.5 a 10px stroke would close the ring into a disc, which would erase
+ * the entire empty/filled distinction the icon is built on.
+ * ------------------------------------------------------------------- */
+#define FOUR_ICON_COLS   4
+#define FOUR_ICON_ROWS   3
+#define FOUR_ICON_PITCH  24.0f
+#define FOUR_ICON_R       7.5f
+#define FOUR_STROKE_HALF  2.5f
+
+static void draw_icon_four(int ox, int oy, uint16_t color) {
+    for (int row = 0; row < FOUR_ICON_ROWS; row++) {
+        for (int col = 0; col < FOUR_ICON_COLS; col++) {
+            float cx = (float)ox + FOUR_ICON_PITCH * ((float)col + 0.5f);
+            // Vertically centred in the ICON_H box rather than filling it:
+            // three rows of 24 is 72 of the 96, so 12 of padding top and
+            // bottom, which matches the horizontal case exactly (four rows
+            // of 24 is the full 96, and the outermost circle's own edge is
+            // 2px in from the box).
+            float cy = (float)oy + (float)(ICON_H - FOUR_ICON_ROWS * (int)FOUR_ICON_PITCH) / 2.0f
+                       + FOUR_ICON_PITCH * ((float)row + 0.5f);
+            if (row == FOUR_ICON_ROWS - 1) {
+                shapes_fill_disc_aa_land(cx, cy, FOUR_ICON_R + FOUR_STROKE_HALF, color);
+            } else {
+                shapes_fill_annulus_aa_land(cx, cy, FOUR_ICON_R + FOUR_STROKE_HALF,
+                                             FOUR_ICON_R - FOUR_STROKE_HALF, color);
+            }
+        }
+    }
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE
@@ -1223,6 +1288,8 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
 #else
         draw_icon_timer(ox, oy, color);
 #endif
+    } else if (app == &g_fourApp) {
+        draw_icon_four(ox, oy, color);
     }
     // An app added to g_apps[] without a matching icon here draws nothing -
     // a silent gap, not a fault. The menu is a navigation aid; it must
