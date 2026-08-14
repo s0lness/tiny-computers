@@ -62,15 +62,14 @@ been latched.
 
 ## The physical state of the device, right now
 
-**Powered fully OFF.** Rails down, panel dark, charge LED lit, no USB
-enumeration, no COM port. This is a genuine PMIC power-off, not the frozen
-screen.
+**Powered on, plugged in, running the shipping build.** The core1 fix was
+validated on hardware on 2026-08-14: ten real presses, plus 85 fatal-shape
+PMIC transactions hammered at the bench with `core1restarts=0`.
 
-**It needs one physical action: hold PWR for about a second.** If that does
-not work, unplug and replug USB, which gives the PMIC a VBUS edge.
-
-Nothing can be flashed, measured or validated until that happens. No agent
-can do it.
+Historic note, kept because it will happen again: the device was found fully
+powered off, and no agent could fix that. It takes one physical PWR hold of
+about a second, and if that does nothing, unplug and replug USB to give the
+PMIC a VBUS edge. The second is what actually worked.
 
 ## The first three actions tomorrow
 
@@ -88,6 +87,26 @@ Then the acceptance test, which has not moved all day and must not be
 softened: **press PWR, the stopwatch starts. Press again, it stops. Ten
 times, over several minutes.** Surviving a press without acting on it does not
 count.
+
+## Done, 2026-08-14: the three things below were undone and shipped
+
+`PMIC_WRITE_SELFTEST` is back at 0, `sound_init()` is re-enabled, and the
+temporary diagnostics are gone. Verified from the linked image rather than
+from the `#define`s: `pmic_write_selftest_core1`, `touch_diag_poll_core1` and
+`devlink_tune_freeze` are all absent from `firmware/build/main.uf2`, and the
+profiler line is the ordinary one again.
+
+**`core1=<n>/s` and `core1restarts=<n>` survived**, which was the one
+non-negotiable item.
+
+Two gates exist now and both default to off: `TOUCH_POLL_SELFTEST` for the
+touch pipeline diagnostic, and `SKETCH_LIVE_TUNE` for the live knobs. Build
+either with `-D<NAME>=1`.
+
+The timer no longer plays the chime. That is a product decision the owner made
+on 2026-08-14, not a regression, and the synth still contains it.
+
+The original list, kept because it says why each item mattered:
 
 ## Before shipping, three things must be undone
 
