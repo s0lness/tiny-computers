@@ -138,7 +138,7 @@ Consequences worth having in mind before laying anything out:
   height on a target that needs 75 of it, so its capacity is fixed by the
   short axis alone. The menu was exactly this and was rewritten as a grid on
   2026-08-15 for exactly this reason - see
-  `docs/decisions/0011-the-menu-is-a-grid-and-nothing-is-hidden.md`. The
+  `docs/decisions/0013-the-menu-is-a-grid-and-nothing-is-hidden.md`. The
   general lesson, before laying anything out: count the targets the PANEL
   holds (about twenty at 75px), not the ones one row holds.
 - Anything a finger must land on precisely (a ring to drag, a small control)
@@ -173,7 +173,7 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       slide a thumb and release to drop; nothing plays by
                       itself), menu.c (the app picker: a grid of 112px
                       cells filling the glass, all apps visible at once,
-                      press-drag-release to launch - decision 0011),
+                      press-drag-release to launch - decision 0013),
                       stubapps.c (empty unless the menu-stub define is
                       set; how that layout gets captured at six and twelve
                       apps, see its own header), digits.c

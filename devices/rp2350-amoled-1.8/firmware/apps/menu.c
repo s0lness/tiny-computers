@@ -1,12 +1,19 @@
 /*
  * menu: how a child picks an app.
  *
- * Landscape, full-screen. Icons only, in a row along the TOP of the screen -
- * no borders, no tile rectangles, no app name printed underneath. The owner's
- * words for this design: "je pense qu'on fait juste des icones... ne mets que
- * les icones, en haut de l'ecran, sans texte, sans bordure." Pictures only:
- * reading English is not the entry fee for a child who cannot yet, and now
- * neither is reading a frame around a picture.
+ * Landscape, full-screen. Icons only, packed from the TOP of the screen down
+ * - no borders, no tile rectangles, no app name printed underneath. The
+ * owner's words for this design: "je pense qu'on fait juste des icones... ne
+ * mets que les icones, en haut de l'ecran, sans texte, sans bordure."
+ * Pictures only: reading English is not the entry fee for a child who cannot
+ * yet, and now neither is reading a frame around a picture.
+ *
+ * A ROW became a GRID on 2026-08-15, and the owner's sentence above survived
+ * it intact: still only icons, still no text and no border, still starting at
+ * the top of the glass. What changed is that they now wrap onto a second and
+ * third row when there are more than four, because a row alone runs out of
+ * finger-widths at six apps - see "THE LAYOUT" below for the arithmetic and
+ * docs/decisions/0013 for the argument.
  *
  * Touch is the ONLY input this file reads. Touching an icon launches that
  * app immediately - "je veux que ce soit que du touch. toucher une app ouvre
@@ -18,10 +25,12 @@
  * left to draw a cursor around. One less piece of state to get wrong is a
  * simplification, not a loss - see menu_state_t's comment.
  *
- * The touch TARGET is not the small icon itself: each icon's touch region is
- * a full-height column spanning the whole screen top to bottom, only its
- * WIDTH tied to the icon above it - see this file's comment on
- * column_hit_test() for the exact sizes and why.
+ * The touch TARGET is not the small icon itself: each icon owns a CELL of a
+ * grid that fills the glass, and the grid is invisible - nothing is drawn
+ * for it, no border, no separator, no page dot. It exists only in
+ * menu_hit(). See "THE LAYOUT" below for the sizes and the arithmetic, and
+ * docs/decisions/0013 for why this is a grid rather than pages, a wheel, or
+ * a short list of favourites.
  *
  * Opening and closing the menu (the BOOT+PWR long-press chord) is entirely
  * the runtime's business; this file never reads the PMIC and never calls
@@ -49,26 +58,144 @@ extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 extern const app_t g_fourApp;
 
-/* ---------------------------------------------------------------------
- * Layout, landscape coordinates (LAND_W x LAND_H = 448 x 368). Icons sit in
- * one row near the top; g_appCount is an extern int, not a macro (sized from
- * the linked app table, see app.h), so the split below is computed at
- * runtime rather than checked with a compile-time _Static_assert.
- * ------------------------------------------------------------------- */
-#define ICON_TOP_MARGIN 24 // gap from the screen's top edge to the icon's own box
+/* =====================================================================
+ * THE LAYOUT. Landscape coordinates, LAND_W x LAND_H = 448 x 368.
+ *
+ * WHAT THIS REPLACED, AND THE ONE NUMBER THAT SETTLED IT. Until
+ * 2026-08-15 this was a single ROW of full-height columns, one per app,
+ * LAND_W/g_appCount wide and the panel's whole 368px tall. That design
+ * spends the entire vertical axis on a target that needs 75px of it, so
+ * its capacity is decided by the horizontal axis alone, and every app
+ * added narrows every other app's target:
+ *
+ *     apps   column   against a child's ~75px fingertip (AGENTS.md)
+ *        3    149px   two fingers, roomy
+ *        4    112px   one and a half, where it shipped
+ *        6     74px   UNDER ONE FINGER - this is where it breaks
+ *       12     37px   half a finger
+ *
+ * The owner's list (tic-tac-toe, breakout, a spirit level, a clock, the
+ * dinosaur, bowling, tilt-a-ball) lands at twelve, and two of those were
+ * being written the evening this was rewritten. The SIXTH app crosses the
+ * line, not some future one - docs/decisions/0010, "The menu breaks at
+ * six, not twelve".
+ *
+ * THE FIX IS ARITHMETIC, NOT A GESTURE. The panel is about 5.9 fingertips
+ * across and 4.9 down, so it physically holds roughly twenty finger-sized
+ * targets. A row of columns can only ever offer five. Using the second
+ * axis is a fourfold increase in capacity that costs nothing and needs no
+ * new input: twelve apps fit on one screen at 112 x 112 each, which is one
+ * and a half fingertips in BOTH directions. So there is no paging, no
+ * scrolling, no swipe, no wheel and no momentum on this screen, and there
+ * is nothing hidden from a child who cannot read a page number.
+ *
+ * THE CELL IS FIXED AT 112 TALL AND NEVER SHRINKS. This is the property
+ * worth protecting, more than any single measurement: the cell height is a
+ * constant, and the cell width bottoms out at LAND_W/MENU_COLS_MAX = 112
+ * once there are four apps. So from the fourth app to the twelfth, ADDING
+ * AN APP NEVER SHRINKS AN EXISTING TARGET. What the twelfth app spends is
+ * cancel-band height (see THE CANCEL BAND below), not anybody's target.
+ * The old design spent every target on every app.
+ *
+ * The resulting sizes, which are what the design is judged on:
+ *
+ *     apps   grid   cell (w x h)   fingertips     cancel band
+ *        4    4x1     112 x 112     1.5 x 1.5           256px
+ *        6    3x2     149 x 112     2.0 x 1.5           144px
+ *        9    3x3     149 x 112     2.0 x 1.5            32px
+ *       12    4x3     112 x 112     1.5 x 1.5            32px
+ *
+ * WHERE IT STOPS, said out loud rather than discovered. Three rows of 112
+ * is 336 of the panel's 368, so twelve is the ceiling at MENU_COLS_MAX=4
+ * and a 96px icon. A thirteenth app does not fall off the screen (rows are
+ * clamped and the rows simply carry more, narrower cells) but its targets
+ * go under a fingertip, and THAT is the point at which this design owes a
+ * second one - a smaller icon buys sixteen, and past that something has to
+ * be hidden. Twelve is the owner's whole list.
+ *
+ * NOTHING HERE IS DRAWN. Decision 0009 forbids hard edges, right angles
+ * and dead straight lines, and a grid of icons is exactly where those
+ * creep back in. They do not, because the grid is not a picture: no cell
+ * border, no separator, no tile rectangle, no page dot, no label. The only
+ * marks on the glass are the icons themselves and a round halo. The grid
+ * lives entirely in menu_hit() and cell_rect_land().
+ *
+ * g_appCount is an extern int, not a macro (sized from the linked app
+ * table, see app.h), so every split below is computed at runtime rather
+ * than checked with a compile-time _Static_assert.
+ * ===================================================================== */
 
 #define ICON_W 96
 #define ICON_H 96
 
-// Column i's horizontal span, in landscape x. Contiguous and full-width
-// (no gap, no margin either side): the LAST column absorbs whatever LAND_W
-// does not divide evenly, so every x in [0, LAND_W) belongs to exactly one
-// column and none is dead space a touch can fall into and hit nothing.
-static void column_rect_land(int i, int *bx, int *bw) {
+// THE CELL. 112px is one and a half child fingertips, it holds the 96px
+// icon box with 8px of air all round, and it is a multiple of 8 - which is
+// not a coincidence but decision 0001: gfx maps a landscape rectangle to
+// the panel with width and height swapped, so a cell's landscape HEIGHT is
+// the pushed row length, and the row length is what has to be a multiple of
+// 8. A cell height of 110 or 120 would be just as finger-sized and would
+// break every push this file makes.
+#define MENU_CELL_H   112
+
+// Four across is the widest row this panel can carry at a full fingertip
+// and a half: LAND_W / 4 = 112 exactly, with no remainder to hand anybody.
+#define MENU_COLS_MAX 4
+
+// Three rows of 112 = 336, leaving MENU_BAND_MIN below. Derived, not
+// chosen, so that changing MENU_CELL_H cannot silently overrun the panel.
+#define MENU_ROWS_MAX (LAND_H / MENU_CELL_H) // 3
+
+// How many rows the current app count needs. Clamped at MENU_ROWS_MAX so a
+// thirteenth app widens the rows instead of drawing a row off the bottom of
+// the glass - see WHERE IT STOPS above.
+static int menu_rows(void) {
     int n = g_appCount;
-    int w = LAND_W / n;
-    *bx = i * w;
-    *bw = (i == n - 1) ? (LAND_W - *bx) : w;
+    if (n < 1) return 1;
+    int rows = (n + MENU_COLS_MAX - 1) / MENU_COLS_MAX;
+    if (rows > MENU_ROWS_MAX) rows = MENU_ROWS_MAX;
+    if (rows < 1) rows = 1;
+    return rows;
+}
+
+// Row r's first app index and how many apps are in it. BALANCED, earlier
+// rows taking the extra: n apps over `rows` rows gives every row n/rows,
+// and the first n%rows rows one more. No row is ever two apps longer than
+// another, which matters because the LONGEST row is the one that decides
+// the narrowest cell on the screen. Five apps are 3 then 2 (149px then
+// 224px cells), never 4 then 1.
+static void menu_row_span(int r, int *first, int *cols) {
+    int n = g_appCount;
+    int rows = menu_rows();
+    int base = n / rows;
+    int extra = n % rows;
+    *first = r * base + (r < extra ? r : extra);
+    *cols  = base + (r < extra ? 1 : 0);
+}
+
+// Cell i's landscape rectangle. Contiguous and full-width within its row
+// (no gap, no margin either side): the LAST cell of a row absorbs whatever
+// LAND_W does not divide evenly, so every x in [0, LAND_W) belongs to
+// exactly one cell and none of it is dead space a touch can fall into and
+// hit nothing. That was the old column layout's best property and it is
+// kept exactly, now in two dimensions.
+static void cell_rect_land(int i, int *bx, int *by, int *bw, int *bh) {
+    int rows = menu_rows();
+    int r = 0, first = 0, cols = 1;
+    for (r = 0; r < rows; r++) {
+        menu_row_span(r, &first, &cols);
+        if (i < first + cols) break;
+    }
+    if (r >= rows) { r = rows - 1; menu_row_span(r, &first, &cols); } // unreachable
+                                                                       // for a valid
+                                                                       // index; clamps
+                                                                       // rather than
+                                                                       // reads past
+    int c = i - first;
+    int w = LAND_W / cols;
+    *bx = c * w;
+    *bw = (c == cols - 1) ? (LAND_W - *bx) : w;
+    *by = r * MENU_CELL_H;
+    *bh = MENU_CELL_H;
 }
 
 // The touch coordinates a tick() sees arrive in PANEL (portrait) space, not
@@ -86,25 +213,48 @@ static void panel_to_land(int px, int py, int *lx, int *ly) {
     *ly = PANEL_W - 1 - px;
 }
 
-// THE TOUCH TARGET. Not the icon's own ~96px box - a full-height column,
-// LAND_H (368px, the panel's entire landscape height) tall and one column
-// width (LAND_W/g_appCount, 112px for today's 4 apps, 149px when there were
-// three) wide. AGENTS.md's
-// finger-size section measures a child's fingertip contact at ~75px on this
-// panel; 112px is still comfortably over one finger-width across, and 368px is the
-// WHOLE screen top to bottom - there is no way to miss vertically at all,
-// which is the actual gain over the old ~220px-tall tile: a child aiming
-// only roughly at an icon, anywhere in its column, still launches it. ly is
-// computed by panel_to_land() above but genuinely unused here (see its
-// caller): only which column lx falls in decides the hit.
-static int column_hit_test(int lx) {
-    int n = g_appCount;
-    int w = LAND_W / n;
-    int idx = lx / w;
-    if (idx >= n) idx = n - 1; // clamp into the last column, which absorbed
-                                // LAND_W's remainder in column_rect_land()
-    if (idx < 0) idx = 0;
-    return idx;
+// THE TOUCH TARGET, and THE CANCEL BAND, in one function.
+//
+// Not the icon's own 96px box: the whole cell, never smaller than
+// 112 x 112 at any app count up to twelve (see THE LAYOUT above for the
+// table). AGENTS.md measures a child's fingertip contact at ~75px on this
+// panel, so every target here is one and a half fingertips across and one
+// and a half down, and a child aiming only roughly at a picture still gets
+// it.
+//
+// Size is not the only forgiveness and it is not even the main one. The
+// gesture is press-drag-release (see THE GESTURE below), so the cell under
+// the thumb is LIT before anything launches: a child who lands on the wrong
+// picture sees the wrong picture light up and slides, without lifting. A
+// 112px cell you can correct beats a 149px cell that fires on contact.
+//
+// THE CANCEL BAND is everything below the grid, and it is a leftover rather
+// than a reserved strip: the grid packs to the TOP of the glass (the
+// owner's own instruction for the icons, "en haut de l'ecran"), and
+// whatever the rows do not use is where a release does nothing. That is
+// 256px at four apps, 144px at six, and 32px at nine or twelve - the
+// twelfth app is paid for out of THIS, which is the only thing left that
+// can shrink. At 32px it is still a real region for the gesture it exists
+// for, because what the controller reports is a contact CENTROID, not the
+// contact patch: a thumb slid to the bottom edge of the glass has its
+// centroid pinned there. But say the cost plainly - at twelve apps,
+// cancelling means a deliberate slide all the way to the bottom edge,
+// where at four apps most of the screen will do.
+static int menu_hit(int lx, int ly) {
+    int rows = menu_rows();
+    if (ly < 0) ly = 0;
+    if (ly >= rows * MENU_CELL_H) return -1; // the cancel band
+    int r = ly / MENU_CELL_H;
+    int first, cols;
+    menu_row_span(r, &first, &cols);
+    int w = LAND_W / cols;
+    if (lx < 0) lx = 0;
+    int c = lx / w;
+    if (c >= cols) c = cols - 1; // clamp into the row's last cell, which
+                                  // absorbed LAND_W's remainder in
+                                  // cell_rect_land()
+    if (c < 0) c = 0;
+    return first + c;
 }
 
 /* ---------------------------------------------------------------------
@@ -1336,6 +1486,19 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     } else if (app == &g_fourApp) {
         draw_icon_four(ox, oy, color);
     }
+#if MENU_STUB_APPS
+    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the fourth in
+    // a stub build borrows one of the four real icons, cycling, so a capture
+    // at six or twelve apps shows the LAYOUT under real ink rather than a
+    // grid of holes - a layout is judged against what will actually sit in
+    // it. Recursion is one level deep by construction: g_apps[k & 3] is
+    // always one of the four real apps, which take the branches above.
+    else {
+        for (int k = 4; k < g_appCount; k++) {
+            if (app == g_apps[k]) { draw_icon_for(g_apps[k & 3], ox, oy, color); return; }
+        }
+    }
+#endif
     // An app added to g_apps[] without a matching icon here draws nothing -
     // a silent gap, not a fault. The menu is a navigation aid; it must
     // never be the thing that stops a build. There is no name to fall back
@@ -1365,12 +1528,11 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
  *     gesture's worth of it, which is what the halo below is for.
  *
  * CANCELLING is the point of the change, so it gets a real region rather
- * than a corner: everything below MENU_LAUNCH_BAND_H is dead space where
- * nothing is lit and a release does nothing. The icons sit at y 24-120 and
- * the band runs to 220, so a hundred pixels of slack below them still
- * launch and you have to drag deliberately downward to cancel. Dragging off
- * the bottom edge of the glass passes through that zone on the way out, so
- * "leave the panel" cancels too without needing a rule of its own.
+ * than a corner: everything below the grid is dead space where nothing is
+ * lit and a release does nothing - see menu_hit()'s own comment for how big
+ * that region is at each app count and what it costs at twelve. Dragging
+ * off the bottom edge of the glass passes through that zone on the way out,
+ * so "leave the panel" cancels too without needing a rule of its own.
  *
  * DROPOUTS. The controller drops contact about 34 times a second while a
  * finger is down, so a gesture that ENDS on release cannot believe
@@ -1379,34 +1541,101 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
  * verdict needs MENU_RELEASE_GRACE_MS of continuous silence, and a gesture
  * arms only on contact sustained at a rate no stray burst can fake.
  *
- * The state machine below is four.c's, second copy. Deliberate duplication,
- * not an oversight: it is thirty lines, the two apps do different things at
- * the end of it (four.c drops a piece and hands the puck over, this one
- * switches app), and sharing it would mean a new runtime-level header for
- * two callers. If a third app needs it, extract it then. The arithmetic that
- * justifies the constants lives in exactly one place either way, which is
- * the part that would actually rot.
+ * JITTER, and this one is NEW here and is not in four.c. The same measured
+ * profile that gives 34 dropouts a second also has the reported centroid
+ * jumping 80-250px away from a finger that is not moving, and STAYING there
+ * for one to three reports (TOUCHSIM_HARDWARE_MEASURED, calibrated against
+ * a session where a deliberately still finger produced ten confirmed splits
+ * in forty seconds). 80px is most of a cell. Under the old layout that
+ * could move the halo a column sideways; under a grid it can move it a
+ * column sideways OR a row down, and a lift during that window launches an
+ * app the child never pointed at - which is this screen's most expensive
+ * error, because the only way back out is a chord she has to be taught.
+ *
+ * So the lit cell is CONFIRMED before it moves: a new cell has to be the
+ * reported one continuously for MENU_HOVER_CONFIRM_MS before the halo goes
+ * there, and until then the cell the child is actually looking at stays
+ * lit. Dropouts do NOT reset the count: a tick with no contact is not
+ * evidence about position, so the window simply keeps running (the same
+ * reasoning RELEASE_GRACE is built on).
+ *
+ * What this buys, stated as an invariant because it is the thing worth
+ * testing: WHAT LAUNCHES IS ALWAYS WHAT WAS LIT. The launch verdict reads
+ * hoverCell, hoverCell is what render_cell() drew a halo under, so the
+ * device can never disagree with the child about which app she was pointing
+ * at. Her instruction is "let go when the one you want is lit", and the
+ * screen is the whole contract.
+ *
+ * NO WINDOW MAKES A WRONG HALO IMPOSSIBLE, and the reason is not the
+ * obvious one. A jitter episode is at most three reports, so the first
+ * guess is that any window past ~67ms is safe. It is not: the runtime holds
+ * the LAST reported position while contact is bridged, and 34 dropouts a
+ * second means more than half of all reports are lost, so a wrong position
+ * survives long after the episode that produced it - until the next
+ * truthful report arrives. The window therefore buys a RATE, not a
+ * guarantee, which is why the number below came off a measurement rather
+ * than off that arithmetic.
+ *
+ * MEASURED, and the counterfactual was run rather than argued.
+ * emulator/wasm/tests/feature-menu-hover.ts samples the halo at every report
+ * of twenty slide-and-lift gestures under the measured profile and counts
+ * the times it MOVES to a cell the thumb never touched:
+ *
+ *     confirm window     excursions
+ *          0ms           14 per 100 gestures
+ *        100ms            4 per 100
+ *        150ms            1 per 240      <- chosen
+ *        200ms            0 per 240
+ *
+ * 150 rather than 200 because the cost is real and lands on the first light
+ * too: the halo appears that long after the thumb does, and past about
+ * 200ms a child gets no answer from the glass and presses again. The
+ * remaining 0.4% is a halo that visibly sits on the wrong picture, which
+ * she can see and slide off - not a silent wrong launch, which needs the
+ * lift to land inside that same window.
+ *
+ * And worth knowing before trusting any of the above: the test's OTHER
+ * counters (which app actually launched) read 20/20 at EVERY row of that
+ * table, including 0ms. A gesture that settles before it lifts recovers on
+ * its own, so an instrument reading only the launch cannot see this defect
+ * at all, and the first version of this test did exactly that and was
+ * green. Decision 0010's law arriving inside this file: the excursion
+ * counter had to be built before anything could be measured.
+ *
+ * The state machine below is four.c's, second copy, plus the confirmation
+ * above. Deliberate duplication, not an oversight: it is thirty lines, the
+ * two apps do different things at the end of it (four.c drops a piece and
+ * hands the puck over, this one switches app), and sharing it would mean a
+ * new runtime-level header for two callers. If a third app needs it,
+ * extract it then. The arithmetic that justifies the constants lives in
+ * exactly one place either way, which is the part that would actually rot.
  * ------------------------------------------------------------------- */
-#define MENU_LAUNCH_BAND_H    220
 #define MENU_RELEASE_GRACE_MS 300
 #define MENU_ARM_SAMPLES        4
 #define MENU_ARM_MS            40
 #define MENU_ARM_RATE_HZ       15u
+#define MENU_HOVER_CONFIRM_MS 150
 
 // The halo: a soft grey disc behind the icon under the thumb. Round, so it
 // needs no corner treatment at all (decision 0009), and one shapes.h call.
 // Big enough to read as "this one" past a thumb, light enough that the black
 // icon still sits clearly on top of it.
 //
-// CAPPED TO THE COLUMN IT LIVES IN, and that cap is load-bearing rather than
-// tidy. Every push here is one column's strip, and shapes.h's primitives
-// take no clip - so a halo wider than its own column paints into the
-// neighbour, outside the rectangle that gets pushed, and stays there. That
-// is decision 0001's second invariant broken and a grey crescent left
-// stranded beside the icon you just left. It showed up as 250 outside-push
-// violations the first time this ran, from 2px of overflow each side at four
-// apps (112px columns, radius 58). The cap also means the halo shrinks
-// correctly as apps are added rather than silently starting to bleed at five.
+// CAPPED TO THE CELL IT LIVES IN, and that cap is load-bearing rather than
+// tidy. Every push here is one cell, and shapes.h's primitives take no clip
+// - so a halo wider or taller than its own cell paints into the neighbour,
+// outside the rectangle that gets pushed, and stays there. That is decision
+// 0001's second invariant broken and a grey crescent left stranded beside
+// the icon you just left. It showed up as 250 outside-push violations the
+// first time this ran, from 2px of overflow each side at four apps (112px
+// columns, radius 58).
+//
+// The cap now takes the SMALLER of the cell's two dimensions, which it did
+// not have to when a cell was the full 368px height and only width could
+// bind. With MENU_CELL_H fixed at 112 the height is what binds at every app
+// count, so the halo is a 106px disc with 3px of clearance on all four
+// sides - and, usefully, it is the SAME SIZE at four apps as at twelve.
+// Under the old columns it shrank as apps were added.
 #define MENU_HALO_R_MAX 58.0f
 #define MENU_HALO_GAP    3.0f
 
@@ -1415,39 +1644,53 @@ static uint16_t menu_halo_color(void) {
 }
 
 /* ---------------------------------------------------------------------
- * Painting. One column at a time, and every push is a FULL-HEIGHT LANDSCAPE
- * STRIP - gfx maps a landscape rectangle to the panel with width and height
- * swapped, so the pushed row length is the landscape HEIGHT, which is
- * LAND_H = 368 and a multiple of 8 on every push, at rest and mid-gesture
- * alike (decision 0001). The same discipline apps/four.c uses, for the same
- * reason: there is no per-frame bounding-box arithmetic left to get wrong.
+ * Painting. One CELL at a time, and every push is one cell's landscape
+ * rectangle - gfx maps a landscape rectangle to the panel with width and
+ * height swapped, so the pushed row length is the landscape HEIGHT, which
+ * is MENU_CELL_H = 112 and a multiple of 8 on every push, at rest and
+ * mid-gesture alike (decision 0001). That is why MENU_CELL_H is 112 and not
+ * 110: the cell size and the push rule are the same constant.
  *
- * A strip is redrawn from white every time rather than patched, so a halo
+ * This got CHEAPER rather than more complicated when the columns became
+ * cells. The old code pushed a 368-tall strip to move a halo that only ever
+ * occupied 96px of it; a cell push is 112 tall, so moving the halo one step
+ * costs 30% of what it did, at any app count.
+ *
+ * A cell is redrawn from white every time rather than patched, so a halo
  * that has moved away cannot leave anything behind.
+ *
+ * NOTHING PAINTS THE CANCEL BAND, and nothing needs to: the runtime clears
+ * the framebuffer to white and pushes the whole panel on the way in
+ * (app.h's enter() contract), and no mark this file draws ever lands below
+ * the grid.
  * ------------------------------------------------------------------- */
-static void render_column(int i, bool hovered) {
-    int bx, bw;
-    column_rect_land(i, &bx, &bw);
-    gfx_fill_rect_land(bx, 0, bw, LAND_H, PX_WHITE);
+static void render_cell(int i, bool hovered) {
+    int bx, by, bw, bh;
+    cell_rect_land(i, &bx, &by, &bw, &bh);
+    gfx_fill_rect_land(bx, by, bw, bh, PX_WHITE);
     int iconX = bx + (bw - ICON_W) / 2;
-    int iconY = ICON_TOP_MARGIN;
+    int iconY = by + (bh - ICON_H) / 2;
     if (hovered) {
-        float r = (float)bw / 2.0f - MENU_HALO_GAP;
+        // The SMALLER of the two half-extents, so the disc is contained in
+        // both directions - see MENU_HALO_R_MAX's comment.
+        float rw = (float)bw / 2.0f - MENU_HALO_GAP;
+        float rh = (float)bh / 2.0f - MENU_HALO_GAP;
+        float r = rw < rh ? rw : rh;
         if (r > MENU_HALO_R_MAX) r = MENU_HALO_R_MAX;
-        shapes_fill_disc_aa_land((float)(bx + bw / 2), (float)(iconY + ICON_H / 2),
+        shapes_fill_disc_aa_land((float)(bx + bw / 2), (float)(by + bh / 2),
                                   r, menu_halo_color());
     }
     draw_icon_for(g_apps[i], iconX, iconY, PX_BLACK);
 }
 
-static void push_column(int i) {
-    int bx, bw;
-    column_rect_land(i, &bx, &bw);
-    gfx_push_land(bx, 0, bw, LAND_H);
+static void push_cell(int i) {
+    int bx, by, bw, bh;
+    cell_rect_land(i, &bx, &by, &bw, &bh);
+    gfx_push_land(bx, by, bw, bh);
 }
 
 static void menu_paint_all(void) {
-    for (int i = 0; i < g_appCount; i++) render_column(i, false);
+    for (int i = 0; i < g_appCount; i++) render_cell(i, false);
 }
 
 /* ---------------------------------------------------------------------
@@ -1459,7 +1702,9 @@ typedef struct {
     uint32_t gestureStartMs;
     uint32_t lastContactMs;    // last sample that actually reported contact
     int      contactCount;
-    int      hoverCol;         // the lit column, or -1 for none/cancel
+    int      hoverCell;        // the lit cell, or -1 for none/cancel
+    int      pendingCell;      // the cell being reported but not yet believed
+    uint32_t pendingSinceMs;   // when it started being reported - see JITTER
 } menu_state_t;
 
 static menu_state_t *s_menu;
@@ -1476,24 +1721,17 @@ void menu_set_return_app(int index) {
 
 static void menu_enter(void) {
     s_menu = APP_STATE(menu_state_t);
-    s_menu->hoverCol = -1;
+    s_menu->hoverCell = -1;
+    s_menu->pendingCell = -1;
     menu_paint_all();
 }
 
-// Which column a touch is over, or -1 when it is in the cancel band below
-// the icons. Only x decides which column (the target is the full-height
-// column - see column_hit_test); y decides only whether it counts at all.
-static int menu_hit(int lx, int ly) {
-    if (ly >= MENU_LAUNCH_BAND_H) return -1;
-    return column_hit_test(lx);
-}
-
-static void menu_set_hover(int col) {
-    if (col == s_menu->hoverCol) return;
-    int old = s_menu->hoverCol;
-    s_menu->hoverCol = col;
-    if (old >= 0) { render_column(old, false); push_column(old); }
-    if (col >= 0) { render_column(col, true); push_column(col); }
+static void menu_set_hover(int cell) {
+    if (cell == s_menu->hoverCell) return;
+    int old = s_menu->hoverCell;
+    s_menu->hoverCell = cell;
+    if (old >= 0)  { render_cell(old, false); push_cell(old); }
+    if (cell >= 0) { render_cell(cell, true); push_cell(cell); }
 }
 
 static void menu_tick(const app_frame_t *f) {
@@ -1516,7 +1754,23 @@ static void menu_tick(const app_frame_t *f) {
         if (s->armed) {
             int lx, ly;
             panel_to_land(f->touchX, f->touchY, &lx, &ly);
-            menu_set_hover(menu_hit(lx, ly));
+            int cell = menu_hit(lx, ly);
+            // THE CONFIRMATION. See JITTER in THE GESTURE's header comment:
+            // a cell only becomes the lit one after being the reported one
+            // for MENU_HOVER_CONFIRM_MS without interruption, so no burst
+            // of 80-250px bad reports can move the halo, and what is lit is
+            // always what a lift will launch. While a new cell is being
+            // confirmed the previous one stays lit, which is the right
+            // answer either way: it is the one the child is looking at.
+            if (cell == s->pendingCell) {
+                if (cell != s->hoverCell &&
+                    (f->nowMs - s->pendingSinceMs) >= MENU_HOVER_CONFIRM_MS) {
+                    menu_set_hover(cell);
+                }
+            } else {
+                s->pendingCell = cell;
+                s->pendingSinceMs = f->nowMs;
+            }
         }
         return;
     }
@@ -1527,22 +1781,23 @@ static void menu_tick(const app_frame_t *f) {
     if ((f->nowMs - s->lastContactMs) < MENU_RELEASE_GRACE_MS) return;
 
     bool wasArmed = s->armed;
-    int col = s->hoverCol;
+    int cell = s->hoverCell;
     s->contactSeen = false;
     s->armed = false;
     s->contactCount = 0;
+    s->pendingCell = -1;
     menu_set_hover(-1);   // unlight first, so a cancel leaves the menu
                            // exactly as it was found
 
-    if (!wasArmed || col < 0) {
-        // Cancelled: released in the dead band below the icons, dragged off
+    if (!wasArmed || cell < 0) {
+        // Cancelled: released in the dead band below the grid, dragged off
         // the glass, or never armed at all (a stray). The menu stays open,
         // which is the whole point of being able to change your mind.
         if (wasArmed) printf("menu: cancelled\r\n");
         return;
     }
-    printf("menu: launch %d\r\n", col);
-    app_switch_to(col);
+    printf("menu: launch %d\r\n", cell);
+    app_switch_to(cell);
 }
 
 const app_t g_menuApp = {

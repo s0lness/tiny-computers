@@ -28,10 +28,36 @@ const WASM_PATH = join(ROOT, "emulator", "wasm", "dist", "emu.wasm");
 const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
+const LAND_H = PANEL_W; // 368
 const APP_INDEX_MENU = -1;
-const ICON_TOP_MARGIN = 24;
 const ICON_W = 96;
 const ICON_H = 96;
+
+// menu.c's grid (THE LAYOUT there): cells MENU_CELL_H tall, at most
+// MENU_COLS_MAX across, packed to the top, each row's cells contiguous with
+// the last one absorbing the remainder. The icon is CENTRED in its cell, so
+// there is no fixed ICON_TOP_MARGIN any more - reading one would crop the
+// wrong 96x96 box and every measurement below would be of white paper.
+const MENU_CELL_H = 112;
+const MENU_COLS_MAX = 4;
+const MENU_ROWS_MAX = Math.floor(LAND_H / MENU_CELL_H);
+
+function cellRectLand(i: number, n: number): { bx: number; by: number; bw: number; bh: number } {
+    const rows = Math.min(Math.max(Math.ceil(n / MENU_COLS_MAX), 1), MENU_ROWS_MAX);
+    const base = Math.floor(n / rows);
+    const extra = n % rows;
+    for (let r = 0; r < rows; r++) {
+        const first = r * base + Math.min(r, extra);
+        const cols = base + (r < extra ? 1 : 0);
+        if (i < first + cols) {
+            const c = i - first;
+            const w = Math.floor(LAND_W / cols);
+            const bx = c * w;
+            return { bx, by: r * MENU_CELL_H, bw: c === cols - 1 ? LAND_W - bx : w, bh: MENU_CELL_H };
+        }
+    }
+    throw new Error(`no cell for index ${i} at ${n} apps`);
+}
 
 async function main() {
     let memory!: WebAssembly.Memory;
@@ -76,11 +102,9 @@ async function main() {
     console.log("----------  -----------   ------   -----   ---------");
     const rows: { name: string; w: number; h: number; ink: number; pct: number; stroke: number }[] = [];
     for (let i = 0; i < n; i++) {
-        const w = Math.floor(LAND_W / n);
-        const bx = i * w;
-        const bw = i === n - 1 ? LAND_W - bx : w;
+        const { bx, by, bw, bh } = cellRectLand(i, n);
         const x0 = bx + Math.floor((bw - ICON_W) / 2);
-        const y0 = ICON_TOP_MARGIN;
+        const y0 = by + Math.floor((bh - ICON_H) / 2);
 
         let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, ink = 0;
         const solid: boolean[][] = [];

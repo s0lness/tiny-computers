@@ -36,20 +36,44 @@ const APP_INDEX_MENU = -1;
 const args = process.argv.slice(2);
 const coilLabel = args.includes("--coil");
 
-// ---- menu.c's own layout, mirrored exactly (see that file's "Layout"
-// section: column_rect_land, ICON_TOP_MARGIN, ICON_W/ICON_H). g_appCount is
-// read back from the device itself in main() (emu_device()'s "apps" array),
-// not hardcoded, so this script cannot silently drift from an app-table
-// change - see main()'s own comment for the time it did exactly that.
-const ICON_TOP_MARGIN = 24;
+// ---- menu.c's own layout, mirrored exactly (see that file's "THE LAYOUT"
+// section: menu_rows, menu_row_span, cell_rect_land, ICON_W/ICON_H).
+// g_appCount is read back from the device itself in main() (emu_device()'s
+// "apps" array), not hardcoded, so this script cannot silently drift from an
+// app-table change - see main()'s own comment for the time it did exactly
+// that.
+//
+// UPDATED 2026-08-15, when the menu became a grid: an icon's box is no longer
+// at a fixed y, it is centred in its own cell, and a cell's row is decided by
+// the app count. Cropping at the old fixed ICON_TOP_MARGIN=24 would have
+// produced icons sliced 16px off-centre at four apps and pictures of white
+// paper at twelve, which is the same "silently mislabelled capture" failure
+// main()'s comment already records.
 const ICON_W = 96;
 const ICON_H = 96;
+const MENU_CELL_H = 112;
+const MENU_COLS_MAX = 4;
+const MENU_ROWS_MAX = Math.floor(LAND_H / MENU_CELL_H);
 
-function columnRectLand(i: number, n: number): { bx: number; bw: number } {
-  const w = Math.floor(LAND_W / n);
-  const bx = i * w;
-  const bw = i === n - 1 ? LAND_W - bx : w;
-  return { bx, bw };
+function menuRows(n: number): number {
+  return Math.min(Math.max(Math.ceil(n / MENU_COLS_MAX), 1), MENU_ROWS_MAX);
+}
+
+function cellRectLand(i: number, n: number): { bx: number; by: number; bw: number; bh: number } {
+  const rows = menuRows(n);
+  const base = Math.floor(n / rows);
+  const extra = n % rows;
+  for (let r = 0; r < rows; r++) {
+    const first = r * base + Math.min(r, extra);
+    const cols = base + (r < extra ? 1 : 0);
+    if (i < first + cols) {
+      const c = i - first;
+      const w = Math.floor(LAND_W / cols);
+      const bx = c * w;
+      return { bx, by: r * MENU_CELL_H, bw: c === cols - 1 ? LAND_W - bx : w, bh: MENU_CELL_H };
+    }
+  }
+  throw new Error(`no cell for index ${i} at ${n} apps`);
 }
 
 // ---- wasm loading, identical shape to every emulator/wasm/tests/*.ts file ----
@@ -234,9 +258,9 @@ async function main() {
   if (n === 0) throw new Error("emu_device() declared no apps - cannot place the crops");
   const names = appNames.map((a) => (a === "draw" ? "sketch" : a === "timer" && coilLabel ? "timer-coil" : a));
   for (let i = 0; i < n; i++) {
-    const { bx, bw } = columnRectLand(i, n);
+    const { bx, by, bw, bh } = cellRectLand(i, n);
     const iconX = bx + Math.floor((bw - ICON_W) / 2);
-    const iconY = ICON_TOP_MARGIN;
+    const iconY = by + Math.floor((bh - ICON_H) / 2);
     const box96 = crop(landGray, LAND_W, iconX, iconY, ICON_W, ICON_H);
     const box4x = upscale(box96, ICON_W, ICON_H, 4);
 

@@ -43,30 +43,58 @@ const BTN_BOOT = 0;
 const BTN_PWR = 1;
 const KEY_LONG_MS = 1500; // emu_device()'s declared longPressMs for PWR
 
-// menu.c's ACTUAL touch layout (column_rect_land/column_hit_test): the tiles
-// are contiguous, full-height columns of LAND_W/g_appCount, with the last one
-// absorbing whatever LAND_W does not divide evenly, and no margin or gap
-// anywhere - so every landscape x belongs to exactly one column and only x
-// decides the hit. Recomputed here (there is no export for it) so a touch can
-// be aimed at a specific tile, the same way a finger would be aimed at a spot
-// on the glass.
+// menu.c's ACTUAL touch layout (menu_rows/menu_row_span/cell_rect_land): a
+// GRID of cells, MENU_CELL_H=112 tall, at most MENU_COLS_MAX=4 across, packed
+// to the top of the glass, with each row's cells contiguous and its last one
+// absorbing whatever LAND_W does not divide evenly - so every landscape point
+// above the grid's own bottom edge belongs to exactly one cell, and
+// everything below it is the cancel band. Recomputed here (there is no export
+// for it) so a touch can be aimed at a specific app, the same way a finger
+// would be aimed at a spot on the glass.
 //
-// THIS USED TO MODEL A LAYOUT MENU.C NO LONGER HAS (TILE_MARGIN=16,
-// TILE_GAP=16, TILE_H=220, bordered tiles centred vertically) and it kept
-// passing anyway, because with three apps the centre of an imaginary bordered
-// tile still landed inside the real full-width column. The fourth app
-// (Connect Four, 2026-08-14) narrowed the columns from 149px to 112px and the
-// stale model started aiming into the NEIGHBOURING column - so this was a
+// THIS FILE HAS NOW MODELLED A DEAD LAYOUT TWICE, which is worth the space.
+//
+// The first time (TILE_MARGIN=16, TILE_GAP=16, TILE_H=220, bordered tiles
+// centred vertically) it kept passing after menu.c had moved on, because with
+// three apps the centre of an imaginary bordered tile still landed inside the
+// real full-width column. The fourth app narrowed the columns from 149px to
+// 112px and the stale model started aiming into the NEIGHBOURING column: a
 // latent wrong test that a layout change exposed, not a regression in menu.c.
-// appCount is now read from emu_device()'s own "apps" array rather than
-// written down here, so the next app to be added cannot re-stale it.
-function tileCenterPanelXY(appIndex: number, appCount: number): [number, number] {
+//
+// The second time was 2026-08-15, when the columns became this grid because a
+// sixth app would have taken each column under a child's fingertip
+// (docs/decisions/0013). The full-height-column model would have kept passing
+// here too, for exactly the same reason as the first time: it aimed at
+// ly=LAND_H/2=184, which at four apps in one row of 112 is now in the CANCEL
+// BAND, so every tap in this file would have become a cancel and the test
+// would have failed loudly rather than quietly. That is luck, not design. So:
+// rewritten from menu.c's current geometry, and aimed at a cell CENTRE, which
+// is the one point that stays correct under any future reshuffle of the same
+// idea.
+//
+// appCount is read from emu_device()'s own "apps" array rather than written
+// down here, so the next app to be added cannot re-stale it.
+function cellCenterPanelXY(appIndex: number, appCount: number): [number, number] {
     const LAND_W = PANEL_H, LAND_H = PANEL_W;
-    const w = Math.floor(LAND_W / appCount);
-    const bx = appIndex * w;
-    const bw = appIndex === appCount - 1 ? LAND_W - bx : w;
+    const MENU_CELL_H = 112;
+    const MENU_COLS_MAX = 4;
+    const rowsMax = Math.floor(LAND_H / MENU_CELL_H);
+    const rows = Math.min(Math.max(Math.ceil(appCount / MENU_COLS_MAX), 1), rowsMax);
+    const base = Math.floor(appCount / rows);
+    const extra = appCount % rows;
+
+    let first = 0, cols = 0, r = 0;
+    for (r = 0; r < rows; r++) {
+        first = r * base + Math.min(r, extra);
+        cols = base + (r < extra ? 1 : 0);
+        if (appIndex < first + cols) break;
+    }
+    const c = appIndex - first;
+    const w = Math.floor(LAND_W / cols);
+    const bx = c * w;
+    const bw = c === cols - 1 ? LAND_W - bx : w;
     const lx = bx + Math.floor(bw / 2);
-    const ly = Math.floor(LAND_H / 2); // the column is the full height: any ly hits
+    const ly = r * MENU_CELL_H + Math.floor(MENU_CELL_H / 2);
     // menu.c's panel_to_land() inverted: lx=py, ly=PANEL_W-1-px -> px =
     // PANEL_W-1-ly, py = lx.
     return [PANEL_W - 1 - ly, lx];
@@ -80,17 +108,28 @@ function tileCenterPanelXY(appIndex: number, appCount: number): [number, number]
 // reproducible - it just takes the gesture the menu actually has.
 //
 // The hold has to satisfy menu.c's arming rule (MENU_ARM_SAMPLES contact
-// samples spanning MENU_ARM_MS at MENU_ARM_RATE_HZ), and the release has to
-// outlast MENU_RELEASE_GRACE_MS of silence before it is believed. Both
-// numbers are menu.c's; the arithmetic behind them is in apps/four.c.
+// samples spanning MENU_ARM_MS at MENU_ARM_RATE_HZ), THEN outlast
+// MENU_HOVER_CONFIRM_MS with the same cell reported before that cell is
+// actually lit (2026-08-15: a jitter episode on this panel throws the
+// reported centroid 80-250px away for up to three reports, which on a grid
+// of 112px cells is a whole cell in any direction, so the halo does not move
+// until a position has held), and the release has to outlast
+// MENU_RELEASE_GRACE_MS of silence before it is believed. All three numbers
+// are menu.c's; the arithmetic behind the first and last is in apps/four.c.
 const MENU_RELEASE_GRACE_MS = 300;
+const MENU_HOVER_CONFIRM_MS = 150;
 
 // Presses at (px, py), holds it there, and returns the clock. Leaves the
 // finger DOWN - callers that want a launch call menuRelease(), and the one
 // caller that wants the finger to stay down through the switch does not.
 function menuHold(dev: Device, px: number, py: number, tMs: number): number {
     let t = tMs;
-    for (let i = 0; i < 8; i++) {
+    // Long enough to arm AND then to confirm the hover: 8 samples used to be
+    // enough when arming was the only gate, and is 120ms, which is under
+    // MENU_ARM_MS + MENU_HOVER_CONFIRM_MS. Derived rather than counted, so
+    // that moving either of menu.c's constants moves this too.
+    const HOLD_MS = 60 + MENU_HOVER_CONFIRM_MS + 100;
+    for (let held = 0; held < HOLD_MS; held += 15) {
         dev.touch(true, px, py);
         dev.tick(t);
         t += 15;
@@ -176,7 +215,7 @@ async function loadDevice() {
         },
         // How many apps this firmware actually declares, from emu_device()'s
         // own JSON (emu_abi.h's "apps" key) rather than a number written down
-        // in this file - see tileCenterPanelXY's comment for what a hardcoded
+        // in this file - see cellCenterPanelXY's comment for what a hardcoded
         // one cost.
         appCount(): number {
             const ptr = exp.emu_device();
@@ -249,8 +288,8 @@ async function main() {
 
     // ---- tap the draw tile, launching sketch -----------------------------
     const appCount = dev.appCount(); // from emu_device()'s own "apps" array
-    const [drawX, drawY] = tileCenterPanelXY(APP_DRAW, appCount);
-    console.log(`-- tap "draw" tile at panel (${drawX}, ${drawY}) --`);
+    const [drawX, drawY] = cellCenterPanelXY(APP_DRAW, appCount);
+    console.log(`-- tap the "draw" cell at panel (${drawX}, ${drawY}) --`);
     let tGest = menuHold(dev, drawX, drawY, 5000);
     check("holding on the draw tile does NOT launch it yet - release is the verb now",
         dev.appCurrent() === APP_INDEX_MENU, `app_current()=${dev.appCurrent()}`);
@@ -297,8 +336,8 @@ async function main() {
     // predicts will be swallowed (a stale wasDown carried from the still-down
     // finger that launched sketch, never cleared while sketch - a raw-touch
     // consumer - was running). FAILS before the fix, PASSES after.
-    const [chronoX, chronoY] = tileCenterPanelXY(APP_CHRONO, appCount);
-    console.log(`-- tap "chrono" tile at panel (${chronoX}, ${chronoY}) --`);
+    const [chronoX, chronoY] = cellCenterPanelXY(APP_CHRONO, appCount);
+    console.log(`-- tap the "chrono" cell at panel (${chronoX}, ${chronoY}) --`);
     const tChrono = menuRelease(dev, menuHold(dev, chronoX, chronoY, 8000));
     (function keepClockMoving() { dev.tick(tChrono); })();
     const afterTapChrono = dev.appCurrent();

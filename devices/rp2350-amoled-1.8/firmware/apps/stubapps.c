@@ -4,7 +4,7 @@
  *
  * WHY THIS EXISTS. The menu was rewritten from a row of columns to a grid
  * on 2026-08-15 because the sixth app takes a column under a child's
- * fingertip (docs/decisions/0010 and 0011). The whole argument is about
+ * fingertip (docs/decisions/0010 and 0013). The whole argument is about
  * what the screen looks like at six and at twelve, and the owner's list
  * gets there within days - but on the night it was written the firmware
  * declared four apps, so there was nothing to look at. Rendering the
