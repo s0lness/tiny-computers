@@ -1,32 +1,46 @@
 // feature-sketch-palette: headless verification of the sketchpad's
 // EXPERIMENTAL colour palette (firmware/apps/sketch.c, the section headed
-// "EXPERIMENTAL: a colour palette, opened by holding the pen still").
+// "EXPERIMENTAL: the colour palette").
 //
-// This is not a bug reproduction like this directory's other repro-*.ts
-// files - it is the standing check for a new, judged-in-the-emulator-only
-// feature: a long touch held in one place opens four colour squares away
-// from the fingertip; touching one picks that colour for the next stroke;
-// lifting without choosing leaves the drawing untouched. Run with (after
-// `bun run emulator/wasm/build.ts`):
+// REWORKED alongside the feature itself, twice in one day: first from a
+// single row of 4 flat squares to a 3x3 grid of 9 that may cover the whole
+// panel (the owner's "peut-etre que long press montre 9 rectangles de
+// couleur et relacher en selectionne un", then "c'est ok si les cases
+// recouvrent tout l'ecran"), then from flat squares to animated, rounded
+// "little balloons" (decision 0009, and the owner's own "i'd love for them
+// to pop out like little balloons. they should be rounded rectangles").
+// Covering the whole panel also forced the underlying mechanism to change:
+// there is no room in the 64KB arena for a saved copy of a 322KB panel, so
+// the palette's undo/close now replays a bounded stroke history instead of
+// restoring saved pixels - see sketch.c's own "Stroke history" comment
+// section for the full design.
+//
+// Run with (after `bun run emulator/wasm/build.ts`):
 //
 //   bun run emulator/wasm/tests/feature-sketch-palette.ts
 //
 // Loads the REAL firmware compiled to wasm, same shape as every other file
 // in this directory (decision 0003) - nothing here reimplements sketch.c's
-// logic; every assertion reads the framebuffer or the push-window list the
-// firmware itself produced.
+// logic; every assertion reads the framebuffer, the firmware's own log
+// lines, or the push-window list the firmware itself produced.
 //
-// THREE THINGS THIS FILE PROVES, IN ORDER:
-//   1. the palette actually opens on a held-still touch, and leaves the
-//      four expected flat colours on screen, clear of an existing drawing;
-//   2. picking a colour (a continuing drag onto a square, then a lift over
-//      it) actually changes what the next stroke draws in;
-//   3. dismissing the palette - by lifting outside every square - restores
-//      the framebuffer to BYTE-IDENTICAL what it was before that palette
-//      opened, and every pixel this whole run ever changed sat inside that
-//      tick's own pushed rectangle (docs/decisions/0001's 8px rule, and the
-//      "no pixel outside the push" invariant repro-timer-coil.ts already
-//      established for the rest of this firmware).
+// WHAT THIS FILE PROVES, IN ORDER:
+//   1. a long press opens the palette, its animation pops all nine cells
+//      in over a bounded number of ticks, and EVERY one of those ticks -
+//      not just the final settled frame - obeys decision 0001's 8px rule
+//      and the "no pixel changes outside the pushed rectangle" invariant;
+//   2. whichever cell the finger is already over is visibly the candidate
+//      (grown past its neighbours' size, at the identical relative
+//      offset), and every cell is a rounded rectangle, not a square - its
+//      own bounding-box corner stays white while its centre is ink;
+//   3. dragging onto a cell and releasing there picks that colour without
+//      ever lifting, and the next stroke draws in it;
+//   4. holding still in the gap between cells and releasing without ever
+//      moving - "what happens if she never moves at all" landing exactly
+//      on "over nothing" - cancels: the canvas, repainted from stroke
+//      history, comes back BYTE-IDENTICAL to what it was before that
+//      second palette opened, and the previously picked colour is still
+//      in effect (a cancel does not reset the tool).
 //
 // Screenshots are written to preview/palette-*.png as real RGB PNGs (the
 // framebuffer's own rgb565be format, per emu_abi.h's emu_device() panel
@@ -43,59 +57,66 @@ const PREVIEW_DIR = join(ROOT, "preview");
 const PANEL_W = 368;
 const PANEL_H = 448;
 const APP_DRAW = 1; // g_apps[] = { chrono, sketch("draw"), timer }
+const APP_ARENA_BYTES = 65536; // app.h APP_ARENA_BYTES
 
-// ---- mirrors of sketch.c's own constants (HOLD_*/LONG_PRESS_MS/PALETTE_*)
-// - lifted, not re-derived, same convention every other repro test in this
-// directory uses for the app it drives (e.g. repro-ring-shrink-residue.ts's
-// RING_CX/CY, repro-timer-coil.ts's RING geometry). If sketch.c's own
-// numbers change, this file's own comments point back at the #define this
-// mirrors so the two stay easy to keep in sync by hand.
+// ---- mirrors of sketch.c's own constants - lifted, not re-derived, same
+// convention every other repro test in this directory uses for the app it
+// drives. If sketch.c's own numbers change, this file's own comments point
+// back at the #define this mirrors so the two stay easy to keep in sync by
+// hand.
 const CONFIRM_MS = 40; // sketch.c CONFIRM_MS_DEFAULT
 const LONG_PRESS_MS = 550; // sketch.c LONG_PRESS_MS
 const LIFT_DEBOUNCE_MS = 220; // sketch.c LIFT_DEBOUNCE_MS_DEFAULT
 const PALETTE_LIFT_GRACE_MS = 80; // sketch.c PALETTE_LIFT_GRACE_MS
-const PALETTE_SQUARE_PX = 82; // sketch.c PALETTE_SQUARE_PX
-const PALETTE_GAP_PX = 6; // sketch.c PALETTE_GAP_PX
-const PALETTE_COUNT = 4; // sketch.c PALETTE_COUNT
-const PALETTE_W = PALETTE_COUNT * PALETTE_SQUARE_PX + (PALETTE_COUNT - 1) * PALETTE_GAP_PX; // 346
-const PALETTE_H = PALETTE_SQUARE_PX; // 82
-const PALETTE_TOUCH_GAP_PX = 50; // sketch.c PALETTE_TOUCH_GAP_PX
+const PALETTE_COLS = 3; // sketch.c PALETTE_COLS
+const PALETTE_ROWS = 3; // sketch.c PALETTE_ROWS
+const PALETTE_COUNT = PALETTE_COLS * PALETTE_ROWS; // 9
+const PALETTE_CELL_GAP_PX = 8; // sketch.c PALETTE_CELL_GAP_PX
+const PALETTE_CORNER_PX = 26; // sketch.c PALETTE_CORNER_PX
+const PALETTE_CANDIDATE_GROW_PX = 3; // sketch.c PALETTE_CANDIDATE_GROW_PX
+const PALETTE_POP_MS = 240; // sketch.c PALETTE_POP_MS
+const PALETTE_STAGGER_MS = 20; // sketch.c PALETTE_STAGGER_MS
+// The animation's own worst case: the corner cells' own stagger delay
+// (Chebyshev rank 2) plus their own pop duration - mirrors palette_render_
+// frame/palette_drain_sample's own "animating" threshold.
+const PALETTE_ANIM_TOTAL_MS = PALETTE_POP_MS + 2 * PALETTE_STAGGER_MS;
 
-// Mirror of sketch.c's open_palette() placement math: horizontally centred
-// always, vertically PALETTE_TOUCH_GAP_PX clear of the touch point on
-// whichever side (above/below) has more room, a tie going below.
-function paletteRectFor(touchY: number): { x0: number; y0: number; w: number; h: number } {
-    const x0 = Math.floor((PANEL_W - PALETTE_W) / 2);
-    const spaceAbove = touchY;
-    const spaceBelow = PANEL_H - 1 - touchY;
-    let y0: number;
-    if (spaceBelow >= spaceAbove) {
-        y0 = touchY + PALETTE_TOUCH_GAP_PX;
-        if (y0 + PALETTE_H - 1 > PANEL_H - 1) y0 = PANEL_H - PALETTE_H;
-    } else {
-        y0 = touchY - PALETTE_TOUCH_GAP_PX - PALETTE_H;
-        if (y0 < 0) y0 = 0;
-    }
-    return { x0, y0, w: PALETTE_W, h: PALETTE_H };
+// Mirror of sketch.c's palette_cell_bounds(): the raw grid cell (index =
+// row*PALETTE_COLS + col) tiles the whole panel exactly by the standard
+// "i*N/D" integer partition; the balloon itself is inset by half the gap
+// on every side.
+function paletteCellBounds(index: number): { col: number; row: number; cx: number; cy: number; halfW: number; halfH: number } {
+    const col = index % PALETTE_COLS;
+    const row = Math.floor(index / PALETTE_COLS);
+    const x0 = Math.floor((PANEL_W * col) / PALETTE_COLS);
+    const x1 = Math.floor((PANEL_W * (col + 1)) / PALETTE_COLS);
+    const y0 = Math.floor((PANEL_H * row) / PALETTE_ROWS);
+    const y1 = Math.floor((PANEL_H * (row + 1)) / PALETTE_ROWS);
+    const cx = Math.floor((x0 + x1) / 2);
+    const cy = Math.floor((y0 + y1) / 2);
+    const halfW = Math.floor((x1 - x0 - PALETTE_CELL_GAP_PX) / 2);
+    const halfH = Math.floor((y1 - y0 - PALETTE_CELL_GAP_PX) / 2);
+    return { col, row, cx, cy, halfW, halfH };
 }
 
-// Mirror of sketch.c's palette_color(): the four swapped-RGB565 byte pairs
+// Mirror of sketch.c's palette_color(): the nine swapped-RGB565 byte pairs
 // AMOLED_1IN8_DisplayWindows actually receives, in the framebuffer's own
 // big-endian storage order (emu_abi.h: panel.format "rgb565be") - see this
 // file's decodeRgb565Be() for the read side of the same convention.
 const PALETTE_COLORS_BE: [number, number][] = [
-    [0x00, 0x00], // black
     [0xf8, 0x00], // red
-    [0x00, 0x1f], // blue
+    [0xfc, 0x60], // orange
     [0xff, 0xe0], // yellow
+    [0x07, 0xe0], // green
+    [0x00, 0x00], // black (centre, index 4)
+    [0x00, 0x1f], // blue
+    [0x98, 0x1f], // purple
+    [0xfb, 0x56], // pink
+    [0x8a, 0x22], // brown
 ];
-const COLOR_NAMES = ["black", "red", "blue", "yellow"];
-
-function squareCenter(x0: number, y0: number, col: number): [number, number] {
-    const sx = x0 + col * (PALETTE_SQUARE_PX + PALETTE_GAP_PX) + PALETTE_SQUARE_PX / 2;
-    const sy = y0 + PALETTE_SQUARE_PX / 2;
-    return [Math.round(sx), Math.round(sy)];
-}
+const COLOR_NAMES = ["red", "orange", "yellow", "green", "black", "blue", "purple", "pink", "brown"];
+const INDEX_RED = 0;
+const INDEX_CENTER_BLACK = 4;
 
 let passCount = 0;
 let failCount = 0;
@@ -112,6 +133,7 @@ function check(label: string, ok: boolean, detail?: string) {
 // ---------------------------------------------------------------------
 type Violation = { kind: string; detail: string };
 const violations: Violation[] = [];
+let ticksChecked = 0;
 
 async function loadDevice() {
     const bytes = readFileSync(WASM_PATH);
@@ -168,9 +190,13 @@ async function loadDevice() {
         // Checked tick: snapshots before, ticks, then diffs the framebuffer
         // against the union of this tick's own pushed rectangles and checks
         // every rectangle's row length - identical technique to
-        // repro-timer-coil.ts's tickChecked(), applied here to the palette
-        // instead of the timer's coil.
+        // repro-timer-coil.ts's tickChecked(). Called on EVERY tick this
+        // file drives, including every single one of the palette's own
+        // animation frames (see holdStill()'s own comment) - the whole
+        // point being that the invariant is proven across the animation,
+        // not only on its final, settled frame.
         tickChecked(nowMs: number) {
+            ticksChecked++;
             const before = fbSnapshot();
             exp.emu_tick(nowMs);
             const after = fbSnapshot();
@@ -218,12 +244,13 @@ async function loadDevice() {
 type Device = Awaited<ReturnType<typeof loadDevice>>;
 
 // Holds a touch still at (x,y), pushing a fresh sample every ~15ms so
-// sketch.c's wall-clock checks (CONFIRM_MS's persisted branch, and this
-// feature's own hold-candidacy check) actually get re-evaluated - a single
-// touch() call followed by many idle tick()s would NOT do this: the drain
-// loop only re-checks time when a new sample is actually in the queue (see
-// repro-touch-dropout-stroke-start.ts's scenario D for the same technique,
-// applied there to the lift debounce instead of a hold).
+// sketch.c's wall-clock checks (CONFIRM_MS's persisted branch, the
+// hold-candidacy long-press check, AND the palette's own pop-in animation
+// once it opens) actually get re-evaluated tick by tick - a single
+// touch() call followed by one big tick() would NOT do this, and would
+// also only ever exercise the animation's FINAL frame rather than every
+// frame in between, which is exactly what this file has to prove pushes
+// cleanly throughout (see tickChecked's own comment).
 function holdStill(dev: Device, x: number, y: number, t0: number, durationMs: number, stepMs = 15): number {
     let t = t0;
     for (let held = 0; held < durationMs; held += stepMs) {
@@ -266,6 +293,26 @@ function decodeRgb565Be(hi: number, lo: number): [number, number, number] {
     const r5 = (v >> 11) & 0x1f, g6 = (v >> 5) & 0x3f, b5 = v & 0x1f;
     const r = Math.round((r5 * 255) / 31), g = Math.round((g6 * 255) / 63), b = Math.round((b5 * 255) / 31);
     return [r, g, b];
+}
+
+function pixelIsWhite(fb: Uint8Array, x: number, y: number): boolean {
+    const idx = (y * PANEL_W + x) * 2;
+    return fb[idx] === 0xff && fb[idx + 1] === 0xff;
+}
+
+// Mirror of sketch.c's rounded_rect_sdf(): negative inside the shape,
+// positive outside. Used here (unlike the firmware, which only needs it
+// for drawing and hit-testing) to independently verify EVERY pixel of a
+// settled frame is accounted for - either white, or inside some cell's own
+// shape - which is what a residue pixel (something painted and never
+// cleared, sitting in the gutter) fails.
+function roundedRectSdf(px: number, py: number, cx: number, cy: number, halfW: number, halfH: number, cornerR: number): number {
+    const qx = Math.abs(px - cx) - halfW + cornerR;
+    const qy = Math.abs(py - cy) - halfH + cornerR;
+    const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+    const outside = Math.sqrt(ax * ax + ay * ay);
+    const inside = Math.min(Math.max(qx, qy), 0);
+    return inside + outside - cornerR;
 }
 
 // ---------------------------------------------------------------------
@@ -351,18 +398,31 @@ async function writeScreenshot(name: string, fb: Uint8Array) {
 }
 
 async function main() {
-    console.log("=== feature: sketchpad colour palette (long-press to open) ===\n");
+    console.log("=== feature: sketchpad colour palette (9-cell, full-panel, pop-in) ===\n");
     const dev = await loadDevice();
     dev.tickChecked(0);
     dev.appSwitch(APP_DRAW);
     dev.tickChecked(1000);
     check("switched into the sketchpad", dev.appCurrent() === APP_DRAW, `app_current()=${dev.appCurrent()}`);
 
+    // ---- arena arithmetic: measured, not assumed - see sketch_enter()'s
+    // own diagnostic print and sketch.c's "Stroke history" comment section
+    // for the reasoning behind STROKE_POOL_POINTS/STROKES. -----------------
+    const sizeofLine = dev.fwLogLines().find((l) => l.includes("sketch: state="));
+    const sizeofMatch = sizeofLine?.match(/state=(\d+) bytes \(arena (\d+)\)/);
+    const measuredBytes = sizeofMatch ? Number(sizeofMatch[1]) : -1;
+    check(
+        "sketch_state_t's measured size fits the arena, with the fit reported (not assumed)",
+        sizeofMatch !== undefined && measuredBytes > 0 && measuredBytes <= APP_ARENA_BYTES,
+        sizeofLine ?? "(no sizeof line seen in the firmware log)",
+    );
+    if (measuredBytes > 0) {
+        const pct = ((measuredBytes / APP_ARENA_BYTES) * 100).toFixed(1);
+        console.log(`    sketch_state_t = ${measuredBytes} bytes of ${APP_ARENA_BYTES} (${pct}%)`);
+    }
+
     // ---- an existing drawing, in the device's own default black ink,
-    // clear of where every palette rect used below will land (see
-    // paletteRectFor()'s own placement rule - it always sits in y=[208,289]
-    // for the touch points this file uses, since PALETTE_TOUCH_GAP_PX
-    // placement is driven by touchY alone). --------------------------------
+    // BEFORE touching the palette at all. -----------------------------------
     console.log("\n-- drawing an existing stroke in black, before touching the palette at all --");
     let t = drawStroke(dev, 40, 40, 280, 120, 1000);
     check("the existing stroke actually drew something", (() => {
@@ -374,64 +434,128 @@ async function main() {
         return false;
     })());
 
-    // ---- scenario 1: hold still in an empty spot; the palette should
-    // open, clear of the stroke above, with the four expected flat
-    // colours. -------------------------------------------------------------
-    console.log("\n-- long press in an empty spot (280,340), held past CONFIRM_MS+LONG_PRESS_MS --");
-    const holdX = 280, holdY = 340;
-    t = holdStill(dev, holdX, holdY, t + 300, CONFIRM_MS + LONG_PRESS_MS + 250);
+    // ---- scenario 1: hold still on the centre (black) cell, past
+    // CONFIRM_MS+LONG_PRESS_MS. The palette opens, wipes the whole panel
+    // (it is a full-screen menu now - the owner's own "c'est pas tres
+    // grave"), and pops all nine cells in; the hold is kept for well past
+    // the animation's own total duration so every one of its frames gets
+    // driven through tickChecked(). ------------------------------------
+    console.log("\n-- long press on the centre cell, held through the whole pop-in animation --");
+    const centre = paletteCellBounds(INDEX_CENTER_BLACK);
+    const ticksBefore = ticksChecked;
+    t = holdStill(dev, centre.cx, centre.cy, t + 300, CONFIRM_MS + LONG_PRESS_MS + PALETTE_ANIM_TOTAL_MS + 150);
+    console.log(`    ${ticksChecked - ticksBefore} ticks driven and invariant-checked across the long press + full pop-in animation`);
 
-    const rect1 = paletteRectFor(holdY);
-    const fbOpen = dev.fbSnapshot();
-    let allSquaresMatch = true;
+    const openLine = dev.fwLogLines().findLast((l) => l.includes("palette: open at"));
+    check("the firmware logged the palette opening with the centre cell as the initial candidate",
+        !!openLine && openLine.includes(`candidate=${INDEX_CENTER_BLACK}`), openLine ?? "(no palette open log line seen)");
+
+    const fbSettled = dev.fbSnapshot();
+
+    // All nine cells show their own flat colour at their own centre.
+    let allCentersMatch = true;
     const mismatches: string[] = [];
-    for (let col = 0; col < PALETTE_COUNT; col++) {
-        const [cx, cy] = squareCenter(rect1.x0, rect1.y0, col);
+    for (let i = 0; i < PALETTE_COUNT; i++) {
+        const { cx, cy } = paletteCellBounds(i);
         const idx = (cy * PANEL_W + cx) * 2;
-        const [wantHi, wantLo] = PALETTE_COLORS_BE[col]!;
-        if (fbOpen[idx] !== wantHi || fbOpen[idx + 1] !== wantLo) {
-            allSquaresMatch = false;
-            mismatches.push(`${COLOR_NAMES[col]} square at (${cx},${cy}): got [${fbOpen[idx]!.toString(16)},${fbOpen[idx + 1]!.toString(16)}], want [${wantHi.toString(16)},${wantLo.toString(16)}]`);
+        const [wantHi, wantLo] = PALETTE_COLORS_BE[i]!;
+        if (fbSettled[idx] !== wantHi || fbSettled[idx + 1] !== wantLo) {
+            allCentersMatch = false;
+            mismatches.push(`${COLOR_NAMES[i]} (index ${i}) centre (${cx},${cy}): got [${fbSettled[idx]!.toString(16)},${fbSettled[idx + 1]!.toString(16)}]`);
         }
     }
-    check("the palette opened with all four expected flat colours, in order", allSquaresMatch, mismatches.join("; "));
+    check("the palette popped in with all nine expected flat colours at each cell's centre", allCentersMatch, mismatches.join("; "));
 
-    // The palette must sit clear of the touch point itself - a fingertip
-    // (~75px) resting at (holdX,holdY) must not cover any square.
-    const touchClear = !(holdX >= rect1.x0 - 37 && holdX <= rect1.x0 + rect1.w + 37 &&
-                          holdY >= rect1.y0 - 37 && holdY <= rect1.y0 + rect1.h + 37);
-    check("the palette panel sits clear of the touch point's own fingertip footprint",
-        touchClear, `touch=(${holdX},${holdY}), palette rect=(${rect1.x0},${rect1.y0},${rect1.w},${rect1.h})`);
+    // Roundedness: each cell's own bounding-box corner is white (a plain
+    // axis-aligned square fill would have coloured it) - decision 0009's
+    // "no palette squares" proven per cell, not asserted once.
+    let allCornersWhite = true;
+    const cornerMismatches: string[] = [];
+    for (let i = 0; i < PALETTE_COUNT; i++) {
+        const { cx, cy, halfW, halfH } = paletteCellBounds(i);
+        const cornerX = cx - halfW, cornerY = cy - halfH;
+        if (!pixelIsWhite(fbSettled, cornerX, cornerY)) {
+            allCornersWhite = false;
+            cornerMismatches.push(`${COLOR_NAMES[i]} (index ${i}) bounding-box corner (${cornerX},${cornerY}) is not white`);
+        }
+    }
+    check("every cell's own bounding-box corner is white - rounded rectangles, not squares (decision 0009)",
+        allCornersWhite, cornerMismatches.join("; "));
 
-    await writeScreenshot("palette-open.png", fbOpen);
-    console.log("    screenshot: the palette open over the existing black stroke");
+    // Direct residue detector, over the WHOLE settled panel, not just nine
+    // sample points: every pixel must be either white or inside SOME
+    // cell's own rounded-rect shape (the candidate's own grown one
+    // included). This is exactly the check that would have caught the
+    // owner's "y a des espèces de traits qui traînent" report - thin
+    // painted streaks sitting in the paper-coloured gutters between rows
+    // and columns, left behind by an early animation frame's overshoot
+    // that a later frame's too-small whiten box never reached back out to
+    // reclaim (see sketch.c's palette_render_frame() header comment for
+    // the full account) - which the per-cell corner/candidate probes above
+    // are far too sparse to notice on their own.
+    const cellShapes = Array.from({ length: PALETTE_COUNT }, (_, i) => {
+        const b = paletteCellBounds(i);
+        const grown = i === INDEX_CENTER_BLACK; // the settled candidate in this scenario
+        return { ...b, halfW: b.halfW + (grown ? PALETTE_CANDIDATE_GROW_PX : 0), halfH: b.halfH + (grown ? PALETTE_CANDIDATE_GROW_PX : 0) };
+    });
+    let residuePixels = 0;
+    const residueSamples: string[] = [];
+    const AA_SLOP_PX = 1.5; // draw_rounded_rect's own +-1px AA feather margin
+    for (let py = 0; py < PANEL_H; py++) {
+        for (let px = 0; px < PANEL_W; px++) {
+            if (pixelIsWhite(fbSettled, px, py)) continue;
+            const insideSome = cellShapes.some((c) => roundedRectSdf(px + 0.5, py + 0.5, c.cx, c.cy, c.halfW, c.halfH, PALETTE_CORNER_PX) <= AA_SLOP_PX);
+            if (!insideSome) {
+                residuePixels++;
+                if (residueSamples.length < 6) residueSamples.push(`(${px},${py})`);
+            }
+        }
+    }
+    check("no residue: every non-white pixel of the settled panel sits inside some cell's own shape (none left in the gutters)",
+        residuePixels === 0, residuePixels > 0 ? `${residuePixels} stray pixel(s), e.g. ${residueSamples.join(", ")}` : "0 stray pixels");
 
-    // ---- scenario 2: drag the still-down touch onto the red square and
-    // release there - picks red without lifting first. ---------------------
-    console.log("\n-- dragging onto the red square and releasing over it --");
-    const [redX, redY] = squareCenter(rect1.x0, rect1.y0, 1);
-    dev.touchChecked(true, redX, redY, (t += 15));
-    dev.touchChecked(true, redX, redY, (t += 15));
+    // The candidate (centre, still under the finger) is visibly grown past
+    // a non-candidate cell at the identical relative offset - see this
+    // file's own header comment for the SDF arithmetic behind these exact
+    // offsets (base halfW + PALETTE_CANDIDATE_GROW_PX/2 rounds to "just
+    // past the base edge, just short of the grown one").
+    const growOffset = Math.floor(centre.halfW + PALETTE_CANDIDATE_GROW_PX / 2);
+    const candidateProbeX = centre.cx + growOffset, candidateProbeY = centre.cy;
+    const nonCandidate = paletteCellBounds(INDEX_RED);
+    const otherProbeX = nonCandidate.cx + Math.floor(nonCandidate.halfW + PALETTE_CANDIDATE_GROW_PX / 2), otherProbeY = nonCandidate.cy;
+    const candidateGrown = !pixelIsWhite(fbSettled, candidateProbeX, candidateProbeY);
+    const otherStillBase = pixelIsWhite(fbSettled, otherProbeX, otherProbeY);
+    check("the candidate cell (still under the finger) is visibly larger than a non-candidate cell at the same relative offset",
+        candidateGrown && otherStillBase,
+        `candidate probe (${candidateProbeX},${candidateProbeY}) ink=${candidateGrown}, other probe (${otherProbeX},${otherProbeY}) white=${otherStillBase}`);
+
+    await writeScreenshot("palette-open.png", fbSettled);
+    console.log("    screenshot: the palette open, popped in, centre cell visibly the candidate");
+
+    // ---- scenario 2: drag the still-down touch onto the red cell and
+    // release there - picks red without ever lifting. ---------------------
+    console.log("\n-- dragging onto the red cell and releasing over it --");
+    const red = paletteCellBounds(INDEX_RED);
+    dev.touchChecked(true, red.cx, red.cy, (t += 15));
+    dev.touchChecked(true, red.cx, red.cy, (t += 15));
     t = releaseAndWait(dev, t, PALETTE_LIFT_GRACE_MS + 100);
 
-    const pickedLine = dev.fwLogLines().find((l) => l.includes("palette: picked"));
+    const pickedLine = dev.fwLogLines().findLast((l) => l.includes("palette: picked"));
     check("the firmware logged a colour pick, not a cancel", !!pickedLine, pickedLine ?? "(no palette log line seen)");
 
     const fbAfterPick = dev.fbSnapshot();
-    let paletteGoneAfterPick = true;
-    for (let py = rect1.y0; py < rect1.y0 + rect1.h; py++) {
-        for (let px = rect1.x0; px < rect1.x0 + rect1.w; px++) {
+    // The original black stroke, drawn before the palette ever opened,
+    // reappears once the canvas is repainted from stroke history - proof
+    // the close-time repaint is not just "wipe and move on".
+    let originalStrokeRestored = false;
+    for (let py = 40; py < 120 && !originalStrokeRestored; py++) {
+        for (let px = 40; px < 280; px++) {
             const idx = (py * PANEL_W + px) * 2;
-            if (fbAfterPick[idx] !== 0xff || fbAfterPick[idx + 1] !== 0xff) { paletteGoneAfterPick = false; break; }
+            if (fbAfterPick[idx] !== 0xff || fbAfterPick[idx + 1] !== 0xff) { originalStrokeRestored = true; break; }
         }
-        if (!paletteGoneAfterPick) break;
     }
-    check("the palette panel itself is gone (restored to white) once a colour is picked", paletteGoneAfterPick);
+    check("the drawing from before the palette opened reappears, repainted from stroke history", originalStrokeRestored);
 
-    // Settle well past LIFT_DEBOUNCE_MS/pendingStart windows before the next
-    // fresh touch, same reasoning drawStroke()'s own trailing releaseAndWait
-    // uses - this touch already released above, but a healthy margin before
-    // the next gesture starts avoids any ambiguity with dropout-grace state.
     t = releaseAndWait(dev, t, 100);
 
     console.log("-- drawing a new stroke, away from everything already on screen --");
@@ -453,36 +577,32 @@ async function main() {
     check("the new stroke actually drew in the picked colour (red), not black", sawRedInk);
 
     await writeScreenshot("palette-stroke-colour.png", fbColourStroke);
-    console.log("    screenshot: a stroke drawn in the chosen colour");
+    console.log("    screenshot: a stroke drawn in the chosen colour, over the drawing restored from history");
 
-    // ---- scenario 3: open the palette again, then lift OUTSIDE every
-    // square (the original hold point, which is clear of the panel by
-    // construction) - the cancel gesture. Must restore the framebuffer to
-    // BYTE-IDENTICAL what it was immediately before this second palette
-    // opened. --------------------------------------------------------------
-    console.log("\n-- long press again, then lift outside every square (cancel) --");
+    // ---- scenario 3: open the palette again, hold in the GAP between two
+    // cells (never over any colour), then lift WITHOUT ever moving - "what
+    // happens if she never moves at all" landing exactly on "over nothing".
+    // Must restore the framebuffer to BYTE-IDENTICAL what it was
+    // immediately before this second palette opened. ------------------------
+    console.log("\n-- long press in the gap between two cells, released without ever moving (cancel) --");
     const preSecondOpen = dev.fbSnapshot();
 
-    const holdX2 = 100, holdY2 = 340;
-    t = holdStill(dev, holdX2, holdY2, t + 300, CONFIRM_MS + LONG_PRESS_MS + 250);
+    // x=123 sits in the horizontal gap between column 0 and column 1 at
+    // this row; y is the row's own vertical centre, well clear of any row
+    // gap - see this file's header comment for the SDF check proving both
+    // neighbouring cells read this point as outside their own shape.
+    const gapX = 123, gapY = paletteCellBounds(INDEX_CENTER_BLACK).cy;
+    t = holdStill(dev, gapX, gapY, t + 300, CONFIRM_MS + LONG_PRESS_MS + 250);
 
-    const rect2 = paletteRectFor(holdY2);
-    const fbOpen2 = dev.fbSnapshot();
-    // Probed via the red square (index 1), not the black one: a black
-    // square on a white backdrop is indistinguishable from "nothing opened"
-    // by colour alone, where red is unambiguous.
-    const [rx2, ry2] = squareCenter(rect2.x0, rect2.y0, 1);
-    const idx2 = (ry2 * PANEL_W + rx2) * 2;
-    const paletteVisible2 = fbOpen2[idx2] === PALETTE_COLORS_BE[1]![0] && fbOpen2[idx2 + 1] === PALETTE_COLORS_BE[1]![1];
-    check("the palette opened a second time", paletteVisible2);
+    const openLine2 = dev.fwLogLines().findLast((l) => l.includes("palette: open at"));
+    check("the palette opened a second time, with no initial candidate (held in the gap)",
+        !!openLine2 && openLine2.includes("candidate=-1"), openLine2 ?? "(no palette open log line seen)");
 
-    // Lift exactly where the hold started - never moved, so it was never
-    // over a square (scenario 1's own "touch point clear of the palette"
-    // check already established this holds for any touch this file uses).
-    dev.touchChecked(true, holdX2, holdY2, (t += 15)); // one more sample at the same spot
+    // Never moved: one more sample at the exact same spot, then lift.
+    dev.touchChecked(true, gapX, gapY, (t += 15));
     t = releaseAndWait(dev, t, PALETTE_LIFT_GRACE_MS + 100);
 
-    const cancelLine = dev.fwLogLines().find((l) => l.includes("palette: cancelled"));
+    const cancelLine = dev.fwLogLines().findLast((l) => l.includes("palette: cancelled"));
     check("the firmware logged a cancel, not a pick", !!cancelLine, cancelLine ?? "(no palette log line seen)");
 
     const afterCancel = dev.fbSnapshot();
@@ -494,7 +614,7 @@ async function main() {
         }
     }
     check(
-        "dismissing the palette restores EXACTLY the framebuffer from before it opened (byte-identical)",
+        "dismissing the palette restores EXACTLY the framebuffer from before it opened (byte-identical, replayed from stroke history)",
         identical,
         identical ? "0 byte(s) differ" : `first differing byte offset=${firstDiffAt} (pixel (${Math.floor(firstDiffAt / 2 / PANEL_W)},${Math.floor((firstDiffAt / 2) % PANEL_W)}))`,
     );
@@ -516,7 +636,46 @@ async function main() {
     }
     check("the pen is still inking red after a cancelled palette (cancel does not reset the tool)", sawRedAfterCancel);
 
-    console.log("\n=== invariants across this whole run: 8px rule + no pixels outside pushed rects ===");
+    // ---- scenario 4: dismiss sampled at several points ACROSS the pop-in
+    // animation, not only once it has fully settled. Scenario 3 above only
+    // ever cancelled after holding well past the whole animation
+    // (CONFIRM_MS + LONG_PRESS_MS + 250, comfortably past PALETTE_ANIM_
+    // TOTAL_MS's own 280) - every earlier byte-identical check in this file
+    // shared that same blind spot, which is exactly why the residue this
+    // scenario is named for (an animation frame painting into the gutter,
+    // a later frame's too-small clear box never reaching back out to it)
+    // went unnoticed by "the dismiss is byte-identical" alone: the
+    // fully-settled frame this file always cancelled from happened to be
+    // the LAST frame rendered, which is not where an animation-only defect
+    // shows. Each hold length below lands the cancel at a different point
+    // in the pop-in (freshly opened, early in the overshoot, past the
+    // overshoot's own peak, and fully settled) - every one of them still
+    // has to restore the canvas byte for byte. ------------------------------
+    console.log("\n-- dismissing at several points across the pop-in animation, each must still be byte-identical --");
+    const midAnimHoldsMs = [0, 60, 140, 220, PALETTE_ANIM_TOTAL_MS + 60];
+    for (const extraHoldMs of midAnimHoldsMs) {
+        const before = dev.fbSnapshot();
+        t = holdStill(dev, gapX, gapY, t + 300, CONFIRM_MS + LONG_PRESS_MS + extraHoldMs);
+        dev.touchChecked(true, gapX, gapY, (t += 15)); // never moved
+        t = releaseAndWait(dev, t, PALETTE_LIFT_GRACE_MS + 100);
+
+        const after = dev.fbSnapshot();
+        let sameHere = before.length === after.length;
+        let firstDiffHere = -1;
+        if (sameHere) {
+            for (let i = 0; i < before.length; i++) {
+                if (before[i] !== after[i]) { sameHere = false; firstDiffHere = i; break; }
+            }
+        }
+        check(
+            `cancel after +${extraHoldMs}ms into the pop-in restores byte-identical`,
+            sameHere,
+            sameHere ? "0 byte(s) differ" : `first differing byte offset=${firstDiffHere} (pixel (${Math.floor((firstDiffHere / 2) % PANEL_W)},${Math.floor(firstDiffHere / 2 / PANEL_W)}))`,
+        );
+    }
+
+    console.log("\n=== invariants across this whole run (EVERY tick, including every animation frame): 8px rule + no pixels outside pushed rects ===");
+    console.log(`    ${ticksChecked} ticks checked in total`);
     const byKind = new Map<string, number>();
     for (const v of violations) byKind.set(v.kind, (byKind.get(v.kind) ?? 0) + 1);
     check(
@@ -525,7 +684,7 @@ async function main() {
         `${byKind.get("8px-rule") ?? 0} violation(s)`,
     );
     check(
-        "no framebuffer pixel ever changed outside that tick's own pushed rectangles (the palette included)",
+        "no framebuffer pixel ever changed outside that tick's own pushed rectangles (the palette's animation included)",
         (byKind.get("outside-push") ?? 0) === 0,
         `${byKind.get("outside-push") ?? 0} violation(s)`,
     );
