@@ -33,9 +33,6 @@ const $ = <T extends HTMLElement>(sel: string) => document.querySelector<T>(sel)
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
-}
 
 // ---- mute icon: the control must show which state it is in ----
 // Owner feedback: toggling mute changed nothing on screen, so a control
@@ -131,11 +128,9 @@ let quickDeg = -90;
 let tiltDeg = 0;
 
 let wiredButtons: WiredButton[] = [];
-// Keyed by the declared button id (DeviceButton.id), not array index: a
-// gesture script names buttons by id (see wasm.ts's GestureStep), and this
-// is what lets runGestureScript resolve "hold pwr" back to the exact same
-// WiredButton a real pointer/keyboard press already drives, rather than
-// reimplementing button state a second time for scripted gestures.
+// Keyed by the declared button id (DeviceButton.id), not array index: this
+// is what lets performChord resolve "boot" back to the exact same
+// WiredButton a real pointer/keyboard press already drives.
 let wiredButtonById = new Map<string, WiredButton>();
 // The bezel DOM element for each declared button, id-keyed same as
 // wiredButtonById. Only needed for performChord's visual flash of PWR
@@ -143,7 +138,6 @@ let wiredButtonById = new Map<string, WiredButton>();
 // performChord's comment on why) and so needs a raw element to add/remove
 // a class on.
 let buttonElById = new Map<string, HTMLElement>();
-let buttonKeyById = new Map<string, string>();
 let appStripControl: AppStripControl | null = null;
 let lastAppIndex = 0;
 
@@ -280,18 +274,10 @@ function buildChrome(d: DeviceDescriptor): void {
   overlayEl.height = d.panel.h;
 
   $("#deviceName").textContent = d.name || "device emulator";
-  // The name already shows in the topbar; the sidebar's job is the one
-  // fact that isn't there yet, the panel's dimensions. NOT the pixel
-  // format ("rgb565be"): that names an internal encoding, not something
-  // useful to a person looking at the puck, so it moved to the
-  // diagnostics strip (updateDiagStrip) instead of sitting here.
-  $("#deviceInfo").textContent = `${d.panel.w}×${d.panel.h}`;
-
   bezelEl.querySelectorAll(".dev-btn").forEach((el) => el.remove());
   wiredButtons = [];
   wiredButtonById = new Map();
   buttonElById = new Map();
-  buttonKeyById = new Map();
   shortcuts.clear();
   const usedKeys = new Set<string>();
   // Owner feedback: the device's own buttons belong with the other
@@ -329,7 +315,6 @@ function buildChrome(d: DeviceDescriptor): void {
     const key = assignShortcut(btn.id, usedKeys);
     if (key) {
       shortcuts.bindHeld(key, { down: wired.down, up: wired.up });
-      buttonKeyById.set(btn.id, key);
     }
 
     // The toolbox chip: a second WiredButton on its own element, same
@@ -373,161 +358,19 @@ function buildChrome(d: DeviceDescriptor): void {
 
   touchOverlay.pxPerMm = derivePxPerMm(d);
   refreshContactInfo();
-  buildGestures(d);
   updateChordButton(d);
   centerDeviceOnce();
-}
-
-// ---- gestures: give every declared gesture a button that PERFORMS it ----
-//
-// "how" (see wasm.ts's DeviceGesture) is prose written for a person, and
-// this page must never try to derive a button sequence from it: wording
-// changes independently of behaviour (this device's own gesture has already
-// been reworded once, see git history), so a page that scraped prose would
-// go stale silently, which is exactly the kind of bug this emulator exists
-// to catch rather than commit. The only thing this page ever executes is
-// the OPTIONAL "script" field, a small machine-readable sequence the
-// firmware itself declares (proposed: emu_abi.h gains gestures[].script,
-// see this task's report - the change is drafted but not landed, because
-// landing it means editing emu_shim.c/emu_abi.h and rebuilding the wasm
-// module, and this task's repo is shared with another agent mid-edit on
-// firmware/apps/timer.c and friends right now; a rebuild here would compile
-// their in-progress code too, which is not this page's call to make).
-//
-// A gesture with no script degrades honestly: no button that silently does
-// nothing, a plain sentence saying automatic performing isn't available yet
-// and pointing at the manual two-key path instead.
-function scriptButtonIds(script: unknown): string[] | null {
-  if (!Array.isArray(script) || script.length === 0) return null;
-  const ids: string[] = [];
-  for (const step of script) {
-    if (typeof step !== "object" || step === null) return null;
-    const s = step as Record<string, unknown>;
-    if (typeof s.hold === "string") {
-      if (!wiredButtonById.has(s.hold)) return null;
-      ids.push(s.hold);
-    } else if (typeof s.release === "string") {
-      if (!wiredButtonById.has(s.release)) return null;
-    } else if (typeof s.waitMs === "number") {
-      if (!(s.waitMs > 0 && s.waitMs < 60000)) return null;
-    } else {
-      return null; // an unrecognised step shape: refuse to guess what it meant
-    }
-  }
-  return ids;
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Executes a gesture's script through the SAME real input path a mouse or
-// keyboard chord uses (WiredButton.down()/up(), which is exactly what
-// device.ts's wireButton hands pointerdown/pointerup and shortcuts.ts's
-// bindHeld hands keydown/keyup) - never emu_app_switch() or any other
-// shortcut into app state. The gesture itself is under test here: a long
-// press still runs on its own real setTimeout inside wireButton, a waitMs
-// step still waits real milliseconds while the page's own requestAnimationFrame
-// loop keeps calling emu_tick() underneath, and BOOT+PWR's ordering, overlap
-// and timing are exactly what a physical chord would produce. A control that
-// bypassed this to call emu_app_switch(-1) directly would "work" every time
-// and hide exactly the class of bug this device has already had once (the
-// chord's own touch-state regression, see git history).
-async function runGestureScript(script: unknown, log: (t: string) => void): Promise<void> {
-  const steps = script as { hold?: string; release?: string; waitMs?: number }[];
-  for (const step of steps) {
-    if (step.hold !== undefined) {
-      wiredButtonById.get(step.hold)!.down();
-    } else if (step.release !== undefined) {
-      wiredButtonById.get(step.release)!.up();
-    } else if (step.waitMs !== undefined) {
-      await sleep(step.waitMs);
-    }
-  }
-  log("done");
-}
-
-// One <details> disclosure per declared gesture, closed by default: this
-// is the one place real prose (the "how" text) is unavoidable, since it
-// describes a physical action, so it stays out of permanent chrome and
-// only appears when opened.
-function buildGestures(d: DeviceDescriptor): void {
-  const wrap = $("#gesturesWrap");
-  wrap.innerHTML = "";
-  if (!d.gestures || d.gestures.length === 0) {
-    wrap.classList.add("hidden");
-    return;
-  }
-  wrap.classList.remove("hidden");
-  for (const g of d.gestures) {
-    const det = document.createElement("details");
-    det.className = "disclosure gesture-detail";
-    det.open = false; // explicit: this prose stays off the page until asked for
-    const summary = document.createElement("summary");
-    summary.textContent = g.label;
-    det.appendChild(summary);
-
-    const body = document.createElement("div");
-    body.className = "gesture-body";
-    const how = document.createElement("p");
-    how.className = "how";
-    how.textContent = g.how;
-    body.appendChild(how);
-
-    const holdIds = scriptButtonIds(g.script);
-    const actions = document.createElement("div");
-    actions.className = "gesture-actions";
-
-    // One control either way, "perform": present but disabled when this
-    // build has not declared a script, rather than a second, differently
-    // worded element ("no script" named the missing DATA, not what the
-    // person should do instead, which the button's own disabled state and
-    // title already say).
-    const btn = document.createElement("button");
-    btn.className = "chrome-btn";
-    btn.textContent = "perform";
-    if (holdIds) {
-      btn.addEventListener("click", () => {
-        btn.disabled = true;
-        const prevText = btn.textContent;
-        btn.textContent = "...";
-        consoleLog.push(`gesture: performing "${g.label}" through the real button path`);
-        void runGestureScript(g.script, (t) => consoleLog.push(`gesture: ${t}`)).finally(() => {
-          btn.disabled = false;
-          btn.textContent = prevText;
-        });
-      });
-    } else {
-      btn.disabled = true;
-      btn.title = "not available yet: this build does not declare a script for this gesture. Use the chord above instead";
-    }
-    actions.appendChild(btn);
-
-    const uniqueIds = holdIds ? [...new Set(holdIds)] : [];
-    const keys = uniqueIds.map((id) => buttonKeyById.get(id)?.toUpperCase()).filter((k): k is string => !!k);
-    if (keys.length > 0) {
-      const keysEl = document.createElement("span");
-      keysEl.className = "gesture-keys";
-      keysEl.title = "same as holding these together";
-      keysEl.innerHTML = keys.map((k) => `<span class="kbd">${escapeHtml(k)}</span>`).join("+");
-      actions.appendChild(keysEl);
-    }
-    body.appendChild(actions);
-    det.appendChild(body);
-    wrap.appendChild(det);
-  }
-}
-
 // ---- the BOOT+PWR chord: opens/closes the app menu -----------------------
 //
 // Owner feedback: a one-press control for "press PWR and BOOT at the same
-// time", the gesture that opens the real device's app menu. This firmware
-// build's own device descriptor declares the "menu" gesture (see
-// buildGestures above) but not yet a machine-readable "script" for it (that
-// would mean editing emu_shim.c/emu_abi.h and rebuilding the wasm module,
-// not this page's call while another agent is mid-edit on firmware/ - see
-// scriptButtonIds's comment), so this does NOT go through runGestureScript.
-// It drives the wasm ABI directly, and NOT by holding both buttons down for
+// time", the gesture that opens the real device's app menu. It drives the
+// wasm ABI directly, and NOT by holding both buttons down for
 // a real 1.5s the way a person would with two fingers: tools/dev.ts's own
 // CHORD command (the same gesture, injected at the real device over serial)
 // composes it from exactly three primitives - "hold BOOT, deliver PWR's
@@ -1131,14 +974,6 @@ async function boot(): Promise<void> {
   getEmu: () => emu,
   getDevice: () => device,
   getRecorder: () => recorder,
-  // Re-renders the gestures panel from the current `device` object. Lets an
-  // ad hoc check mutate getDevice().gestures (e.g. attach a script to a
-  // gesture the loaded firmware did not declare one for) and see the
-  // "perform" button/honest-degrade text update without a real firmware
-  // rebuild - this device's own firmware build does not ship a script yet
-  // (see main.ts's gesture section), so this is how that code path gets
-  // exercised at all today.
-  rebuildGestures: () => device && buildGestures(device),
   getSoundPlayer: () => soundPlayer,
 };
 

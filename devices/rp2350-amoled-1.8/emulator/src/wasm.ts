@@ -57,44 +57,13 @@ export interface DeviceSensor {
   label?: string;
 }
 
-// One step of a gesture's machine-readable "script" (see DeviceGesture.script
-// below). Three verbs, deliberately as small as a chord needs: hold a
-// declared button down, release it, or wait a real number of milliseconds
-// while whatever is already held stays held. "hold"/"release" name a
-// button by its declared id (DeviceButton.id), never a position or a key,
-// so the script stays correct however the emulator happens to assign
-// keyboard shortcuts this session.
-export type GestureStep = { hold: string } | { release: string } | { waitMs: number };
-
-// A compound gesture the runtime itself recognises (a menu, an app switch)
-// is not any one button's business to describe, so there is nowhere in
-// "buttons" to hang a label like "hold both, then long-press" on; this is
-// that description, and emu_abi.h documents both fields below as real,
-// shipped parts of emu_device()'s JSON.
-//
-//   how     prose for a human, in device terms (which buttons, held how).
-//           Deliberately not parseable: it must never be the thing this
-//           page derives button presses from, because a chord's own wording
-//           changes independently of its behaviour (this device's gesture
-//           has already been reworded once - see git history) and a page
-//           that scraped it would go stale silently the next time that
-//           happens, exactly the kind of bug this emulator exists to catch
-//           rather than commit.
-//
-//   script  OPTIONAL. The same gesture, as a small sequence of hold/release/
-//           waitMs steps a page can actually execute through the real input
-//           path (emu_button/emu_button_verdict, timed across real
-//           milliseconds - see main.ts's runGestureScript). A firmware that
-//           has not been updated to declare one simply omits it, and the
-//           page says so plainly rather than guessing a sequence from `how`
-//           or from how many buttons happen to exist.
-export interface DeviceGesture {
-  id: string;
-  label: string;
-  how: string;
-  script?: GestureStep[];
-}
-
+// emu_device()'s JSON also carries a "gestures" array (the BOOT+PWR chord's
+// own prose, per emu_abi.h) that nothing on this page reads any more: the
+// sidebar's gesture disclosure is gone (btnChord in the bottom bar performs
+// the chord directly, see main.ts's performChord), so there is no consumer
+// left to type that field for. The emulator (emu_shim.c) still emits it;
+// readDeviceDescriptor below simply ignores whatever extra keys it does not
+// know about, so that is harmless.
 export interface DeviceDescriptor {
   name?: string;
   panel: { w: number; h: number; format: string };
@@ -102,7 +71,6 @@ export interface DeviceDescriptor {
   touch?: { points?: number };
   sensors?: DeviceSensor[];
   apps?: string[];
-  gestures?: DeviceGesture[];
 }
 
 export const DEFAULT_WASM_URL = "wasm/emu.wasm";
