@@ -189,12 +189,26 @@ static void ensure_chrono_tables(void) {
 // exactly what it looked like. Randomness is not the same thing as
 // handwriting, and at this scale it reads as a tear.
 //
-// What a hand actually does over a short line is bow it very slightly. So
-// this is one gentle arc, half a sine over the wedge's height, three pixels
-// at its widest: six one-pixel steps in total instead of twenty-odd, each
-// far enough from the next to read as curvature rather than as noise.
+// STRAIGHT, and this is now a decision rather than the absence of one.
+//
+// The gentle arc that replaced the jitter was better and still wrong: the
+// owner, looking at it magnified, said the middle "a l'air de s'effriter".
+// It did. Six one-pixel steps is fewer than twenty, but on a curve this
+// tight every one of them is a visible notch.
+//
+// The reason is structural and worth stating so nobody tries a third
+// amplitude: shapes_fill_between_curves_aa_land takes INTEGER column arrays,
+// so this edge has no sub-pixel position to anti-alias against. A perfectly
+// vertical edge is the only one that produces no steps at all, because it
+// never has to change column. Any deviation, of any size, quantises into a
+// staircase.
+//
+// So the hand-drawn quality lives where the primitives can carry it, in the
+// crown and tab (float capsules, genuinely anti-aliased) and in the sketch
+// and coil icons. Not here. If this edge is ever to bow, it needs a fill
+// that accepts float edges, not a smaller number.
 static const int8_t s_chronoWedgeWobble[24] = {
-    0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 0, 0
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
 };
 
 // Crown path, hand-wobbled - tools/gen-chrono-icon.ts, same seed. Offsets
