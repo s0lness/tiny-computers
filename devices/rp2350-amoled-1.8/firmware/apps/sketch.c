@@ -478,11 +478,12 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
  * les cases recouvrent tout l'ecran, on est dans un menu en selectionnant
  * une couleur, c'est pas tres grave" - big, unmissable, easy for a child to
  * hit while sliding, because this is a real full-screen menu, not a small
- * panel dodging the fingertip. So PALETTE_COLS/ROWS partition the ENTIRE
- * panel (palette_cell_bounds() below), not a block placed relative to the
- * touch point - there is no more placement math, no PALETTE_TOUCH_GAP_PX,
- * because there is no longer a "clear of the finger" problem to place
- * around.
+ * panel dodging the fingertip. So PALETTE_COLS/ROWS partition the VISIBLE
+ * area (palette_cell_bounds() below - see PALETTE_GRID_INSET_PX's own
+ * comment for why that stops a little short of the panel's own edges now),
+ * not a block placed relative to the touch point - there is no more
+ * placement math, no PALETTE_TOUCH_GAP_PX, because there is no longer a
+ * "clear of the finger" problem to place around.
  *
  * SHAPE. "9 rectangles" meets decision 0009 head-on - that decision's own
  * consequences section names "a palette's squares" as an example of where
@@ -533,12 +534,13 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
  *
  * SIZE. PALETTE_CELL_GAP_PX is the visible gap that keeps adjacent
  * balloons reading as separate shapes rather than one solid field, even
- * though together they span the whole panel (the raw grid cells from
- * palette_cell_bounds() tile PANEL_W x PANEL_H exactly with no remainder;
- * each balloon is then inset by half the gap on every side). That gap is
- * also this feature's only "over nothing" zone now - see palette_cell_
- * contains() and PALETTE_LIFT_GRACE_MS's own comment below for what lands
- * there.
+ * though together they span nearly the whole panel (the raw grid cells
+ * from palette_cell_bounds() tile the VISIBLE area exactly with no
+ * remainder - PALETTE_GRID_W x PALETTE_GRID_H, not PANEL_W x PANEL_H, see
+ * PALETTE_GRID_INSET_PX's own comment for why; each balloon is then inset
+ * by half the gap on every side). That gap is also this feature's only
+ * "over nothing" zone now - see palette_cell_contains() and PALETTE_LIFT_
+ * GRACE_MS's own comment below for what lands there.
  * ------------------------------------------------------------------- */
 #define PALETTE_COLS              3
 #define PALETTE_ROWS              3
@@ -548,6 +550,31 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 #define PALETTE_CANDIDATE_GROW_PX 3.0f
 #define PALETTE_POP_MS          240.0f
 #define PALETTE_STAGGER_MS       20.0f
+
+// Found 2026-08-14, from a photograph of the real device: the outer row
+// and columns ran under the case. gfx.h's PANEL_BEZEL_MARGIN_PX is the
+// device-wide fact (see its own comment for the number and how it was
+// found); this is that fact applied to this grid specifically. The whole
+// 3x3 partition (palette_cell_bounds()) is built inside [INSET, PANEL_W -
+// INSET) x [INSET, PANEL_H - INSET) instead of the full panel, so every
+// cell's own settled edge - corners included, which is what a rounded
+// shape clipped by a rounded bezel would otherwise turn into visible
+// damage - sits inside the visible area.
+//
+// The inset is the bezel margin PLUS the candidate's own grow
+// (PALETTE_CANDIDATE_GROW_PX): a cell's BASE edge lands exactly at
+// PANEL_BEZEL_MARGIN_PX from the panel edge by construction, so growing
+// it by GROW_PX would otherwise push a highlighted outer cell back under
+// the case - the one state (dragging onto the edge column) a child is
+// guaranteed to actually produce, not a rare corner case. The pop-in's
+// own brief overshoot (~10% past base, ease_out_back's own peak, see
+// PALETTE_POP_PEAK_SCALE) is deliberately NOT budgeted for here: it lasts
+// under a couple of throttled frames per cell, and reserving permanent
+// canvas for a sub-50ms visual blip would shrink the everyday, settled
+// size of every cell for a defect nobody is going to see happen.
+#define PALETTE_GRID_INSET_PX (PANEL_BEZEL_MARGIN_PX + (int)PALETTE_CANDIDATE_GROW_PX)
+#define PALETTE_GRID_W (PANEL_W - 2 * PALETTE_GRID_INSET_PX)
+#define PALETTE_GRID_H (PANEL_H - 2 * PALETTE_GRID_INSET_PX)
 
 // The exact peak ease_out_back() ever reaches, over t in [0,1]: the
 // standard cubic's maximum sits at u=t-1=-2*c1/(3*c3) (c1=1.70158,
@@ -589,9 +616,10 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 // this, the very last rendered frame can land a hair before t=1.0 for the
 // slowest cell (a stepped 15ms touch-sample clock does not necessarily
 // land exactly on the animation's own boundary), leaving it a fraction of
-// a percent undersized forever after - not visible as residue (palette_
-// render_frame's own full-panel whiten, see its header comment, means
-// nothing is ever left BEHIND), but still worth closing rather than
+// a percent undersized forever after - not visible as residue (every cell
+// palette_render_frame() touches is whitened to its own provable maximum
+// extent before it is redrawn, see palette_whiten_cell()'s own comment,
+// so nothing is ever left BEHIND), but still worth closing rather than
 // depending on both clocks lining up by luck.
 #define PALETTE_ANIM_SETTLE_MARGIN_MS 30.0f
 
@@ -1382,17 +1410,21 @@ static uint16_t palette_color(int index) {
 
 // The FIXED target rectangle (centre and half-extents) for grid cell
 // (col, row), before any pop-in scale or candidate growth is applied. The
-// raw cell (x0..x1, y0..y1) tiles the whole panel exactly (integer
-// division distributed by the standard "i*N/D" partition, so the widths
-// sum to PANEL_W and the heights to PANEL_H with no remainder pixel left
-// over); the balloon actually drawn is inset by half the gap on every
-// side, which is also this feature's only "over nothing" zone - see
+// raw cell (x0..x1, y0..y1) tiles [PALETTE_GRID_INSET_PX, PANEL_W -
+// PALETTE_GRID_INSET_PX) x [PALETTE_GRID_INSET_PX, PANEL_H -
+// PALETTE_GRID_INSET_PX) exactly - the visible area, not the whole panel;
+// see PALETTE_GRID_INSET_PX's own comment for why the panel's own edges
+// are not part of this grid at all any more (integer division distributed
+// by the standard "i*N/D" partition, so the widths sum to PALETTE_GRID_W
+// and the heights to PALETTE_GRID_H with no remainder pixel left over);
+// the balloon actually drawn is inset by half the gap on every side,
+// which is also this feature's only "over nothing" zone - see
 // palette_cell_contains().
 static void palette_cell_bounds(int col, int row, int *cx, int *cy, int *halfW, int *halfH) {
-    int x0 = (PANEL_W * col) / PALETTE_COLS;
-    int x1 = (PANEL_W * (col + 1)) / PALETTE_COLS;
-    int y0 = (PANEL_H * row) / PALETTE_ROWS;
-    int y1 = (PANEL_H * (row + 1)) / PALETTE_ROWS;
+    int x0 = PALETTE_GRID_INSET_PX + (PALETTE_GRID_W * col) / PALETTE_COLS;
+    int x1 = PALETTE_GRID_INSET_PX + (PALETTE_GRID_W * (col + 1)) / PALETTE_COLS;
+    int y0 = PALETTE_GRID_INSET_PX + (PALETTE_GRID_H * row) / PALETTE_ROWS;
+    int y1 = PALETTE_GRID_INSET_PX + (PALETTE_GRID_H * (row + 1)) / PALETTE_ROWS;
     *cx = (x0 + x1) / 2;
     *cy = (y0 + y1) / 2;
     *halfW = (x1 - x0 - PALETTE_CELL_GAP_PX) / 2;

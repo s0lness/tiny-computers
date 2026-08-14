@@ -169,7 +169,8 @@ async function main() {
     dev.drainLog();
 
     let t = 1000;
-    const holdX = 183, holdY = 223; // the centre cell - see feature-sketch-palette.ts's own use of this point
+    const holdX = 184, holdY = 223; // the centre cell (post gfx.h PANEL_BEZEL_MARGIN_PX inset) -
+                                     // see feature-sketch-palette.ts's own paletteCellBounds() mirror
     const FAST_STEP_MS = 2; // far faster than any real report rate - a synthetic worst-case backlog
     const HOLD_MS = CONFIRM_MS + LONG_PRESS_MS + PALETTE_ANIM_TOTAL_MS + 150; // through open + full settle
     let frames: { kind: string; whitenPx: number; coverageEvals: number }[] = [];
@@ -240,7 +241,9 @@ async function main() {
     // Drag across several cell centres in quick succession, each held long
     // enough to register as a genuine candidate but with no settle delay
     // needed (the animation is already long over by construction).
-    const cellCentresApprox: [number, number][] = [[61, 74], [184, 74], [306, 74], [61, 223], [184, 223], [306, 223]];
+    // Post gfx.h PANEL_BEZEL_MARGIN_PX inset - see feature-sketch-palette.ts's
+    // own paletteCellBounds() mirror for how these are derived.
+    const cellCentresApprox: [number, number][] = [[70, 83], [184, 83], [298, 83], [70, 223], [184, 223], [298, 223]];
     dev.drainLog();
     let settledFrames: { kind: string; whitenPx: number; coverageEvals: number }[] = [];
     for (const [cx, cy] of cellCentresApprox) {

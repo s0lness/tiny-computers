@@ -76,22 +76,31 @@ const PALETTE_CORNER_PX = 26; // sketch.c PALETTE_CORNER_PX
 const PALETTE_CANDIDATE_GROW_PX = 3; // sketch.c PALETTE_CANDIDATE_GROW_PX
 const PALETTE_POP_MS = 240; // sketch.c PALETTE_POP_MS
 const PALETTE_STAGGER_MS = 20; // sketch.c PALETTE_STAGGER_MS
+// gfx.h's own device-wide bezel-hidden margin (see its own comment for the
+// number and how it was found - a photograph, not a datasheet) - the
+// palette grid insets by this plus the candidate's own grow, see sketch.c
+// PALETTE_GRID_INSET_PX's own comment for why.
+const PANEL_BEZEL_MARGIN_PX = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
+const PALETTE_GRID_INSET_PX = PANEL_BEZEL_MARGIN_PX + PALETTE_CANDIDATE_GROW_PX; // sketch.c PALETTE_GRID_INSET_PX
+const PALETTE_GRID_W = PANEL_W - 2 * PALETTE_GRID_INSET_PX; // sketch.c PALETTE_GRID_W
+const PALETTE_GRID_H = PANEL_H - 2 * PALETTE_GRID_INSET_PX; // sketch.c PALETTE_GRID_H
 // The animation's own worst case: the corner cells' own stagger delay
 // (Chebyshev rank 2) plus their own pop duration - mirrors palette_render_
 // frame/palette_drain_sample's own "animating" threshold.
 const PALETTE_ANIM_TOTAL_MS = PALETTE_POP_MS + 2 * PALETTE_STAGGER_MS;
 
 // Mirror of sketch.c's palette_cell_bounds(): the raw grid cell (index =
-// row*PALETTE_COLS + col) tiles the whole panel exactly by the standard
-// "i*N/D" integer partition; the balloon itself is inset by half the gap
-// on every side.
+// row*PALETTE_COLS + col) tiles the VISIBLE area - PALETTE_GRID_W x
+// PALETTE_GRID_H, inset from the panel's own edges by PALETTE_GRID_INSET_
+// PX, not the panel itself - exactly, by the standard "i*N/D" integer
+// partition; the balloon itself is inset by half the gap on every side.
 function paletteCellBounds(index: number): { col: number; row: number; cx: number; cy: number; halfW: number; halfH: number } {
     const col = index % PALETTE_COLS;
     const row = Math.floor(index / PALETTE_COLS);
-    const x0 = Math.floor((PANEL_W * col) / PALETTE_COLS);
-    const x1 = Math.floor((PANEL_W * (col + 1)) / PALETTE_COLS);
-    const y0 = Math.floor((PANEL_H * row) / PALETTE_ROWS);
-    const y1 = Math.floor((PANEL_H * (row + 1)) / PALETTE_ROWS);
+    const x0 = PALETTE_GRID_INSET_PX + Math.floor((PALETTE_GRID_W * col) / PALETTE_COLS);
+    const x1 = PALETTE_GRID_INSET_PX + Math.floor((PALETTE_GRID_W * (col + 1)) / PALETTE_COLS);
+    const y0 = PALETTE_GRID_INSET_PX + Math.floor((PALETTE_GRID_H * row) / PALETTE_ROWS);
+    const y1 = PALETTE_GRID_INSET_PX + Math.floor((PALETTE_GRID_H * (row + 1)) / PALETTE_ROWS);
     const cx = Math.floor((x0 + x1) / 2);
     const cy = Math.floor((y0 + y1) / 2);
     const halfW = Math.floor((x1 - x0 - PALETTE_CELL_GAP_PX) / 2);
@@ -587,11 +596,16 @@ async function main() {
     console.log("\n-- long press in the gap between two cells, released without ever moving (cancel) --");
     const preSecondOpen = dev.fbSnapshot();
 
-    // x=123 sits in the horizontal gap between column 0 and column 1 at
-    // this row; y is the row's own vertical centre, well clear of any row
-    // gap - see this file's header comment for the SDF check proving both
-    // neighbouring cells read this point as outside their own shape.
-    const gapX = 123, gapY = paletteCellBounds(INDEX_CENTER_BLACK).cy;
+    // The raw column-0/column-1 boundary (the same "i*N/D" partition line
+    // palette_cell_bounds() itself divides on) sits in the horizontal gap
+    // between them by construction, whatever the grid's own inset or gap
+    // width are tuned to - computed here rather than hardcoded so this
+    // stays correct if either ever changes. y is the row's own vertical
+    // centre, well clear of any row gap - see this file's header comment
+    // on the SDF check proving both neighbouring cells read this point as
+    // outside their own shape.
+    const gapX = PALETTE_GRID_INSET_PX + Math.floor((PALETTE_GRID_W * 1) / PALETTE_COLS);
+    const gapY = paletteCellBounds(INDEX_CENTER_BLACK).cy;
     t = holdStill(dev, gapX, gapY, t + 300, CONFIRM_MS + LONG_PRESS_MS + 250);
 
     const openLine2 = dev.fwLogLines().findLast((l) => l.includes("palette: open at"));

@@ -37,6 +37,37 @@
 #define PANEL_W AMOLED_1IN8_WIDTH
 #define PANEL_H AMOLED_1IN8_HEIGHT
 
+// How many pixels, along EVERY edge, the physical case hides. The
+// framebuffer is the panel's full 368x448 and the firmware addresses all
+// of it - this is not a drawing bug, it is the visible area being smaller
+// than the glass. Found 2026-08-14 from a photograph of the real device
+// (the owner's own sketchpad palette had its outer row and columns
+// running under the case): "l'ecran est legerement plus tronque que
+// prevu... je pense que tu peux shave quelques pixels sur les bords".
+//
+// THE NUMBER IS DELIBERATELY ROUGH. A photograph taken at an angle cannot
+// measure a bezel to the pixel, and this is not trying to: 10 is an
+// order-of-magnitude guess, conservative (a little too much margin costs
+// a little less canvas; a little too little leaves the exact defect this
+// exists to fix). Tunable in this ONE place on purpose, so the owner can
+// judge the real device and either of us can correct it in one edit
+// without hunting down every app that used it.
+//
+// EVERY APP THAT DRAWS EDGE TO EDGE NEEDS THIS, not just the one that
+// found it - the sketchpad's own colour palette was the first (see
+// firmware/apps/sketch.c's own use of it), and Connect Four's board is
+// the next, already in flight in another agent's own change. The rule
+// this constant exists to enforce, for every app from now on: nothing a
+// child needs to actually see - a button's own edge, a rounded corner, a
+// piece of text - belongs inside PANEL_BEZEL_MARGIN_PX of the panel's own
+// boundary. A shape clipped by a straight framebuffer edge is invisible
+// in the emulator, which has no bezel to hide anything behind by
+// definition (decision 0003) - a human looking at the real device is the
+// only test that will ever catch this, which is exactly why the margin
+// gets a name and a shared home instead of staying a fact only one app's
+// own code happened to know.
+#define PANEL_BEZEL_MARGIN_PX 10
+
 // Landscape canvas: the panel's dimensions swapped. Landscape apps work in
 // this space and gfx rotates for them, so the buttons end up along the top
 // edge when the device is held sideways (see gfx_land_rect).

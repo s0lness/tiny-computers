@@ -116,7 +116,7 @@ async function main() {
     // ---- open the palette the ordinary way: a genuine long press, real
     // touch samples, a realistic ~15ms report cadence. -------------------
     let t = 1000;
-    const holdX = 183, holdY = 223; // the centre cell
+    const holdX = 184, holdY = 223; // the centre cell (post gfx.h PANEL_BEZEL_MARGIN_PX inset)
     const HOLD_STEP_MS = 15;
     let opened = false;
     for (let held = 0; held < CONFIRM_MS + LONG_PRESS_MS + 100 && !opened; held += HOLD_STEP_MS) {
