@@ -268,16 +268,10 @@ static uint32_t s_core1LastChangeMs = 0;
 static uint32_t g_profLoops = 0;
 static uint32_t g_profLastMs = 0;
 static sensors_stats_t g_profLastStats;
-// TEMPORARY diagnostic: see sensors.h's sensors_debug_core1_loops() comment.
-// Remove alongside it once closed.
+// PERMANENT: previous tick's raw core1 loop count, differenced each second
+// to produce the core1=<n>/s liveness figure below - see sensors.h's
+// sensors_debug_core1_loops() comment.
 static uint32_t g_profLastCore1Loops = 0;
-// TEMPORARY diagnostic: i2c1 hardware status captured right after
-// sound_init(), before sensors_start() - see main()'s comment there for why
-// this is captured into globals instead of printf'd on the spot. Printed
-// once, the first time the PROFILE block runs.
-static uint32_t g_i2c1PostSoundEnable, g_i2c1PostSoundEnableStatus, g_i2c1PostSoundStatus,
-                g_i2c1PostSoundRawIntrStat, g_i2c1PostSoundTxAbrtSource,
-                g_i2c1PostSoundTxflr, g_i2c1PostSoundRxflr;
 #endif
 
 int main(void) {
@@ -302,62 +296,18 @@ int main(void) {
     // rather than folded into sensors.c/sensors.h so the sound service never
     // has to touch the file that owns the i2c1 ownership rule itself - see
     // sound.h's header comment for the full argument.
-    // TEMPORARILY DISABLED, 2026-08-13, and this is a product decision rather
-    // than a diagnosis. With sound_init() active, core1 freezes at
-    // PHASE_PMIC_CLR within a few seconds of every boot, which kills touch,
-    // the IMU and BOTH BUTTONS. The owner has been picking up an unusable
-    // device all day because of it.
     //
-    // A toy that responds to nothing is worse than a toy that does not chime,
-    // so the chime goes away until the race below is actually understood. The
-    // code stays, the call does not. Re-enable it the moment the cause is
-    // known: the owner explicitly likes this chime and it is not the thing at
-    // fault, only the thing that reveals the fault.
-    // sound_init();
-    // BISECT RESULT (coordinator's hypothesis): with sound_init() skipped
-    // and core1_install_fault_handlers() also disabled (the fast ~3.5s
-    // repro configuration), core1 ran clean for 25s straight - no freeze,
-    // raw loops 18.3M -> 51.1M, phase cycling normally the whole time, where
-    // the same config with sound_init() active froze at PHASE_PMIC_CLR
-    // within ~3.5s, twice. That correlates the freeze with sound_init()
-    // running.
-    //
-    // NOT YET a clean causal proof, and this comment previously overclaimed
-    // one: sound_init() itself costs real boot time (es8311_bring_up()'s own
-    // sleep_ms(20) plus roughly twenty i2c1 register writes, ~20+ms total),
-    // and this same investigation has separately shown the race is
-    // sensitive to far smaller perturbations than that - reading four i2c1
-    // hardware registers with no sleep and no printf (see below) was ALSO
-    // enough to stop the freeze reproducing, in a run where sound_init() was
-    // fully active. So "removing sound_init() removes ~20ms of boot delay"
-    // and "removing sound_init() removes whatever i2c1 corruption it
-    // causes" are BOTH still consistent with everything observed so far.
-    // The test that would separate them - replace sound_init() with a
-    // sleep_ms() of matched duration and no i2c1 traffic, see if the freeze
-    // stays away regardless - has not been run yet.
-    // TEMPORARY diagnostic: capture i2c1's own hardware status right after
-    // sound_init() returns and before sensors_start() hands the bus to
-    // core1 - the coordinator's cheapest next check. Still single-threaded
-    // core0 here, so this is a plain register read, not a transaction, and
-    // does not touch the ownership rule.
-    //
-    // Captured into globals and printed LATER (see PROFILE block below),
-    // deliberately NOT printf'd here: a printf this early, before any host
-    // has connected to drain stdio_usb, can itself cost up to ~2ms PER
-    // CHARACTER (the SDK's own per-write timeout - see f360ccd's commit
-    // message on why that number is 2ms and not the old 500ms), so a ~150
-    // character line here could silently add up to hundreds of
-    // milliseconds of exactly the boot delay this whole investigation is
-    // about - discovered by watching this exact printf make the freeze stop
-    // reproducing. Reading four registers into four words costs nothing
-    // comparable.
-    g_i2c1PostSoundEnable = i2c_get_hw(I2C_PORT)->enable;
-    g_i2c1PostSoundEnableStatus = i2c_get_hw(I2C_PORT)->enable_status;
-    g_i2c1PostSoundStatus = i2c_get_hw(I2C_PORT)->status;
-    g_i2c1PostSoundRawIntrStat = i2c_get_hw(I2C_PORT)->raw_intr_stat;
-    g_i2c1PostSoundTxAbrtSource = i2c_get_hw(I2C_PORT)->tx_abrt_source;
-    g_i2c1PostSoundTxflr = i2c_get_hw(I2C_PORT)->txflr;
-    g_i2c1PostSoundRxflr = i2c_get_hw(I2C_PORT)->rxflr;
+    // Was disabled for one day, 2026-08-13, as a suspect while core1 was
+    // dying on the first real button press: sound_init() was the most
+    // recent change and touches i2c1, so it was the cheapest thing to rule
+    // out first. It has since been cleared. The root cause
+    // (docs/decisions/0004, 0005) is a corrupted instruction fetch on core1
+    // during core0's periodic BOOT-button read, which borrows the flash
+    // chip select - nothing to do with sound_init() or i2c1 at all, and the
+    // fix (copy_to_ram, firmware/CMakeLists.txt) makes the hazard
+    // impossible regardless of what runs at boot. The owner likes the
+    // chime and asked for it back the moment it was cleared.
+    sound_init();
 
     if (!gfx_init()) {
         // gfx_init() already printed why (SRAM already spoken for). There is
@@ -537,97 +487,6 @@ int main(void) {
                    // is what proves a truncation happened rather than nothing
                    // running at all.
                    (unsigned long)devlink_dropped_shots());
-            // TEMPORARY diagnostic line: the DETAIL behind the permanent
-            // core1=.../s in the prof line above (raw count, phase, fault
-            // capture) - that summary is what stays forever; this line is
-            // what a live investigation still needs and can be dropped once
-            // the investigation closes. Reuses core1Loops/core1LoopsPerSec
-            // computed above rather than reading the counter twice.
-            printf("DBG core1 loops=%lu/s (raw=%lu) phase=%lu fault kind=%lu pc=%08lx lr=%08lx cfsr=%08lx faultphase=%lu "
-                   "halted=%d stackheadroom=%lu writewait=%lu writewaitspins=%lu\r\n",
-                   (unsigned long)core1LoopsPerSec,
-                   (unsigned long)core1Loops,
-                   (unsigned long)sensors_debug_core1_phase(),
-                   (unsigned long)sensors_debug_core1_fault_kind(),
-                   (unsigned long)sensors_debug_core1_fault_pc(),
-                   (unsigned long)sensors_debug_core1_fault_lr(),
-                   (unsigned long)sensors_debug_core1_fault_cfsr(),
-                   (unsigned long)sensors_debug_core1_fault_phase(),
-                   // SYSCFG_PROC_CONFIG.PROC1_HALTED and core1's stack
-                   // high-water mark - see sensors.h's comment. Both are
-                   // answerable regardless of whether core1 can execute.
-                   // Coordinator's LOCKUP hypothesis was tested and ruled
-                   // out with these (halted=0 during a live freeze); the
-                   // stack reading itself came back suspicious (2048/2048,
-                   // i.e. zero bytes ever touched, which is not credible
-                   // for a core making function calls) and should not be
-                   // trusted until that is explained - keeping it printed
-                   // so any fix to it is visible in the same place.
-                   (int)sensors_debug_core1_halted(),
-                   (unsigned long)sensors_debug_core1_stack_headroom(),
-                   // Which of i2c1_write_bytes_bounded()'s two wait loops
-                   // core1 is (or was, at death) inside, and how many passes
-                   // through THAT loop's current entry - see that function's
-                   // comment. A frozen (non-advancing across two readings a
-                   // second apart) spin count despite the loop's own
-                   // time_reached() check would mean the CPU is not looping
-                   // in software here at all, but stalled on the single
-                   // register load the while-condition evaluates.
-                   (unsigned long)sensors_debug_core1_write_wait_kind(),
-                   (unsigned long)sensors_debug_core1_write_wait_spins());
-            // TEMPORARY diagnostic: write-path transaction progress and the
-            // PMIC write self-test counters (sensors.h). wr=started/returned
-            // answers "did the write function itself ever return"; addr and
-            // pushed say which slave and how many bytes of the current or
-            // last write made it into the FIFO. selftest=writes/fails stays
-            // 0/0 unless the build was made with PMIC_WRITE_SELFTEST=1.
-            {
-                uint32_t wrS, wrR, wrA, wrB, stW, stF;
-                sensors_debug_i2c1_write_progress(&wrS, &wrR, &wrA, &wrB);
-                sensors_debug_pmic_selftest(&stW, &stF);
-                printf("DBG i2c1 wr started=%lu returned=%lu addr=%02lx pushed=%lu selftest=%lu/%lu\r\n",
-                       (unsigned long)wrS, (unsigned long)wrR, (unsigned long)wrA,
-                       (unsigned long)wrB, (unsigned long)stW, (unsigned long)stF);
-            }
-            // TEMPORARY diagnostic: the i2c1 status captured once, right
-            // after sound_init() (main()'s comment). Printed every second
-            // (not just once) specifically so a host that connects late -
-            // as every capture during this investigation has - still sees
-            // it, instead of it being a one-shot line lost before anyone was
-            // listening.
-            printf("DBG i2c1 post-sound_init: enable=%lu enable_status=%08lx status=%08lx "
-                   "raw_intr_stat=%08lx tx_abrt_source=%08lx txflr=%lu rxflr=%lu\r\n",
-                   (unsigned long)g_i2c1PostSoundEnable, (unsigned long)g_i2c1PostSoundEnableStatus,
-                   (unsigned long)g_i2c1PostSoundStatus, (unsigned long)g_i2c1PostSoundRawIntrStat,
-                   (unsigned long)g_i2c1PostSoundTxAbrtSource, (unsigned long)g_i2c1PostSoundTxflr,
-                   (unsigned long)g_i2c1PostSoundRxflr);
-            // TEMPORARY diagnostic: i2c1's LIVE status, only once core1 is
-            // already observed dead this tick (core1LoopsPerSec == 0) - see
-            // sensors_debug_i2c1_live()'s ONE CAVEAT comment for why this
-            // gate is not optional (tx_abrt_source is clear-on-read and a
-            // live core1 depends on seeing it). This is the reading that
-            // matters: the bus state AT the hang, not at boot.
-            if (core1LoopsPerSec == 0) {
-                uint32_t en, enSt, st, ris, tas, txf, rxf;
-                sensors_debug_i2c1_live(&en, &enSt, &st, &ris, &tas, &txf, &rxf);
-                // Coordinator's decode of an earlier reading (status=0x27 =
-                // ACTIVITY+TFNF+TFE+MST_ACTIVITY, raw_intr_stat=0x510 =
-                // TX_EMPTY+ACTIVITY+START_DET with STOP_DET absent,
-                // tx_abrt_source=0): a START was issued, the TX FIFO ran
-                // dry, and no STOP ever followed - the master is still
-                // waiting for the bus to let it finish, which the
-                // peripheral itself does not consider an error. SDA/SCL
-                // below is the direct check that decode calls for: read as
-                // plain GPIO pad levels, bypassing the peripheral, the
-                // classic "a slave is holding the bus low" signature.
-                bool sda, scl;
-                sensors_debug_i2c1_pins(&sda, &scl);
-                printf("DBG i2c1 LIVE (core1 dead this tick): enable=%lu enable_status=%08lx status=%08lx "
-                       "raw_intr_stat=%08lx tx_abrt_source=%08lx txflr=%lu rxflr=%lu sda=%d scl=%d\r\n",
-                       (unsigned long)en, (unsigned long)enSt, (unsigned long)st,
-                       (unsigned long)ris, (unsigned long)tas, (unsigned long)txf, (unsigned long)rxf,
-                       (int)sda, (int)scl);
-            }
             g_profLastCore1Loops = core1Loops;
             g_profLastStats = cur;
             g_profLoops = 0;

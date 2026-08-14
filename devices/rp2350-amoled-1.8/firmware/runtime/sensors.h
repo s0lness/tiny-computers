@@ -277,83 +277,36 @@ typedef struct {
 
 void sensors_stats(sensors_stats_t *out);
 
-// TEMPORARY diagnostic, added while investigating whether core1 is actually
-// iterating during a live incident (recoveries/reg10h readback not moving).
-// Remove alongside its definition and core1_entry()'s g_core1Loops once
-// that investigation is closed.
+// PERMANENT: raw per-iteration counter, read once a second by the profiler
+// (runtime.c) to compute the core1=<n>/s liveness figure, and by the
+// core1-liveness watchdog guard there. Originally added as a temporary
+// diagnostic; decision 0004 made it permanent after it was deleted once
+// during the investigation and the bug it exists to catch instantly became
+// invisible again. Do not remove.
 uint32_t sensors_debug_core1_loops(void);
 
-// TEMPORARY diagnostic, added alongside sensors_debug_core1_loops() to show
-// not just THAT core1 stopped but WHERE in one loop iteration it stopped.
-// Returns one of sensors.c's PHASE_* constants (see g_core1Phase's comment
-// there for what each number means); 0 before core1's first iteration ever
-// writes it. Remove alongside its definition once the investigation is
-// closed.
-uint32_t sensors_debug_core1_phase(void);
-
-// TEMPORARY diagnostics: core1 fault capture. fault_kind is the IPSR
-// exception number that fired (0 = no fault seen this boot; 3 = HardFault,
-// 4 = MemManage, 5 = BusFault, 6 = UsageFault, 7 = SecureFault - see
-// hardware/exception.h's enum exception_number). fault_pc/fault_lr are the
-// faulting instruction address and link register, read off the exception
-// stack frame. fault_cfsr is SCB->CFSR, which sub-reason (bit layout: ARMv8-M
-// architecture reference manual, section on CFSR). fault_phase is
-// sensors_debug_core1_phase()'s value at the instant of the fault. Remove
-// all of these alongside sensors.c's core1_fault_handler_c() once the
-// investigation is closed.
+// Core1 fault capture: fault_kind is the IPSR exception number that fired
+// (0 = no fault seen this boot; 3 = HardFault, 4 = MemManage, 5 = BusFault,
+// 6 = UsageFault, 7 = SecureFault - see hardware/exception.h's enum
+// exception_number). fault_pc/fault_lr are the faulting instruction address
+// and link register, read off the exception stack frame. fault_cfsr is
+// SCB->CFSR, which sub-reason (bit layout: ARMv8-M architecture reference
+// manual, section on CFSR). The handler these report on stays installed
+// permanently, not because the investigation it was built for is still
+// open (it is not - see docs/decisions/0004/0005), but because it is a
+// genuine safety net and because the invariant checker
+// (tools/invariants/rules/rp2350-amoled-1.8.ts) hardcodes core1_fault_
+// handler as a reachability root: removing it fails the build, not just a
+// diagnostic.
 uint32_t sensors_debug_core1_fault_kind(void);
 uint32_t sensors_debug_core1_fault_pc(void);
 uint32_t sensors_debug_core1_fault_lr(void);
 uint32_t sensors_debug_core1_fault_cfsr(void);
-uint32_t sensors_debug_core1_fault_phase(void);
 
-// TEMPORARY diagnostics: LOCKUP check and stack high-water mark, added
-// chasing the hypothesis that core1 is entering Cortex-M LOCKUP (a fault
-// that cannot itself be entered) rather than blocking or faulting normally
-// - see sensors.c's core1 LOCKUP/stack section for the full argument.
-// halted() reads SYSCFG_PROC_CONFIG.PROC1_HALTED, a shared (not core-
-// private) register, so it is answerable even if core1 cannot execute
-// anything at all. stack_headroom() returns bytes of core1's 2KB stack
-// never touched below the deepest point reached (0 = the whole stack was
-// used at least once) - a canary painted before multicore_launch_core1(),
-// so this is meaningful any time after boot, dead core1 or not.
-bool sensors_debug_core1_halted(void);
-uint32_t sensors_debug_core1_stack_headroom(void);
-
-// TEMPORARY diagnostics: transaction-level progress of the local i2c1 write
-// path (sensors.c's i2c1_write_bytes_bounded()). started/returned are call
-// counts (a freeze with started == returned + 1 means the function never
-// came back); addr and bytesPushed describe the current or last
-// transaction. Plain counter reads, safe from core0 at any time.
-void sensors_debug_i2c1_write_progress(uint32_t *started, uint32_t *returned,
-                                       uint32_t *addr, uint32_t *bytesPushed);
-
-// TEMPORARY diagnostic: the PMIC write self-test's attempt/failure counts -
-// see sensors.c's PMIC_WRITE_SELFTEST block. Both 0 when the gate is off.
+// The PMIC write self-test's attempt/failure counts - see sensors.c's
+// PMIC_WRITE_SELFTEST block. Both 0 when the gate is off (which is how this
+// firmware ships - see that block's comment).
 void sensors_debug_pmic_selftest(uint32_t *writes, uint32_t *fails);
-
-// TEMPORARY diagnostic: i2c1's hardware status, read live from core0 - see
-// sensors.c's sensors_debug_i2c1_live() for the full argument and the ONE
-// CAVEAT (tx_abrt_source is clear-on-read; only call this once core1 is
-// already observed dead, never while it might still be alive).
-void sensors_debug_i2c1_live(uint32_t *enable, uint32_t *enableStatus, uint32_t *status,
-                              uint32_t *rawIntrStat, uint32_t *txAbrtSource,
-                              uint32_t *txflr, uint32_t *rxflr);
-
-// TEMPORARY diagnostics: which wait loop core1's bounded i2c1 write is
-// currently in (0=none, 1=TX_EMPTY wait, 2=STOP_DET wait) and how many
-// passes it has made through the CURRENT entry to that loop - see
-// i2c1_write_bytes_bounded()'s comment in sensors.c. Answerable at any
-// time, including while core1 might still be alive (these do not touch
-// i2c1 itself, just report where core1's own bounded write function is).
-uint32_t sensors_debug_core1_write_wait_kind(void);
-uint32_t sensors_debug_core1_write_wait_spins(void);
-
-// TEMPORARY diagnostic: SDA/SCL sampled as plain GPIO levels, bypassing
-// the i2c peripheral - see sensors.c's sensors_debug_i2c1_pins() for why
-// this is the electrical truth on the wire and the classic "a slave is
-// holding the bus" check. Safe from core0 at any time.
-void sensors_debug_i2c1_pins(bool *sda, bool *scl);
 
 /* ---- FT3168 has no pressure signal, measured -----------------------------
  *

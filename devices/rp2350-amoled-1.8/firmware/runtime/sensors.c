@@ -17,7 +17,6 @@
 #include "pico/multicore.h"
 #include "hardware/sync.h"
 #include "hardware/exception.h"
-#include "hardware/structs/syscfg.h"
 
 #include "DEV_Config.h"
 #include "FT3168.h"
@@ -262,8 +261,10 @@ void sensors_request_poweroff(void) {
  *
  * pico-sdk 2.3.0's i2c_write_blocking_internal() DOES check a timeout on
  * both of its own wait loops (TX_EMPTY and STOP_DET) - read in full while
- * chasing where core1 froze at PHASE_PMIC_CLR, and it is sound. That freeze
- * is not this bug: see core1_entry()'s comment on that investigation.
+ * chasing where core1 froze inside the PMIC clear-write, and it is sound.
+ * That freeze was not an unbounded wait: see docs/decisions/0004/0005 for
+ * the real cause (a corrupted instruction fetch during a flash chip-select
+ * borrow, fixed by copy_to_ram).
  *
  * This local reimplementation exists anyway, on the coordinator's
  * instruction: "on the one core that owns every sensor, an unbounded call is
@@ -275,52 +276,9 @@ void sensors_request_poweroff(void) {
  * file noticing; every wait this core takes is now owned, and auditable, in
  * one place.
  */
-// TEMPORARY diagnostic: which wait loop this function is currently
-// spinning in, and how many passes it has made through the CURRENT entry
-// to that loop (reset to 0 each time a new wait begins, so this reads as
-// "spins so far in the loop it's in right now", not a lifetime total).
-// Added after a real button press reproduced the freeze at
-// PHASE_PMIC_CLR_48 with SYSCFG_PROC_CONFIG.PROC1_HALTED reading 0 - core1
-// is executing, not stopped, which core0's own timeout-bounded loop should
-// already have escaped within I2C_TIMEOUT_US regardless. This is what
-// turns "stuck at phase 15" into "spinning in THIS exact while, N times
-// and counting, or not incrementing at all" - the second case would mean
-// the CPU is not looping in software here either, but stalled on the
-// single register load the while-condition itself evaluates, which is the
-// bus-fabric-hang shape rather than a software loop bug.
-#define WRITE_WAIT_NONE     0
-#define WRITE_WAIT_TX_EMPTY 1
-#define WRITE_WAIT_STOP_DET 2
-static volatile uint32_t g_core1WriteWaitKind;
-static volatile uint32_t g_core1WriteWaitSpins;
-
-// TEMPORARY diagnostic, same investigation: transaction-level progress of
-// the write path, because the wait-kind/spins pair above cannot answer the
-// one question the captured i2c1 register state leaves open. status=0x27
-// with raw_intr_stat=0x510 (TX FIFO empty, master active, START seen, no
-// STOP, no abort) is the same corpse whether (a) all bytes were pushed and
-// the STOP could not complete on the wire, or (b) the feeding core stopped
-// executing between two pushes and the master is waiting for a byte that
-// will never come. These four say which: how many transactions this path
-// ever started, how many returned (started != returned+1 at a freeze means
-// the function itself never came back), the target address, and how many
-// bytes of the current/last transaction were pushed into the FIFO.
-// Written by whichever core runs the function; in normal operation that is
-// core1 only, and the one core0 caller (i2c1_bus_recover(), below) runs
-// only while core1 is held in reset, so there is still exactly one live
-// writer at any moment.
-static volatile uint32_t g_i2cWritesStarted;
-static volatile uint32_t g_i2cWritesReturned;
-static volatile uint32_t g_i2cWriteAddr;
-static volatile uint32_t g_i2cWriteBytesPushed;
-
 static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t len, bool nostop, uint32_t timeout_us) {
     i2c_inst_t *i2c = I2C_PORT;
     absolute_time_t deadline = make_timeout_time_us(timeout_us);
-
-    g_i2cWriteAddr = addr;
-    g_i2cWriteBytesPushed = 0;
-    g_i2cWritesStarted++;
 
     i2c_get_hw(i2c)->enable = 0;
     i2c_get_hw(i2c)->tar = addr;
@@ -337,18 +295,13 @@ static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t le
                 (uint32_t)((first && i2c->restart_on_next) ? 1u : 0u) << I2C_IC_DATA_CMD_RESTART_LSB |
                 (uint32_t)((last && !nostop) ? 1u : 0u) << I2C_IC_DATA_CMD_STOP_LSB |
                 src[byte_ctr];
-        g_i2cWriteBytesPushed = (uint32_t)(byte_ctr + 1);
 
         // Wait for the shift register to take the byte - needs TX_EMPTY_CTRL
         // set in IC_CON, which i2c_init() (pico-sdk) already does.
-        g_core1WriteWaitKind = WRITE_WAIT_TX_EMPTY;
-        g_core1WriteWaitSpins = 0;
         while (!(i2c_get_hw(i2c)->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_EMPTY_BITS)) {
-            g_core1WriteWaitSpins++;
             if (time_reached(deadline)) { abort = true; break; }
             tight_loop_contents();
         }
-        g_core1WriteWaitKind = WRITE_WAIT_NONE;
         if (abort) break;
 
         if (i2c_get_hw(i2c)->raw_intr_stat & I2C_IC_RAW_INTR_STAT_TX_ABRT_BITS) {
@@ -358,14 +311,10 @@ static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t le
 
         if (abort || (last && !nostop)) {
             bool stopTimedOut = false;
-            g_core1WriteWaitKind = WRITE_WAIT_STOP_DET;
-            g_core1WriteWaitSpins = 0;
             while (!(i2c_get_hw(i2c)->raw_intr_stat & I2C_IC_RAW_INTR_STAT_STOP_DET_BITS)) {
-                g_core1WriteWaitSpins++;
                 if (time_reached(deadline)) { stopTimedOut = true; break; }
                 tight_loop_contents();
             }
-            g_core1WriteWaitKind = WRITE_WAIT_NONE;
             abort |= stopTimedOut;
             if (!stopTimedOut) i2c_get_hw(i2c)->clr_stop_det; // matches SDK's own "if (!timeout) clr_stop_det"
         }
@@ -374,7 +323,6 @@ static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t le
     }
 
     i2c->restart_on_next = nostop; // mirrors the SDK's own bookkeeping for a chained transfer
-    g_i2cWritesReturned++;
     return !abort && byte_ctr == len;
 }
 
@@ -418,13 +366,10 @@ static inline bool i2c1_write_reg_to(uint8_t addr, uint8_t reg, uint8_t val) {
  * correctly, read in full) but on the coordinator's instruction to close
  * the whole class regardless. That turned out to matter: a real button
  * press later froze core1 INSIDE this local, hand-verified-bounded write
- * path anyway, with SYSCFG_PROC_CONFIG.PROC1_HALTED reading 0 (core1
- * executing, not stopped/LOCKUP). See core1_entry()'s comment and the spin
- * counters on i2c1_write_bytes_bounded() for where that investigation
- * stands - a software timeout this careful still not escaping points at
- * the register load inside the wait CONDITION itself never completing
- * (a bus-fabric stall), not a loop-logic bug, but that is being measured,
- * not assumed.
+ * path anyway, which is what led the investigation to the real cause -
+ * a corrupted instruction fetch during a flash chip-select borrow, not an
+ * i2c wait escaping its own timeout. See docs/decisions/0004 and
+ * 0005-rca-core1-dies-on-first-button.md for the full chain.
  *
  * This file's reads are always a plain, non-chained transfer (nostop=false,
  * "first byte restarts if the bus is mid-transaction, last byte stops"), so
@@ -691,56 +636,34 @@ static volatile uint32_t g_poweroffCmds;
 static volatile uint32_t g_poweroffRegBefore = 0xFFFFFFFFu; // sentinel: never attempted
 static volatile uint32_t g_poweroffRegAfter = 0xFFFFFFFFu;
 
-// TEMPORARY diagnostic: see core1_entry()'s comment. Remove once the
-// investigation this was added for is closed.
+// PERMANENT: raw per-iteration counter, incremented once at the top of
+// core1_entry()'s loop. Originally added as a temporary diagnostic; kept
+// because it is the sole source for the permanent core1=<n>/s liveness
+// figure in the profiler line (runtime.c) and for the core1-liveness
+// watchdog guard there. Decision 0004: "Core1 liveness is in the permanent
+// profiler line, not in a debug line someone can remove during cleanup. It
+// was removed once during this investigation, which immediately made the
+// bug invisible again." Do not remove this alongside the rest of the
+// investigation's diagnostics.
 static volatile uint32_t g_core1Loops;
 
-// TEMPORARY diagnostic: which step of core1_entry()'s loop body last
-// STARTED. g_core1Loops alone proves core1 stopped iterating, but not WHERE
-// inside one iteration it stopped; this is written immediately before every
-// step that can block (every i2c transaction, specifically) so a live
-// incident can be read back as "stuck inside step N" rather than just
-// "stuck". Remove alongside g_core1Loops once the investigation is closed.
-static volatile uint32_t g_core1Phase;
-#define PHASE_LOOP_TOP         1
-#define PHASE_TOUCH_FINGERS_RD 2
-#define PHASE_TOUCH_XY_RD      3
-#define PHASE_TOUCH_PUSH       4
-#define PHASE_TOUCH_IDLE_PUSH  5
-#define PHASE_STALL_RECOVER    6
-#define PHASE_IMU_RD           7
-#define PHASE_PMIC_RD_S0       8
-#define PHASE_PMIC_RD_S1       9
-#define PHASE_PMIC_RD_S2       10
-#define PHASE_PMIC_CLR         11
-#define PHASE_PMIC_POWEROFF_RD 12
-#define PHASE_PMIC_POWEROFF_WR 13
-#define PHASE_LOOP_BOTTOM      14
-// Sub-phases of PHASE_PMIC_CLR. Originally three (one per write-1-to-clear
-// i2c1 write, when there were three separate transactions), added after a
-// live capture froze AT 11 with no way to tell which one it was in.
-// pmic_poll_core1() now does the clear as a single 4-byte burst transaction
-// (register 0x48 plus three data bytes - see that function's comment for
-// why), so only PHASE_PMIC_CLR_48 is set any more; 49/4A stay defined
-// rather than renumbered, since they may still be read out of old capture
-// logs, but nothing in this file sets them any more.
-#define PHASE_PMIC_CLR_48      15
-#define PHASE_PMIC_CLR_49      16
-#define PHASE_PMIC_CLR_4A      17
-#define PHASE_PMIC_SELFTEST_WR 18
-
-/* ---- TEMPORARY diagnostic: core1 fault capture ---------------------------
+/* ---- core1 fault capture --------------------------------------------------
  *
- * Added after the phase marker above (g_core1Phase) came back stuck at
- * PHASE_LOOP_TOP with none of touch/imu/pmic ever having been mid-read - a
- * result that rules out a blocking i2c call (every i2c call sets its own
- * phase immediately before it runs, and none of those were the last phase
- * written) and points at an actual fault: something between two phase
- * writes, in code with no i2c and no reason to ever not return, stopped
- * executing altogether. exception_set_exclusive_handler() is per-core (see
- * hardware/exception.h's own header comment - "one set of exception
- * handlers per core"), so this has to be installed from core1 itself, once,
- * before the main loop.
+ * Was written up as a temporary diagnostic while chasing whether core1 was
+ * entering a real CPU fault; it was not (see docs/decisions/0004 and 0005 -
+ * the actual killer is a corrupted instruction fetch during a flash
+ * chip-select borrow, which stops core1 dead without ever raising a fault).
+ * The installed handlers stay anyway, for two reasons that have nothing to
+ * do with that investigation: they are a genuine safety net (an uncaught
+ * fault on core1 would otherwise behave however the SDK's default handler
+ * happens to, rather than parking predictably), and the invariant checker
+ * (tools/invariants/rules/rp2350-amoled-1.8.ts) hardcodes core1_fault_handler
+ * as a reachability root and core1_entry's installation of it as an
+ * annotated, expected escape site - removing this would fail that checker,
+ * not just delete a diagnostic. exception_set_exclusive_handler() is
+ * per-core (see hardware/exception.h's own header comment - "one set of
+ * exception handlers per core"), so this has to be installed from core1
+ * itself, once, before the main loop.
  *
  * IPSR (bottom 9 bits, read in the handler itself, not passed in) already
  * names which exception fired - no need for one handler per exception
@@ -756,7 +679,6 @@ static volatile uint32_t g_core1FaultKind;  // IPSR exception number; 0 = no fau
 static volatile uint32_t g_core1FaultPC;
 static volatile uint32_t g_core1FaultLR;
 static volatile uint32_t g_core1FaultCFSR;  // SCB->CFSR (0xE000ED28): which sub-reason
-static volatile uint32_t g_core1FaultPhase; // g_core1Phase at the moment of the fault
 
 // Not static, and marked used/noinline: it is only ever reached from the
 // inline asm branch in core1_fault_handler() below, which the compiler
@@ -768,7 +690,6 @@ static volatile uint32_t g_core1FaultPhase; // g_core1Phase at the moment of the
 void __attribute__((used, noinline)) core1_fault_handler_c(uint32_t *sp) {
     uint32_t ipsr;
     __asm volatile ("mrs %0, ipsr" : "=r" (ipsr));
-    g_core1FaultPhase = g_core1Phase;
     g_core1FaultPC = sp[6];
     g_core1FaultLR = sp[5];
     g_core1FaultCFSR = *(volatile uint32_t *)0xE000ED28u;
@@ -783,87 +704,17 @@ static void __attribute__((naked)) core1_fault_handler(void) {
     );
 }
 
-/* ---- TEMPORARY diagnostic: core1 LOCKUP and stack high-water mark --------
- *
- * Coordinator's hypothesis, after the fully-bounded read/write reimplemen-
- * tation still froze (at both a write and a read - see core1_entry()'s
- * comment): a fault that cannot be entered - because a lower-priority fault
- * is already active, or the exception frame itself cannot be stacked -
- * escalates the Cortex-M core straight into LOCKUP. In LOCKUP no handler
- * ever runs at all, which is the one explanation that fits g_core1FaultKind
- * staying 0 with the handler installed and otherwise working: there is
- * nothing to catch, not a failure to catch it.
- *
- * TWO checks, both readable from core0 regardless of whether core1 can
- * still execute anything:
- *
- * 1. SYSCFG_PROC_CONFIG.PROC1_HALTED (hardware/regs/syscfg.h) - a SHARED
- *    register (SYSCFG is a normal peripheral, not core-private PPB like
- *    DHCSR/S_LOCKUP would be), so core0 can read it directly. It is not
- *    documented as LOCKUP-specific (just "proc1 has halted"), so a positive
- *    reading is corroborating, not definitive on its own, but a clean
- *    negative (never set across a real freeze) would meaningfully weigh
- *    against LOCKUP.
- * 2. A stack canary painted across the whole of core1's stack
- *    (PICO_CORE1_STACK_SIZE, 0x800 bytes, at &__StackLimit per the linker
- *    map - see multicore.c's own core1_stack placement) before
- *    multicore_launch_core1(). Scanned from the LOW end (the deepest a
- *    stack pointer starting at the HIGH end could ever reach) upward: the
- *    first non-canary word marks the lowest address anything ever wrote,
- *    i.e. the high-water mark of core1's real stack usage. If that mark
- *    sits at or near the very bottom, a stack overflow - and MSPLIM being
- *    unable to stack its OWN fault's exception frame once there is no room
- *    left, which is exactly a fault-during-fault-entry - is a live
- *    candidate for what forces LOCKUP.
- *
- * Both are read-only with respect to i2c1 and do not depend on core1
- * executing anything, so they remain answerable no matter how core1 died.
- */
-#define CORE1_STACK_CANARY 0xC1C1C1C1u
-
-// FOUND AND FIXED: this used to be __StackLimit (0x20080000, where
-// core1_stack[] - the .stack1 SECTION - is statically placed), which is
-// why the first version of this instrument always read back "2048/2048
-// intact": that address is not where core1's stack pointer ever lives.
-// Read pico-sdk 2.3.0's multicore.c directly (multicore_launch_core1()) to
-// find the real one:
-//
-//   extern uint32_t __StackOneBottom;
-//   uint32_t *stack_limit = (uint32_t *) &__StackOneBottom;
-//   // hack to reference core1_stack although that pointer is wrong....
-//   uint32_t *stack = core1_stack <= stack_limit ? stack_limit : (uint32_t *) -1;
-//   multicore_launch_core1_with_stack(entry, stack, sizeof(core1_stack));
-//
-// - the SDK's own comment calls this a "hack": multicore_launch_core1()
-// (the plain, no-explicit-stack entry point this file uses) passes
-// __StackOneBottom as stack_bottom, NOT core1_stack's own address, and
-// only uses core1_stack for its SIZE and a sanity assert. Then
-// multicore_launch_core1_with_stack() computes
-// stack_ptr = stack_bottom + stack_size_bytes/4, i.e. the REAL region core1's
-// SP ever occupies is [__StackOneBottom, __StackOneBottom + PICO_CORE1_STACK_SIZE)
-// = [0x20080800, 0x20081000) on this build (confirmed against the .map
-// file's own __StackOneBottom/__StackOneTop symbols) - the SECOND half of
-// the 4KB SCRATCH_X bank, not the region .stack1 itself occupies.
-extern uint32_t __StackOneBottom[];
-
-// Runs on core0, once, before multicore_launch_core1() - see sensors_start().
-static void core1_paint_stack_canary(void) {
-    uint32_t *stack = __StackOneBottom;
-    size_t words = PICO_CORE1_STACK_SIZE / sizeof(uint32_t);
-    for (size_t i = 0; i < words; i++) stack[i] = CORE1_STACK_CANARY;
-}
-
-// Callable from core0 at any time, alive core1 or not - see this section's
-// header comment. Returns bytes of headroom still intact below the deepest
-// point core1's stack pointer is ever known to have reached (0 = every byte
-// of the 2KB stack was touched at least once).
-static uint32_t core1_stack_headroom_bytes(void) {
-    uint32_t *stack = __StackOneBottom;
-    size_t words = PICO_CORE1_STACK_SIZE / sizeof(uint32_t);
-    size_t i = 0;
-    while (i < words && stack[i] == CORE1_STACK_CANARY) i++;
-    return (uint32_t)(i * sizeof(uint32_t));
-}
+// The LOCKUP hypothesis this section's stack canary and PROC1_HALTED check
+// were built to test is closed: docs/decisions/0004 traces the real killer
+// to a corrupted instruction fetch during a flash chip-select borrow, not a
+// Cortex-M LOCKUP, and the fix (copy_to_ram) makes the hazard that caused it
+// impossible by construction. The canary itself was also actively
+// misleading (it reported 2048/2048 bytes free on a core that was calling
+// functions, decision 0004's "a broken instrument that reads fine is worse
+// than no instrument"), and the map-level check that replaced it (invariant
+// rule 4, tools/invariants/rules/rp2350-amoled-1.8.ts) verifies core1's
+// stack region from the linked layout instead of a runtime counter that can
+// lie. Both checks are removed here, not just their output.
 
 static void core1_install_fault_handlers(void) {
     // MemManage/BusFault/UsageFault/SecureFault are routed to HardFault
@@ -924,7 +775,6 @@ static void imu_poll_core1(uint32_t nowMs) {
     lastMs = nowMs;
 
     uint8_t buf[6];
-    g_core1Phase = PHASE_IMU_RD;
     if (!i2c1_read_reg_n_to(QMI8658_I2C_ADDR, QMI8658Register_Ax_L, buf, 6)) {
         g_imuTimeouts++;
         return;
@@ -984,17 +834,15 @@ static void pmic_poll_core1(uint32_t nowMs) {
     lastMs = nowMs;
 
     uint8_t s0 = 0, s1 = 0, s2 = 0;
-    // Split from the original one-line `A && B && C` so each read can be
-    // phase-marked individually - see g_core1Phase's comment. Short-circuit
-    // order is unchanged: s0, then s1, then s2, same as before.
-    g_core1Phase = PHASE_PMIC_RD_S0;
+    // Split from the original one-line `A && B && C` so a live incident
+    // (historically read back via phase markers, since removed - see
+    // docs/decisions/0004) could tell which of the three reads it was in.
+    // Short-circuit order is unchanged: s0, then s1, then s2, same as before.
     bool ok = i2c1_read_reg_n_to(AXP2101_ADDR, 0x48, &s0, 1);
     if (ok) {
-        g_core1Phase = PHASE_PMIC_RD_S1;
         ok = i2c1_read_reg_n_to(AXP2101_ADDR, 0x49, &s1, 1);
     }
     if (ok) {
-        g_core1Phase = PHASE_PMIC_RD_S2;
         ok = i2c1_read_reg_n_to(AXP2101_ADDR, 0x4A, &s2, 1);
     }
     if (!ok) {
@@ -1023,8 +871,6 @@ static void pmic_poll_core1(uint32_t nowMs) {
         // One transaction does not prove the wedge cannot happen; it is
         // strictly less exposure, and by now g_keyEvent above already has
         // the press no matter what this write does.
-        g_core1Phase = PHASE_PMIC_CLR;
-        g_core1Phase = PHASE_PMIC_CLR_48;
         uint8_t clr[4] = { 0x48, s0, s1, s2 };
         i2c1_write_to(AXP2101_ADDR, clr, sizeof(clr));
     }
@@ -1058,11 +904,13 @@ static void pmic_poll_core1(uint32_t nowMs) {
  *     clear, not at the transaction shape.
  *
  * MUST be 0 in anything shipped. Attempts/failures are exported through
- * sensors_debug_pmic_selftest() and printed on the DBG line so the count
- * of completed transactions is visible right up to a freeze.
+ * sensors_debug_pmic_selftest() for anyone polling them by hand; the
+ * shipped profiler line does not print them (that reporting was itself a
+ * temporary diagnostic, removed once the investigation this gate exists
+ * for closed - see docs/decisions/0004).
  */
 #ifndef PMIC_WRITE_SELFTEST
-#define PMIC_WRITE_SELFTEST 1
+#define PMIC_WRITE_SELFTEST 0
 #endif
 
 static volatile uint32_t g_selftestWrites;
@@ -1076,7 +924,6 @@ static void pmic_write_selftest_core1(uint32_t nowMs) {
 
     uint8_t v = (g_selftestWrites & 1u) ? 0xFFu : 0x00u;
     uint8_t clr[4] = { 0x48, v, v, v };
-    g_core1Phase = PHASE_PMIC_SELFTEST_WR;
     g_selftestWrites++;
     if (!i2c1_write_to(AXP2101_ADDR, clr, sizeof(clr))) g_selftestFails++;
 }
@@ -1107,13 +954,11 @@ static void pmic_poweroff_poll_core1(void) {
     // poweroff is ever requested - so this code, gated behind
     // g_poweroffRequested, should be unreachable on that path, but it is
     // the most recent change and is being ruled out first, cheaply).
-    g_core1Phase = PHASE_PMIC_POWEROFF_RD;
     uint8_t cfg = 0;
     bool ok = i2c1_read_reg_n_to(AXP2101_ADDR, AXP2101_REG_COMMON_CONFIG, &cfg, 1);
     g_poweroffRegBefore = cfg;
     if (ok) {
         cfg = (uint8_t)(cfg | AXP2101_SHUTDOWN_BIT);
-        g_core1Phase = PHASE_PMIC_POWEROFF_WR;
         ok = i2c1_write_reg_to(AXP2101_ADDR, AXP2101_REG_COMMON_CONFIG, cfg);
     }
     g_poweroffRegAfter = 0xFEu; // sentinel: readback intentionally skipped, bisecting
@@ -1141,15 +986,9 @@ static void pmic_poweroff_poll_core1(void) {
  * only stops once the line is actually back high.
  */
 static void core1_entry(void) {
-    // Restored. Bisect result read back: with sound_init() removed and this
-    // call also disabled, core1 ran clean for 25s (no freeze) where the same
-    // config with sound_init() active froze at PHASE_PMIC_CLR within ~3.5s,
-    // twice. That correlates the freeze with sound_init() running - but see
-    // runtime.c's sound_init() comment for the confound this does NOT yet
-    // rule out (sound_init() itself costing ~20+ms of boot time, in a race
-    // shown to be sensitive to far smaller perturbations than that). Root
-    // cause is open; this call stays on so a real fault is never invisible
-    // again while that continues.
+    // Installs the fault handlers (see their section comment above): a
+    // genuine safety net, and required by the invariant checker's
+    // reachability root set - not something this loop can skip.
     core1_install_fault_handlers();
 
     uint32_t lastFingerMs = to_ms_since_boot(get_absolute_time());
@@ -1157,30 +996,23 @@ static void core1_entry(void) {
     bool wasTouchLow = false;
 
     while (true) {
-        g_core1Loops++; // TEMPORARY diagnostic: direct, unambiguous proof
-                         // core1 is actually iterating, added while
-                         // investigating why recoveries/reg10h readback
-                         // never moved during a live incident. Remove once
-                         // that investigation is closed.
-        g_core1Phase = PHASE_LOOP_TOP;
+        g_core1Loops++; // see this variable's own comment: permanent, feeds
+                         // the core1=<n>/s liveness figure in runtime.c.
         uint32_t nowMs = to_ms_since_boot(get_absolute_time());
 
         int intLow = (gpio_get(Touch_INT_PIN) == 0);
         if (intLow) {
             uint8_t fingers = 0;
-            g_core1Phase = PHASE_TOUCH_FINGERS_RD;
             bool ok = touch_read_fingers_to(&fingers);
             g_touchReads++;
             uint16_t x = 0, y = 0;
             if (ok && fingers != 0) {
-                g_core1Phase = PHASE_TOUCH_XY_RD;
                 ok = touch_read_xy_to(&x, &y);
                 g_touchReads++;
             }
             if (!ok) {
                 g_touchTimeouts++;
             } else {
-                g_core1Phase = PHASE_TOUCH_PUSH;
                 touch_sample_t s = { nowMs, fingers, x, y };
                 if (!touch_q_push(&s)) g_touchQueueDrops++;
                 if (fingers != 0) lastFingerMs = nowMs;
@@ -1194,7 +1026,6 @@ static void core1_entry(void) {
             bool edge = wasTouchLow;
             wasTouchLow = false;
             if (edge || nowMs - lastIdleHeartbeatMs >= TOUCH_IDLE_HEARTBEAT_MS) {
-                g_core1Phase = PHASE_TOUCH_IDLE_PUSH;
                 lastIdleHeartbeatMs = nowMs;
                 touch_sample_t s = { nowMs, 0, 0, 0 };
                 if (!touch_q_push(&s)) g_touchQueueDrops++;
@@ -1203,7 +1034,6 @@ static void core1_entry(void) {
 
         if (nowMs - lastFingerMs >= TOUCH_STALL_MS) {
             lastFingerMs = nowMs;
-            g_core1Phase = PHASE_STALL_RECOVER;
             touch_recover_core1();
         }
 
@@ -1213,7 +1043,6 @@ static void core1_entry(void) {
         pmic_write_selftest_core1(nowMs);
 #endif
         pmic_poweroff_poll_core1();
-        g_core1Phase = PHASE_LOOP_BOTTOM;
     }
 }
 
@@ -1310,24 +1139,19 @@ void sensors_stats(sensors_stats_t *out) {
     out->poweroffRegAfter = g_poweroffRegAfter;
 }
 
-// TEMPORARY diagnostic accessor for g_core1Loops - see core1_entry()'s
-// comment. Remove alongside it once the investigation is closed.
+// PERMANENT accessor for g_core1Loops - see that variable's own comment.
+// Feeds the core1=<n>/s liveness figure in runtime.c's profiler line and
+// the core1-liveness watchdog guard there.
 uint32_t sensors_debug_core1_loops(void) {
     return g_core1Loops;
 }
 
-// TEMPORARY diagnostic accessor for g_core1Phase - see its comment.
-uint32_t sensors_debug_core1_phase(void) {
-    return g_core1Phase;
-}
-
-// TEMPORARY diagnostic accessors for the core1 fault capture - see
-// core1_fault_handler_c()'s comment.
+// Accessors for the core1 fault capture - see core1_fault_handler_c()'s
+// comment on why the handler itself stays wired in permanently.
 uint32_t sensors_debug_core1_fault_kind(void) { return g_core1FaultKind; }
 uint32_t sensors_debug_core1_fault_pc(void) { return g_core1FaultPC; }
 uint32_t sensors_debug_core1_fault_lr(void) { return g_core1FaultLR; }
 uint32_t sensors_debug_core1_fault_cfsr(void) { return g_core1FaultCFSR; }
-uint32_t sensors_debug_core1_fault_phase(void) { return g_core1FaultPhase; }
 
 void sensors_init(void) {
     QMI8658_init();
@@ -1416,9 +1240,9 @@ static void i2c1_bus_recover(void) {
     // THE OTHER HALF OF THE FIX, found by watching a recovered core1 die
     // again within seconds with nobody touching the device: unwedging the
     // WIRE does not clear the AXP2101's own IRQ status registers
-    // (0x48/0x49/0x4A). The write that was supposed to write-1-to-clear
-    // them (PHASE_PMIC_CLR) is exactly what never completed, so whatever
-    // event set them is still latched on the chip. The instant the
+    // (0x48/0x49/0x4A). The write-1-to-clear that was supposed to clear them
+    // is exactly what never completed, so whatever event set them is still
+    // latched on the chip. The instant the
     // relaunched core1 polls the PMIC again (every 40ms,
     // pmic_poll_core1()), it reads the SAME stale nonzero bits and walks
     // straight back into the same write-clear path - no new button press
@@ -1478,7 +1302,6 @@ static volatile uint32_t g_i2c1Recoveries;
 void sensors_restart_core1(void) {
     multicore_reset_core1();
     i2c1_bus_recover();
-    core1_paint_stack_canary();
     g_i2c1Recoveries++;
     multicore_launch_core1(core1_entry);
 }
@@ -1488,68 +1311,7 @@ uint32_t sensors_debug_i2c1_recoveries(void) {
 }
 
 void sensors_start(void) {
-    core1_paint_stack_canary(); // TEMPORARY, see its comment - must run before launch
     multicore_launch_core1(core1_entry);
-}
-
-// TEMPORARY diagnostic accessors - see the core1 LOCKUP/stack section above.
-bool sensors_debug_core1_halted(void) {
-    return (syscfg_hw->proc_config & SYSCFG_PROC_CONFIG_PROC1_HALTED_BITS) != 0;
-}
-
-uint32_t sensors_debug_core1_stack_headroom(void) {
-    return core1_stack_headroom_bytes();
-}
-
-// TEMPORARY diagnostic: i2c1's own hardware status, read live from core0.
-// Unlike a transaction, a status-register read does not drive the bus, so
-// it does not by itself re-open the concurrency hazard sensors.h's
-// ownership rule exists to prevent (that banner's own reasoning is about
-// two cores issuing TRANSACTIONS concurrently and interleaving on the
-// wire; this issues none). Added because the one-shot post-sound_init
-// snapshot (g_i2c1PostSound*, runtime.c) only ever showed the bus BEFORE
-// anything interesting happens; this is callable every profiler tick, so
-// the LAST reading before a freeze is the state AT (or a second after) the
-// hang, which is the one the coordinator actually asked to decode.
-//
-// ONE CAVEAT THAT DOES MATTER: tx_abrt_source is clear-on-read (datasheet,
-// and see pmic_poweroff_poll_core1()'s own comment on the twin register).
-// Calling this while core1 is STILL ALIVE could clear an abort flag out
-// from under core1's own next read of it, which core1 relies on for real
-// (touch/imu/pmic timeout accounting) - a live core1 is the ownership
-// rule's actual concern, not a dead one. The caller (runtime.c) MUST gate
-// this on core1 already being observed dead (core1LoopsPerSec == 0) - see
-// the call site there.
-void sensors_debug_i2c1_live(uint32_t *enable, uint32_t *enableStatus, uint32_t *status,
-                              uint32_t *rawIntrStat, uint32_t *txAbrtSource,
-                              uint32_t *txflr, uint32_t *rxflr) {
-    i2c_hw_t *hw = i2c_get_hw(I2C_PORT);
-    *enable = hw->enable;
-    *enableStatus = hw->enable_status;
-    *status = hw->status;
-    *rawIntrStat = hw->raw_intr_stat;
-    *txAbrtSource = hw->tx_abrt_source; // clear-on-read: this is the only
-                                         // reader anywhere of this register
-                                         // now that core1 is presumed dead,
-                                         // so reading it here does not race
-                                         // core1's own (now-moot) reads.
-    *txflr = hw->txflr;
-    *rxflr = hw->rxflr;
-}
-
-// TEMPORARY diagnostic accessors for the write-side spin counters - see
-// i2c1_write_bytes_bounded()'s comment.
-uint32_t sensors_debug_core1_write_wait_kind(void) { return g_core1WriteWaitKind; }
-uint32_t sensors_debug_core1_write_wait_spins(void) { return g_core1WriteWaitSpins; }
-
-// TEMPORARY diagnostic accessors for the write-side transaction progress -
-// see the g_i2cWritesStarted block's comment above i2c1_write_bytes_bounded().
-void sensors_debug_i2c1_write_progress(uint32_t *started, uint32_t *returned,
-                                       uint32_t *addr, uint32_t *bytesPushed) {
-    *started = g_i2cWritesStarted;
-    *returned = g_i2cWritesReturned;
-    *addr = g_i2cWriteAddr;
-    *bytesPushed = g_i2cWriteBytesPushed;
 }
 
 // TEMPORARY diagnostic accessor for the PMIC write self-test - see the
@@ -1557,20 +1319,4 @@ void sensors_debug_i2c1_write_progress(uint32_t *started, uint32_t *returned,
 void sensors_debug_pmic_selftest(uint32_t *writes, uint32_t *fails) {
     *writes = g_selftestWrites;
     *fails = g_selftestFails;
-}
-
-// TEMPORARY diagnostic: SDA/SCL read as plain GPIO levels, bypassing the
-// i2c peripheral entirely - gpio_get() reads the pad's synchronized input
-// value regardless of which function (GPIO_FUNC_I2C here) the pin is
-// muxed to, so this is the ELECTRICAL truth on the wire, not the
-// peripheral's opinion of it. The classic "a slave is holding SDA low"
-// bus-lockup signature: if SDA reads 0 with nobody mid-transaction, no
-// master, this one included, can ever complete a START condition again,
-// and the fix is a bus recovery (toggle SCL manually, clock out up to nine
-// pulses, issue a STOP) rather than anything in the transaction code
-// above. Safe from core0 at any time: reading a GPIO input level is not a
-// bus transaction and cannot race core1's own use of the pins.
-void sensors_debug_i2c1_pins(bool *sda, bool *scl) {
-    *sda = gpio_get(DEV_SDA_PIN) != 0;
-    *scl = gpio_get(DEV_SCL_PIN) != 0;
 }
