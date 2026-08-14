@@ -618,12 +618,24 @@ async function main() {
             `${offBand1.length} pixel(s) outside the marker's window, e.g. ${JSON.stringify(offBand1[0])}`,
         );
         if (whites1.length > 0) {
+            // The head's mark used to be a straight radial cut spanning the
+            // ring's full width, and this assertion checked exactly that.
+            // It is now an arc that FADES OUT where it meets the ring's two
+            // borders, because the owner read the old full-weight version as
+            // "un demi-cercle dans le coil" rather than a closure of it.
+            //
+            // So the property worth pinning is no longer the span, it is the
+            // taper: the mark must live around the ring's midline and must
+            // NOT reach either border, since reaching them is precisely what
+            // made it read as a second border rather than an end.
             const radii = whites1.map((w) => w.r);
-            const spanPx = Math.max(...radii) - Math.min(...radii);
+            const midR = (RING_OUTER_R + RING_INNER_R) / 2;
+            const worst = Math.max(...radii.map((r) => Math.abs(r - midR)));
+            const halfBand = RING_THICK_PX / 2;
             check(
-                "the white band spans close to the ring's FULL radial width (RING_OUTER_R to RING_INNER_R), not a partial strip",
-                spanPx >= RING_THICK_PX - 1 - 4 * RADIUS_TOL_PX,
-                `radial span=${spanPx}px, full width=${RING_THICK_PX}px`,
+                "the head's mark tapers away before the ring's borders, instead of butting into them",
+                worst < halfBand - 1,
+                `furthest bright pixel is ${worst.toFixed(1)}px from the midline, border is at ${halfBand}px`,
             );
         }
 

@@ -1666,6 +1666,25 @@ static void paint_head_outline_row(int y, int rowIdx, float deg) {
         float cov = covOut < covIn ? covOut : covIn;
         if (cov <= 0.0f) continue;
         if (cov > 1.0f) cov = 1.0f;
+        // Fade to nothing at the two points where the crescent meets the
+        // ring's own borders. Owner, on the panel: "c'est comme si tu
+        // dessinais un demi-cercle dans le coil, on n'a pas l'impression que
+        // ça parte des bordures, donc pas l'impression que ce soit une
+        // fermeture", and the junction "est très abrupte, on a l'impression
+        // que c'est la bordure du coil aussi".
+        //
+        // He is right, and the cause is that the crescent kept its full
+        // weight right up to the border and then stopped dead, so the eye
+        // reads two strokes crossing rather than one tube closing. A real
+        // closure thins out as it turns into the wall. u is the pixel's
+        // radial position across the ring, 0 at the midline and 1 at either
+        // border, so 1 - u*u is full weight at the front of the cap and zero
+        // exactly where the crescent would otherwise butt into the ink.
+        float radial = sqrtf(((float)dx + 0.5f) * ((float)dx + 0.5f) + dyCenter * dyCenter);
+        float u = (radial - (float)RING_MID_R) / (float)CAP_R;
+        if (u < -1.0f) u = -1.0f; else if (u > 1.0f) u = 1.0f;
+        cov *= (1.0f - u * u);
+        if (cov <= 0.0f) continue;
         // Keep the leading half only. Measured as a wrapped difference
         // rather than a plain comparison, because at the 30:00 ceiling the
         // head sits at exactly 360 and "ahead of it" means angles just past
@@ -2602,7 +2621,14 @@ static void timer_tick(const app_frame_t *f) {
             // every 250ms instead of letting it repeat on its own ~1.5s
             // period (sound_synth.c) - audibly chopped, not "repeated
             // gently". One call here is the whole hook.
-            sound_play(SOUND_ID_TIMER_ALARM);
+            //
+            // SILENT, 2026-08-14, owner's decision: "j'aimerais que tu
+            // enlèves les sons de l'application minuteur". The chime itself
+            // is kept in sound_synth.c and the hook above still describes
+            // where it went, because this is a product choice and not a
+            // defect: putting it back is uncommenting one line. The alarm
+            // still announces itself by flashing the whole panel.
+            // sound_play(SOUND_ID_TIMER_ALARM);
             printf("timer: ringing\r\n");
             return;
         }
