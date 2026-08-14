@@ -37,10 +37,53 @@ extern const app_t g_fourApp;
 extern const app_t g_menuApp;
 extern void menu_set_return_app(int index);
 
+/* SCREENSHOT FIXTURE, compiled out by default. See apps/stubapps.c for the
+ * whole argument; in one line: the menu's layout has to be judged at six and
+ * twelve apps and this firmware declares four, so the emulator build can be
+ * told to append do-nothing apps and the capture then comes out of the real
+ * menu_enter() instead of a script re-implementing it. Declared with a bare
+ * extern, the same way g_menuApp above is, because runtime_core.h's contract
+ * is that this file includes nothing from apps/.
+ *
+ * MENU_STUB_APPS is the TOTAL app count wanted (4 real + the rest stubs), so
+ * MENU_STUB_APPS=12 appends eight. Spelled out one #if per entry rather than
+ * generated with a macro: a static initialiser list is exactly the place
+ * where clever expansion stops being readable, and eight lines that say what
+ * they do cost nothing. */
+#if MENU_STUB_APPS
+extern const app_t g_stubApps[];
+#endif
+
 // Appended, not inserted: index 0 is what boots (app.h) and every emulator
 // test in emulator/wasm/tests/ addresses apps by their index in this array
 // (APP_DRAW = 1 and so on), so a new app goes on the end.
-const app_t *const g_apps[] = { &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp };
+const app_t *const g_apps[] = {
+    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp,
+#if MENU_STUB_APPS > 4
+    &g_stubApps[0],
+#endif
+#if MENU_STUB_APPS > 5
+    &g_stubApps[1],
+#endif
+#if MENU_STUB_APPS > 6
+    &g_stubApps[2],
+#endif
+#if MENU_STUB_APPS > 7
+    &g_stubApps[3],
+#endif
+#if MENU_STUB_APPS > 8
+    &g_stubApps[4],
+#endif
+#if MENU_STUB_APPS > 9
+    &g_stubApps[5],
+#endif
+#if MENU_STUB_APPS > 10
+    &g_stubApps[6],
+#endif
+#if MENU_STUB_APPS > 11
+    &g_stubApps[7],
+#endif
+};
 const int g_appCount = sizeof(g_apps) / sizeof(g_apps[0]);
 
 // Startup-only sentinel: "nothing has been entered yet", so do_switch()'s
@@ -584,6 +627,66 @@ static void poweroff_gesture_tick(uint32_t nowMs, uint8_t key) {
     }
 }
 
+/* ---- orientation: rotated into the app's own space, once, here -----------
+ *
+ * tilt.h publishes gravity in PANEL space. Half this device's apps draw in
+ * LANDSCAPE space (app_t.landscape), through gfx's rotation, and handing
+ * those a panel-space vector would mean every one of them rotating it back
+ * by hand - which is the written-twice seam tilt.h exists to prevent,
+ * reintroduced one link further along, and in the worst possible place: a
+ * spirit level whose bubble moves at ninety degrees to the tilt passes
+ * every automated check this project can build, because no software oracle
+ * knows which way is up.
+ *
+ * So the runtime rotates it, exactly like gfx_land_rect() already rotates
+ * rectangles for the same apps, and an app reads gravity in the same
+ * coordinates it draws in.
+ *
+ * The mapping, derived from gfx.h's own: landscape (lx, ly) -> panel
+ * (PANEL_W - 1 - ly, lx). Differentiating that (a direction has no origin,
+ * so the constant drops out) gives panel direction (dpx, dpy) from
+ * landscape (dlx, dly) as (-dly, dlx), and the inverse - which is what is
+ * needed here, panel to landscape - as:
+ *
+ *     dlx =  dpy
+ *     dly = -dpx
+ *
+ * Sanity check against the physical device: held sideways with the buttons
+ * along the top edge (gfx.h's landscape posture), gravity reads (-1, 0) in
+ * panel axes, which comes out (0, +1) in landscape axes: straight down the
+ * screen the app drew. Correct.
+ *
+ * The up-edge code rotates the same way, as a relabelling: the panel's
+ * right edge IS the landscape top edge, so land = (panel + 3) % 4.
+ * gz is unchanged by any rotation about the panel normal, by definition.
+ */
+static app_tilt_t tilt_for_app(const tilt_reading_t *r, bool landscape) {
+    app_tilt_t t;
+    t.tiltDeg = r->tiltDeg;
+    t.valid = r->valid;
+    t.gz = r->gz;
+    if (landscape) {
+        t.gx = r->gy;
+        t.gy = -r->gx;
+        t.up = (uint8_t)((r->up + 3u) % 4u);
+    } else {
+        t.gx = r->gx;
+        t.gy = r->gy;
+        t.up = r->up;
+    }
+    return t;
+}
+
+// The last thing handed to an app, kept for the one-off instruments that
+// have to read at the app boundary rather than at the sensor: devlink's
+// TILT command (the axis ritual in tilt.h) and the emulator's headless
+// orientation test. Nothing in the runtime's own logic reads this.
+static app_tilt_t g_lastAppTilt;
+
+void rtcore_last_tilt(app_tilt_t *out) {
+    *out = g_lastAppTilt;
+}
+
 /* ---- lifecycle: what the host drives -------------------------------------- */
 
 // Whether this is the very first tick, so dtMs reads 0 for it instead of
@@ -732,6 +835,17 @@ void rtcore_tick(uint32_t nowMs) {
         bool bumped = (seq != lastEraseSeq);
         lastEraseSeq = seq;
         frame.shaken = bumped && g_currentApp->wantsShake;
+    }
+
+    // Orientation. Read once per frame, rotated into whatever space the
+    // current app draws in (see tilt_for_app above), and handed over with
+    // no opt-in flag: it consumes nothing and destroys nothing, unlike
+    // shake.
+    {
+        tilt_reading_t r;
+        tilt_read(nowMs, &r);
+        frame.tilt = tilt_for_app(&r, g_currentApp->landscape);
+        g_lastAppTilt = frame.tilt;
     }
 
     g_currentApp->tick(&frame);

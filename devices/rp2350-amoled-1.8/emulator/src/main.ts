@@ -422,6 +422,13 @@ function buildChrome(d: DeviceDescriptor): void {
       // earlier, gentler kick here was visually indistinguishable from
       // noise).
       if (sensor.id.toLowerCase() === "shake") puckMotion.impulse((Math.random() - 0.5) * 500, (Math.random() - 0.5) * 380);
+    }, (_sensor, index, x, y, z) => {
+      // A vector sensor's value is STICKY (emu_abi.h), so it belongs in the
+      // trace like any other input: a replay that skipped it would run the
+      // whole recorded session at the module's boot pose, and an
+      // orientation-driven app would do something else entirely. Recorded
+      // with the current tick's timestamp, same as every other input event.
+      recorder.record({ t: performance.now(), k: "sensorv", i: index, x, y, z });
     });
     appStripControl = buildAppStrip($("#appStrip"), d.apps || [], emu);
 

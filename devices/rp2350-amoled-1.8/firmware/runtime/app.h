@@ -55,6 +55,63 @@ void *app_alloc(size_t bytes);
 // Zeroed convenience form, which is what an app's state struct always wants.
 #define APP_STATE(type) ((type *)app_alloc(sizeof(type)))
 
+/* ---- which way is up ----------------------------------------------------
+ *
+ * The four edges of the app's OWN drawing space (see app_tilt_t.up). "Top"
+ * is the top of what the app draws, not the top of the panel: a landscape
+ * app's top edge is the panel's right edge, and the runtime has already
+ * done that rotation by the time an app reads this.
+ */
+#define TILT_UP_TOP    0
+#define TILT_UP_RIGHT  1
+#define TILT_UP_BOTTOM 2
+#define TILT_UP_LEFT   3
+
+/* Orientation, as an app sees it. Published once for every app, by
+ * firmware/runtime/tilt.h, which carries the full reasoning: the units, the
+ * representations that were rejected, the filter and its numbers, and the
+ * ritual that settles the axis mapping on real hardware. Read that file
+ * before building anything on this; the short version is here.
+ *
+ * THERE IS NO MAGNETOMETER ON THIS BOARD. This tells you which way is DOWN.
+ * It can never tell you which way is NORTH, and no amount of work on top of
+ * it will produce a heading, because the QMI8658 is a six-axis part
+ * (accelerometer and gyroscope) and nothing else on the board senses the
+ * earth's field. A compass cannot be built here.
+ */
+typedef struct {
+    // Gravity, in units of g, in THIS APP'S OWN drawing space: +x is the
+    // direction its x grows (right), +y the direction its y grows (down the
+    // screen as it drew it), +z straight into the glass. Lying flat on a
+    // table, screen up, is (0, 0, 1). Held upright with the app's top edge
+    // up is (0, 1, 0). A ball rolls toward (gx, gy); a bubble floats away
+    // from it.
+    //
+    // Already filtered (150ms time constant, see tilt.h). There is
+    // deliberately no raw vector here: one signal, so the device feels the
+    // same in every app.
+    float gx, gy, gz;
+
+    // Angle between the screen's inward normal and gravity, in degrees:
+    // 0 = flat with the screen up, 90 = on edge, 180 = flat face down.
+    // This is the "how far from flat" a spirit level wants, and the test an
+    // app uses to decide it is lying on a table.
+    float tiltDeg;
+
+    // Which edge of this app's own drawing space is the highest one, one of
+    // TILT_UP_TOP/RIGHT/BOTTOM/LEFT above. Hysteretic, and it HOLDS its
+    // last answer while the device is too flat to have one, so an
+    // orientation-aware app laid on a table keeps the orientation it had
+    // instead of flickering.
+    uint8_t up;
+
+    // False until the IMU has produced a reading, and false again if it has
+    // gone quiet. An app that draws a level, a ball or a rotated clock from
+    // an invalid reading draws a confident lie; check this before trusting
+    // the rest of the struct.
+    bool valid;
+} app_tilt_t;
+
 /* ---- input the runtime hands to the app --------------------------------
  *
  * Apps read signals, never chips (see sensors.h for why that rule is
@@ -94,6 +151,13 @@ typedef struct {
     // Bumped when an accepted shake happened, and only delivered to apps
     // that asked for it.
     bool     shaken;
+
+    // Which way is down, in this app's own drawing space. Always present,
+    // no opt-in flag: unlike shake (which is destructive and belongs only
+    // where erasing is the app's identity), reading gravity costs an app
+    // nothing and consumes nothing, so there is no reason to gate it. See
+    // app_tilt_t above, and firmware/runtime/tilt.h for the whole argument.
+    app_tilt_t tilt;
 
     uint32_t nowMs;
     uint32_t dtMs;           // since the previous tick, clamped

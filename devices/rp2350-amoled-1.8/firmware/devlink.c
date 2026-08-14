@@ -330,6 +330,52 @@ static void devlink_print_tune_value(float v) {
     }
 }
 
+/* ---- TILT: the orientation readback, for the axis ritual -----------------
+ *
+ * One line, nine fields:
+ *
+ *   TILT <rawX> <rawY> <rawZ> <gx> <gy> <gz> <deg> <up> <valid>
+ *
+ * raw* is the accelerometer's own three axes, straight off the part; g* is
+ * the same reading after the runtime has mapped and filtered it into the
+ * space an app actually sees; up is 0 top, 1 right, 2 bottom, 3 left of
+ * that same space; valid is 0 or 1. Everything is in g except deg, which is
+ * the angle from flat. This file does not know what any of that means (see
+ * devlink.h's tilt_read hook); the host prints it in words.
+ *
+ * WHY THE RAW AXES ARE ON THIS LINE AT ALL. They are the whole point of the
+ * command. firmware/runtime/tilt.h's device-to-panel mapping is a
+ * HYPOTHESIS that no test can check, because nothing in software knows
+ * which way is up, and the only way to settle it is to hold the board in
+ * five known poses and compare what the part reported against what the
+ * runtime published. Without raw, a wrong pose says "something is wrong"
+ * and cannot say what.
+ */
+static void devlink_print_signed(float v) {
+    // Three decimals, signed, because these values live in [-1, 1] and the
+    // sign IS the measurement. Same reasoning as devlink_print_tune_value
+    // above for not using %f: nothing else in this firmware asks its libc
+    // to format a float, and this is not the place to find out whether it
+    // can.
+    if (v < 0.0f) { printf("-"); v = -v; }
+    long thousandths = (long)(v * 1000.0f + 0.5f);
+    printf("%ld.%03ld", thousandths / 1000, thousandths % 1000);
+}
+
+static void devlink_tilt(void) {
+    float raw[3], g[3], deg = 0.0f;
+    int up = 0, valid = 0;
+    if (!g_hooks.tilt_read || !g_hooks.tilt_read(raw, g, &deg, &up, &valid)) {
+        printf("ERR no tilt\r\n");
+        return;
+    }
+    printf("TILT ");
+    for (int i = 0; i < 3; i++) { devlink_print_signed(raw[i]); printf(" "); }
+    for (int i = 0; i < 3; i++) { devlink_print_signed(g[i]); printf(" "); }
+    devlink_print_signed(deg);
+    printf(" %d %d\r\n", up, valid);
+}
+
 // Takes one whitespace-separated word from *s into out (truncated to
 // outCap-1 if longer, with any overflow tail still consumed so parsing
 // resyncs on the next word rather than the leftover characters). Advances
@@ -602,6 +648,8 @@ static void devlink_dispatch(char *line) {
         if (!devlink_parse_one_int(args, &idx)) { printf("ERR args\r\n"); return; }
         bool ok = g_hooks.app_switch ? g_hooks.app_switch(idx) : false;
         printf(ok ? "OK\r\n" : "ERR range\r\n");
+    } else if (strcmp(cmd, "TILT") == 0) {
+        devlink_tilt();
     } else if (strcmp(cmd, "TUNE") == 0) {
         devlink_dispatch_tune(args);
     } else {

@@ -1,0 +1,225 @@
+/*
+ * tilt: which way is down, published once, for every app that wants it.
+ *
+ * THE POINT OF THIS FILE IS THAT THERE IS ONE OF IT. A spirit level, a
+ * tilt-a-ball game and an orientation-aware clock all need the same fact,
+ * and before this file existed the QMI8658 was read for exactly one purpose
+ * (detecting a shake, for the sketchpad's erase) and app_frame_t carried no
+ * gravity at all. Three apps written in the same week would have grown three
+ * private IMU shims, which is the "written twice" seam this project has
+ * already paid to diagnose twice (docs/decisions/0003 and 0008). An app
+ * never reads this header either: it reads app_frame_t.tilt (app.h), the
+ * same way it already reads touchDown and nowMs.
+ *
+ * THERE IS NO MAGNETOMETER ON THIS BOARD. The QMI8658 is a six-axis part,
+ * accelerometer plus gyroscope, and nothing else on this board senses the
+ * earth's magnetic field. So this signal can tell you which way is DOWN and
+ * it can never tell you which way is NORTH. A compass app cannot be built
+ * here; a which-way-is-down toy can. If you came looking for a heading,
+ * stop now rather than an evening from now (docs/decisions/0010 says the
+ * same thing, and this sentence exists because that document predicted
+ * someone would find it here instead).
+ *
+ * WHAT IS PUBLISHED, AND WHY THAT SHAPE
+ *
+ * One filtered gravity vector in units of g, in the panel's own coordinate
+ * space, plus two things derived from it that every consumer would
+ * otherwise re-derive slightly differently: the angle from flat, and which
+ * edge is up.
+ *
+ *   +x  toward increasing panel x (to the right of the screen as drawn)
+ *   +y  toward increasing panel y (down the screen as drawn)
+ *   +z  INTO the glass, away from the person looking at it
+ *
+ * so lying flat on a table, screen up, reads (0, 0, +1): gravity points
+ * straight through the screen into the table. Held upright, portrait, top
+ * edge up, reads (0, +1, 0): gravity points at the bottom edge. The axes
+ * are right-handed with y down, which is the same handedness the framebuffer
+ * already uses, so no app has to hold two coordinate systems in its head.
+ *
+ * WHAT WAS REJECTED, because each choice pushes work into a different
+ * consumer and this one pushes the least:
+ *
+ *   An angle-and-direction pair (how far from flat, which way downhill).
+ *   Reads beautifully for the spirit level and forces the ball game to run
+ *   a sin and a cos every tick to get back the vector it actually wanted to
+ *   integrate. Kept as a DERIVED field (tiltDeg) rather than as the
+ *   representation.
+ *
+ *   Raw device-axis g, straight off the part. Every consumer would then
+ *   carry its own copy of the device-to-screen mapping below, which is the
+ *   one piece of this whole signal that no software oracle can check (see
+ *   THE AXIS RITUAL). One wrong copy is a spirit level that leans the wrong
+ *   way and passes every test this project can ever write.
+ *
+ *   A four-way orientation only (which of top/right/bottom/left is up).
+ *   Enough for the clock, useless for the other two. Kept as a DERIVED
+ *   field (up) rather than as the representation, because the hysteresis
+ *   that makes it stable is a policy decision and belongs here, once, not
+ *   in three apps with three different dead bands.
+ *
+ *   Screen-space "down" as a unit vector, magnitude thrown away. Cheaper,
+ *   and it destroys the one thing the ball game needs when the device is
+ *   near flat: a small tilt must produce a small acceleration.
+ *
+ * FILTERING IS DECIDED HERE, ONCE, AND THE PUBLISHED SIGNAL IS FILTERED
+ *
+ * An accelerometer in a child's hand is never still. If each app filtered
+ * its own way the same hardware would feel different in each, which is
+ * worse than any single choice, so this file publishes exactly ONE vector
+ * and it is the filtered one. There is deliberately no raw vector on the
+ * app-facing side: offering both is offering the divergence back, and the
+ * app that picked "raw, for responsiveness" would be shipping the jitter.
+ *
+ * One-pole exponential filter, time constant TILT_TAU_MS = 150ms:
+ *
+ *   filtered += (1 - exp(-dt / TAU)) * (sample - filtered)
+ *
+ *   - at the board's 20ms IMU cadence (sensors.c's IMU_POLL_MS) that is a
+ *     step of exactly 0.125, one eighth of the way to each new sample;
+ *   - corner frequency 1/(2*pi*TAU) = 1.06Hz. Deliberate tilting is under
+ *     1Hz and hand tremor is 5Hz and up, so tremor comes through about 5x
+ *     smaller and broadband sensor noise about 4x smaller
+ *     (sqrt(a/(2-a)) = 0.26 for a = 0.125);
+ *   - the cost, stated rather than hidden: the signal LAGS THE HAND. A step
+ *     reaches 63 percent in 150ms and 95 percent in 450ms. Too little
+ *     filtering and a level's bubble buzzes; too much and it swims behind
+ *     the hand. 150ms was chosen as the point where a bubble reads as
+ *     liquid rather than as lag, and it has NOT been judged on the real
+ *     device by a real hand yet. It is one constant, in one place, and the
+ *     first person to hold a spirit level on the board should change it if
+ *     it feels wrong.
+ *
+ * The filter is stepped from dt, not from a fixed per-sample constant, on
+ * purpose: the board samples every 20ms on core1, the emulator submits once
+ * per browser frame at whatever rate the tab is running, and a filter whose
+ * time constant depends on the caller's cadence would make the emulator and
+ * the board feel different for a reason that has nothing to do with either.
+ *
+ * WHERE IT RUNS. On the board this is stepped from core1, inside the IMU
+ * poll that already runs there, because core1 owns i2c1 (sensors.h's
+ * ownership rule) and because core1's 20ms cadence is regular while core0's
+ * loop rate is not: pushes cost anywhere from 27us to 12ms, so filtering on
+ * core0 would make the time constant depend on how much the app drew last
+ * frame. Nothing in here printfs, for the same reason nothing else on
+ * core1 does.
+ *
+ * THE AXIS RITUAL, WHICH IS THE ONLY THING THAT CAN CHECK THE MAPPING
+ *
+ * device_to_panel() below converts the QMI8658's own axes into the panel
+ * axes described above. WHICH WAY THE PART IS MOUNTED ON THIS BOARD IS NOT
+ * KNOWN TO ANY DOCUMENT IN THIS REPOSITORY: the schematic in AGENTS.md
+ * gives the pins, not the footprint's rotation, and the vendor demo only
+ * ever prints the numbers. The mapping below is therefore a HYPOTHESIS
+ * (identity, the fewest assumptions), and no test can falsify it, because
+ * no software oracle knows which way is up. Only hands do.
+ *
+ * So run this once, on the real board, and then this comment stops being a
+ * hypothesis (about two minutes; the board must be awake and plugged in):
+ *
+ *   1. bun tools/dev.ts tilt        (devlink's TILT command)
+ *   2. Lie the puck flat on a table, screen up. Expect g = (0, 0, +1).
+ *   3. Hold it upright, portrait, top edge up. Expect g = (0, +1, 0).
+ *   4. Turn it a quarter turn so its RIGHT edge is up. Expect
+ *      g = (-1, 0, 0), and up = LEFT.
+ *   5. Turn it screen down on the table. Expect g = (0, 0, -1), tilt 180.
+ *
+ * Every line also prints the RAW device-axis reading, so if a pose comes
+ * out wrong, the correction is one edit to device_to_panel() and nothing
+ * else in the tree moves. Write what was measured into that function's
+ * comment, delete the word HYPOTHESIS, and the mapping is settled forever.
+ *
+ * WHAT NO INSTRUMENT HERE CAN SEE (docs/decisions/0010's discipline: say
+ * what is blind before writing the code, not after the bug):
+ *   - the axis mapping, per the ritual above;
+ *   - whether the filter's 150ms feels right in a hand, which is a
+ *     judgement no emulator can make (emu_abi.h already says timing is not
+ *     real there, and the emulator's gravity is a perfectly still,
+ *     perfectly unit vector with no tremor and no shake artifacts at all);
+ *   - whether the part is level with the case. The IMU is soldered to the
+ *     PCB, the PCB sits in a plastic shell, and a couple of degrees of
+ *     assembly tilt would show up as a spirit level that never quite reads
+ *     zero. Nothing in software can tell that apart from a genuinely
+ *     un-level table, so if the owner reports "it never centres", the fix
+ *     is a measured offset, not a bigger dead band.
+ */
+#ifndef TILT_H
+#define TILT_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "app.h" // for TILT_UP_*, which are the app-facing names for the
+                 // same four codes this file computes. One set of
+                 // constants, defined where an app author will read them.
+
+/* ---- the published reading ---------------------------------------------
+ *
+ * PANEL space (see the header comment). runtime_core.c rotates this into a
+ * landscape app's own drawing space before it reaches app_frame_t.tilt, so
+ * an app never sees this struct and never rotates anything itself.
+ */
+typedef struct {
+    // Filtered gravity, g units, panel axes.
+    float gx, gy, gz;
+
+    // Angle between the panel's inward normal and gravity, degrees:
+    // 0 = flat, screen up. 90 = on edge. 180 = flat, screen down.
+    float tiltDeg;
+
+    // Which panel edge is up: TILT_UP_TOP / RIGHT / BOTTOM / LEFT (app.h).
+    // Hysteretic, and HELD (not cleared) while the device is too flat to
+    // have an answer - see the header comment on why this is published
+    // rather than left to three apps to derive.
+    uint8_t up;
+
+    // False until the first sample arrives, and false again if no sample
+    // has arrived for TILT_STALE_MS. An app that draws a level from an
+    // invalid reading draws a confident lie, which is the failure decision
+    // 0010 describes for a clock with an unset RTC. Check it.
+    bool valid;
+
+    // RAW, unfiltered, in the QMI8658's OWN axes, for the axis ritual and
+    // for devlink's TILT line. Deliberately not carried into app_frame_t:
+    // an app that reads device axes is an app that has to know how the
+    // part is mounted, which is exactly the knowledge this file exists to
+    // hold in one place.
+    float rawX, rawY, rawZ;
+} tilt_reading_t;
+
+// The filter's time constant, and how long a published reading stays
+// trustworthy without a fresh sample. TILT_STALE_MS is 25 missed samples at
+// the board's 20ms cadence: long enough that a couple of i2c timeouts
+// (sensors_stats_t.imuTimeouts) do not blink an app's display, short enough
+// that a genuinely dead part is visible rather than frozen at its last
+// pose.
+#define TILT_TAU_MS   150.0f
+#define TILT_STALE_MS 500u
+
+/* ---- the producer side --------------------------------------------------
+ *
+ * One raw accelerometer reading, in the QMI8658's own axes, in g. Called
+ * from core1 on the board (sensors.c's imu_poll_core1, which already does
+ * this i2c read for the shake detector, so this adds no bus traffic at all)
+ * and from emu_tick() in the emulator (emu_shim.c). nowMs is the same clock
+ * the rest of the frame uses; dt between calls drives the filter.
+ *
+ * Single writer, always: on the board this is core1 and only core1, per
+ * sensors.h's ownership rule.
+ */
+void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs);
+
+/* ---- the consumer side --------------------------------------------------
+ *
+ * Reads the published signal. Called from core0 on the board (once per
+ * frame, by runtime_core.c) and from devlink's TILT command. Never blocks,
+ * never fails: if it catches the writer mid-update it returns the previous
+ * consistent snapshot rather than a torn vector (see tilt.c's seqlock).
+ *
+ * nowMs is passed in rather than read, because the staleness check is the
+ * consumer's clock question and because rtcore_tick()'s nowMs is the only
+ * time source the emulator has (emu_abi.h).
+ */
+void tilt_read(uint32_t nowMs, tilt_reading_t *out);
+
+#endif // TILT_H

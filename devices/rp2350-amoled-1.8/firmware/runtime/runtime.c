@@ -204,6 +204,42 @@ static bool devlink_hook_app_switch(int index) {
     return true;
 }
 
+// TILT: the orientation readback devlink prints (devlink.h's tilt_read
+// hook), which is how firmware/runtime/tilt.h's axis ritual is actually
+// run. Two different reads, on purpose:
+//
+//   raw3   straight from the published signal, in the QMI8658's own axes,
+//          unfiltered (tilt_reading_t.rawX/Y/Z);
+//   g3     what the CURRENT APP was handed on the last tick, filtered,
+//          mapped, and already rotated into that app's own drawing space
+//          (rtcore_last_tilt).
+//
+// The gap between those two columns is exactly where an orientation bug
+// lives, and reading only one of them cannot show it: raw alone cannot tell
+// a mapping error from a mounting surprise, and app-space alone cannot say
+// which of the two it was.
+//
+// Safe on core0: tilt_read() is a lock-free read of a published snapshot
+// (tilt.c) and rtcore_last_tilt() is a struct copy. Neither goes near i2c1,
+// which core1 has owned since sensors_start().
+static bool devlink_hook_tilt_read(float *raw3, float *g3, float *tiltDeg, int *up, int *valid) {
+    tilt_reading_t r;
+    tilt_read(to_ms_since_boot(get_absolute_time()), &r);
+    raw3[0] = r.rawX;
+    raw3[1] = r.rawY;
+    raw3[2] = r.rawZ;
+
+    app_tilt_t t;
+    rtcore_last_tilt(&t);
+    g3[0] = t.gx;
+    g3[1] = t.gy;
+    g3[2] = t.gz;
+    *tiltDeg = t.tiltDeg;
+    *up = (int)t.up;
+    *valid = t.valid ? 1 : 0;
+    return true;
+}
+
 // A generous, few-second watchdog timeout: the 182ms cold boot this
 // architecture exists to buy back (see docs/decisions/0002 section 1) makes
 // a watchdog reboot nearly invisible, so there is no reason to cut this
@@ -338,6 +374,7 @@ int main(void) {
         .app_current = devlink_hook_app_current,
         .app_name = devlink_hook_app_name,
         .app_switch = devlink_hook_app_switch,
+        .tilt_read = devlink_hook_tilt_read,
         // Wired straight to sketch.c's sketch_tune_* (sensors.h): no
         // adapter needed, unlike the hooks above, because their signatures
         // already match devlink_hooks_t's tune_* shape exactly (see

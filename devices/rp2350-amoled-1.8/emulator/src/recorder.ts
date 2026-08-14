@@ -15,6 +15,12 @@ export type TraceEvent =
   | { t: number; k: "button"; i: number; down: number }
   | { t: number; k: "verdict"; i: number; long: number }
   | { t: number; k: "sensor"; i: number }
+  // A continuous vector sensor being SET (emu_sensor_vector, emu_abi.h).
+  // Recorded like every other input because it is one: the value is sticky,
+  // so a replay that skipped it would run the whole trace at whatever pose
+  // the module boots in, and an orientation-driven app would do something
+  // completely different from what was recorded.
+  | { t: number; k: "sensorv"; i: number; x: number; y: number; z: number }
   | { t: number; k: "tick" };
 
 export interface Trace {

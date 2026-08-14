@@ -1,0 +1,226 @@
+/*
+ * tilt: the orientation signal's one implementation. See tilt.h for what is
+ * published, why that shape, what filtering was chosen and what no
+ * instrument here can see.
+ *
+ * PORTABLE, LIKE runtime_core.c AND sound_synth.c, and for the same reason
+ * (docs/decisions/0003): it is compiled into the board's image
+ * (firmware/CMakeLists.txt) and into emu.wasm (emulator/wasm/build.ts) from
+ * this one source, so the emulator's tilt is the board's tilt - the same
+ * filter with the same time constant, the same hysteresis, the same
+ * device-to-panel mapping - rather than a browser-side reimplementation
+ * that agrees on the day it is written and drifts from the next commit.
+ * That means: no pico-sdk, nothing under hardware/ or pico/, nothing but
+ * freestanding headers and math.h.
+ */
+#include "tilt.h"
+
+#include <math.h>
+
+#define TILT_RAD_TO_DEG 57.29577951308232f
+
+/* ---- device axes to panel axes -------------------------------------------
+ *
+ * HYPOTHESIS, NOT A MEASUREMENT. Nothing in this repository records which
+ * way the QMI8658 is rotated on this PCB, and no software oracle can check
+ * it, because no software knows which way is up. tilt.h's "THE AXIS RITUAL"
+ * is the two-minute procedure that settles it on real hardware; when it has
+ * been run, correct the three lines below, write down what was measured,
+ * and delete the word HYPOTHESIS.
+ *
+ * Identity was chosen as the hypothesis deliberately: it is the mapping
+ * with the fewest independent ways to be wrong, so the ritual either
+ * confirms all of it or produces one obvious, total correction (a swap, a
+ * sign, or both) instead of a subtle half-right one.
+ *
+ * A wrong mapping here is the highest-consequence unverified line in this
+ * change: a spirit level with a flipped axis leans the wrong way, feels
+ * broken to a child in one second, and passes every automated check this
+ * project can ever build. It is one function, called from one place, on
+ * purpose.
+ */
+static void device_to_panel(float dx, float dy, float dz,
+                            float *px, float *py, float *pz) {
+    *px = dx;
+    *py = dy;
+    *pz = dz;
+}
+
+/* ---- the up-edge decision, and its hysteresis ----------------------------
+ *
+ * Policy, published rather than left to each app, because three apps
+ * deriving "which way is up" from atan2 would get three different flicker
+ * behaviours out of the same hardware. Two guards, both needed:
+ *
+ *   TILT_UP_MIN_G      the in-plane part of gravity must be at least this
+ *                      big before the answer may change at all. 0.35g is
+ *                      about 20 degrees off flat. Below it, a device lying
+ *                      on a table has an in-plane vector that is pure
+ *                      noise, and the answer would spin.
+ *   TILT_UP_DOMINANCE  near a diagonal the two axes are nearly equal, so
+ *                      the winner would alternate every few samples.
+ *                      Requiring one axis to beat the other by 1.3x moves
+ *                      each boundary from 45 degrees to about 37.6, which
+ *                      leaves a 15 degree band around each diagonal where
+ *                      the previous answer simply holds.
+ *
+ * Holding rather than reporting "unknown" is deliberate: an orientation
+ * aware clock laid flat on a table should keep the orientation it had, not
+ * blank out. An app that wants to know it is flat reads tiltDeg.
+ */
+#define TILT_UP_MIN_G     0.35f
+#define TILT_UP_DOMINANCE 1.3f
+
+/* ---- state owned by the submitting core ----------------------------------
+ *
+ * On the board every one of these is touched only by core1, inside
+ * tilt_submit_device_g(). They are not volatile and need not be: nothing
+ * else reads them. What crosses to core0 is the published snapshot below.
+ */
+static bool  s_haveSample = false;
+static uint32_t s_lastMs = 0;
+static float s_fx = 0.0f, s_fy = 0.0f, s_fz = 1.0f; // filtered, panel axes
+static uint8_t s_up = TILT_UP_TOP;
+
+/* ---- publication: one snapshot, one writer, one reader --------------------
+ *
+ * The other cross-core signals in this firmware are single words (see
+ * sensors.c's "cross-core published state"), and a single aligned word
+ * needs no barrier: the worst case is the reader seeing last loop's value.
+ * A vector is not a single word. Three separate floats would let core0 read
+ * x from one sample and y from the next, and while the practical error is
+ * tiny for a filtered signal, "tiny" is not an argument a reader of this
+ * file should have to reconstruct.
+ *
+ * So: a sequence lock, the standard shape. The writer bumps the counter to
+ * an odd value, writes, and bumps it back to even; the reader takes the
+ * counter, copies, and retries if the counter moved. Barriers on both
+ * sides, because the whole point is that the copy is not reordered across
+ * the counter.
+ *
+ * The reader cannot spin forever, and does not: the writer holds the lock
+ * for the few dozen cycles of a struct copy at 50Hz, so a reader that fails
+ * twice has hit something impossible; it takes the last snapshot it read
+ * successfully instead (kept in a reader-owned static) and moves on. A
+ * frame of orientation is not worth a stall on the render core.
+ */
+#if defined(__ARM_ARCH)
+// Cortex-M33, two cores against one SRAM: a real data memory barrier, which
+// is what __atomic_thread_fence emits here (the same dmb sensors.c's touch
+// ring takes through the SDK's __dmb()).
+#define TILT_BARRIER() __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#else
+// wasm: one thread, no second core to be visible to, so all that is needed
+// is that the compiler does not reorder the copy across the counter.
+#define TILT_BARRIER() __atomic_signal_fence(__ATOMIC_SEQ_CST)
+#endif
+
+typedef struct {
+    float gx, gy, gz;
+    float tiltDeg;
+    float rawX, rawY, rawZ;
+    uint32_t stampMs;
+    uint8_t up;
+    bool haveSample;
+} tilt_pub_t;
+
+static volatile uint32_t s_pubSeq = 0;
+static tilt_pub_t s_pub = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false };
+
+void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs) {
+    float px, py, pz;
+    device_to_panel(dx, dy, dz, &px, &py, &pz);
+
+    if (!s_haveSample) {
+        // First sample lands whole rather than fading in from the (0,0,1)
+        // initial state: a level that spends its first half second easing
+        // toward the truth is a level that lies for half a second.
+        s_fx = px;
+        s_fy = py;
+        s_fz = pz;
+        s_haveSample = true;
+    } else {
+        uint32_t dtMs = nowMs - s_lastMs;
+        if (dtMs > 1000u) dtMs = 1000u; // a gap this long (a paused emulator
+                                         // tab, a stalled bus) means the old
+                                         // value is meaningless anyway, and
+                                         // the clamp keeps alpha at 1
+                                         // rather than letting expf see a
+                                         // wild argument.
+        float alpha = 1.0f - expf(-(float)dtMs / TILT_TAU_MS);
+        s_fx += alpha * (px - s_fx);
+        s_fy += alpha * (py - s_fy);
+        s_fz += alpha * (pz - s_fz);
+    }
+    s_lastMs = nowMs;
+
+    // Which edge is up, from the FILTERED vector: deciding this from raw
+    // samples would put the jitter back into the one field whose whole
+    // purpose is to be stable.
+    float inPlane = sqrtf(s_fx * s_fx + s_fy * s_fy);
+    if (inPlane >= TILT_UP_MIN_G) {
+        float ax = fabsf(s_fx), ay = fabsf(s_fy);
+        if (ay >= ax * TILT_UP_DOMINANCE) {
+            // Gravity pulls toward the bottom edge, so the TOP edge is up.
+            s_up = (s_fy > 0.0f) ? TILT_UP_TOP : TILT_UP_BOTTOM;
+        } else if (ax >= ay * TILT_UP_DOMINANCE) {
+            s_up = (s_fx > 0.0f) ? TILT_UP_LEFT : TILT_UP_RIGHT;
+        }
+        // else: inside the diagonal dead band, hold the previous answer.
+    }
+
+    tilt_pub_t next;
+    next.gx = s_fx;
+    next.gy = s_fy;
+    next.gz = s_fz;
+    // atan2f, not asinf/acosf: those two are not in emu_abi.h's host import
+    // list and adding an import to the ABI to compute an angle two other
+    // functions can already give is not worth it. atan2(in-plane, z) is
+    // also the form that stays correct past 90 degrees, which acos of a
+    // clamped dot product does not.
+    next.tiltDeg = atan2f(inPlane, s_fz) * TILT_RAD_TO_DEG;
+    next.rawX = dx;
+    next.rawY = dy;
+    next.rawZ = dz;
+    next.stampMs = nowMs;
+    next.up = s_up;
+    next.haveSample = true;
+
+    s_pubSeq++;            // odd: a write is in progress
+    TILT_BARRIER();
+    s_pub = next;
+    TILT_BARRIER();
+    s_pubSeq++;            // even again: consistent
+}
+
+void tilt_read(uint32_t nowMs, tilt_reading_t *out) {
+    // Reader-owned, so a retry exhaustion (see the seqlock comment) has
+    // something consistent to fall back on rather than a torn read.
+    static tilt_pub_t lastGood = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false };
+
+    for (int attempt = 0; attempt < 4; attempt++) {
+        uint32_t before = s_pubSeq;
+        if (before & 1u) continue; // writer mid-update
+        TILT_BARRIER();
+        tilt_pub_t snap = s_pub;
+        TILT_BARRIER();
+        if (s_pubSeq == before) {
+            lastGood = snap;
+            break;
+        }
+    }
+
+    out->gx = lastGood.gx;
+    out->gy = lastGood.gy;
+    out->gz = lastGood.gz;
+    out->tiltDeg = lastGood.tiltDeg;
+    out->up = lastGood.up;
+    out->rawX = lastGood.rawX;
+    out->rawY = lastGood.rawY;
+    out->rawZ = lastGood.rawZ;
+    // Unsigned wrap is fine and intended: nowMs and stampMs come from the
+    // same clock, so the difference is small and correct across the 32-bit
+    // rollover the same way every other elapsed-time comparison in this
+    // firmware is.
+    out->valid = lastGood.haveSample && (nowMs - lastGood.stampMs) <= TILT_STALE_MS;
+}

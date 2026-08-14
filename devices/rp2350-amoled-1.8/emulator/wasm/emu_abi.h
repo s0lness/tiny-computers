@@ -237,6 +237,61 @@ void emu_button_verdict(int index, int isLong);
 // happened" rather than as a continuous value.
 void emu_sensor_event(int index);
 
+/* Continuous vector-valued sensors, by index into the same sensors array. A
+ * gravity vector, a magnetic field, an angular rate: anything the firmware
+ * receives as "this is its value now" rather than as an event. Sticky, like
+ * a real one: the value stands until it is set again, and the module keeps
+ * sampling it at whatever cadence its own firmware samples the part.
+ *
+ * The unit and the axes belong to the sensor's declaration, not to this
+ * call. This device declares one, `{"id":"gravity","kind":"gravity"}`,
+ * whose axes are the panel's own (+x right, +y down the screen, +z into the
+ * glass) and whose unit is g, so lying flat face up is (0, 0, 1) - see
+ * firmware/runtime/tilt.h, which is compiled into this module and does the
+ * filtering, so the emulator's orientation is the board's orientation and
+ * not a second implementation of it.
+ *
+ * "kind": "gravity" rather than a bare "vector3" because it tells a host
+ * something it cannot otherwise know: this vector is an ORIENTATION, so the
+ * natural control for it is two angles (tip and roll) rather than three
+ * number boxes, and the natural default is "lying flat on a table". A host
+ * that does not recognise the kind ignores the sensor, exactly as it
+ * already ignores any non-"event" sensor.
+ *
+ * KEEPING THE EMULATOR HONEST, applied to this call. The host may send any
+ * vector, including ones no still hand produces, because the real part
+ * genuinely reports those: a shaken device reads several g and a dropped
+ * one reads zero. What the emulator CANNOT reproduce, and what therefore
+ * must not be judged here, is the opposite direction: a browser slider
+ * holds perfectly still and is exactly unit length, where a real
+ * accelerometer in a child's hand is never still. So an orientation-driven
+ * app that looks smooth in this page can still jitter on the board, and
+ * tilt.h's filter constant can only be judged with a real hand on real
+ * hardware. Same category as the timing and input-defect caveats above.
+ */
+void emu_sensor_vector(int index, float x, float y, float z);
+
+/* ---- optional: what the app was last handed -----------------------------
+ *
+ * The orientation the CURRENT app saw on the last emu_tick(), in that app's
+ * own drawing space (runtime_core.c rotates it for landscape apps). This is
+ * a test oracle, not an input, and it exists because everything that can
+ * actually go wrong with an orientation signal happens between the sensor
+ * and the app struct: a swapped axis, an inverted sign, a landscape
+ * rotation applied the wrong way, a filter that never converges. A test
+ * that asserted on what it had just sent to emu_sensor_vector would be
+ * reading upstream of every one of those (docs/decisions/0010: an
+ * instrument validates only what is upstream of where it reads).
+ *
+ * field: 0 gx, 1 gy, 2 gz, 3 tiltDeg, 4 up (0 top, 1 right, 2 bottom,
+ * 3 left), 5 valid (0 or 1). Returns 0 for an unknown field.
+ *
+ * What it still cannot see, said here rather than discovered later: whether
+ * the axis mapping matches the physical case. No software oracle knows
+ * which way is up, on either target. Only tilt.h's on-board ritual does.
+ */
+float emu_tilt(int field);
+
 /* ---- optional: apps -----------------------------------------------------
  *
  * Only meaningful if emu_device() declared an "apps" array. A firmware

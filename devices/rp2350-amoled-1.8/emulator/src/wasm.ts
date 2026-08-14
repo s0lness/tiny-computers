@@ -24,6 +24,15 @@ export interface EmuExports {
   emu_button(index: number, down: number): void;
   emu_button_verdict(index: number, isLong: number): void;
   emu_sensor_event(index: number): void;
+  // Continuous vector sensors (emu_abi.h). Optional, same reasoning as
+  // emu_app_current below: a device with nothing continuous to report -
+  // no accelerometer, no gyro - simply does not export it, and the page
+  // builds no control for it.
+  emu_sensor_vector?(index: number, x: number, y: number, z: number): void;
+  // Test-only readback: the orientation the current app was last handed,
+  // after filtering and after the runtime's landscape rotation. Optional,
+  // and deliberately not used to drive anything on the page.
+  emu_tilt?(field: number): number;
   // Optional: only present when the firmware declared an "apps" array in
   // its device descriptor (emu_abi.h, "the emulator will not call them"
   // otherwise).
@@ -63,8 +72,13 @@ export interface DeviceButton {
 
 export interface DeviceSensor {
   id: string;
-  kind: string; // "event" is the only kind emu_abi.h currently defines
+  // "event" (a shake, a tap: it happened) or "gravity" (a continuous
+  // orientation vector, set through emu_sensor_vector - see emu_abi.h).
+  // Any other kind is ignored by this emulator version rather than guessed
+  // at, per emu_abi.h's "unknown fields are ignored".
+  kind: string;
   label?: string;
+  unit?: string;
 }
 
 // A development-only live-tuning knob (emu_abi.h's "tunables" section).

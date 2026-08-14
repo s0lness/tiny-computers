@@ -83,6 +83,8 @@ const EMU_EXPORTS = [
   "emu_button",
   "emu_button_verdict",
   "emu_sensor_event",
+  "emu_sensor_vector",
+  "emu_tilt",
   "emu_app_current",
   "emu_app_switch",
   "emu_tune_get",
@@ -99,6 +101,11 @@ const SOURCES = [
   join(WASM_DIR, "emu_shim.c"),
   join(FIRMWARE, "runtime", "runtime_core.c"),
   join(FIRMWARE, "runtime", "gfx.c"),
+  // The orientation signal (firmware/runtime/tilt.h). Compiled in for the
+  // same reason sound_synth.c is: the emulator must run the board's own
+  // filter, axis mapping and hysteresis, not a browser-side second copy of
+  // them that agrees on the day it is written and drifts after.
+  join(FIRMWARE, "runtime", "tilt.c"),
   join(FIRMWARE, "runtime", "sound_synth.c"),
   join(FIRMWARE, "apps", "digits.c"),
   join(FIRMWARE, "apps", "chrono.c"),
@@ -107,6 +114,18 @@ const SOURCES = [
   join(FIRMWARE, "apps", "timer.c"),
   join(FIRMWARE, "apps", "four.c"),
   join(FIRMWARE, "apps", "shapes.c"),
+  // An empty translation unit unless the menu-stub define is set, and
+  // deliberately absent from firmware/CMakeLists.txt so a stub app cannot
+  // reach a uf2. See that file's own header comment; it is how the menu's
+  // layout gets captured at six and twelve apps from the real firmware
+  // rather than from a script that re-implements it.
+  //
+  // Nothing in this array's comments may be written in capitals: the gate
+  // parses this literal with a regex that treats any capitalised token as a
+  // directory constant, and fails the whole run when it does not recognise
+  // one (tools/gate/freshness.ts, parseArrayLiteral). Loudly, which is that
+  // tool's stated posture, but this is the cheaper end to fix.
+  join(FIRMWARE, "apps", "stubapps.c"),
 ];
 
 // shim/ goes FIRST: it is what makes the real firmware sources compile

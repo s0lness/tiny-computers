@@ -139,6 +139,7 @@ giving up the shared console's usefulness to a human.
 | `CHORD` | `OK` |
 | `APP` | `APP <index> <name>` |
 | `SWITCH <index>` | `OK`, `ERR args` (index does not parse), or `ERR range` |
+| `TILT` | `TILT <rawX> <rawY> <rawZ> <gx> <gy> <gz> <deg> <up> <valid>`, or `ERR no tilt` |
 | `TUNE` | one `TUNE <name> <value> <min> <max> <default>` line per declared tunable, then `END` |
 | `TUNE GET <name>` | `TUNE <name> <value>`, or `ERR unknown <name>` |
 | `TUNE SET <name> <value>` | `TUNE <name> <applied>` (applied = value clamped to `[min, max]`), or `ERR args` / `ERR unknown <name>` |
@@ -208,6 +209,40 @@ the current frame, same as a real menu tap (see `app_switch_to()` in
 both an out-of-range number and the menu's own sentinel index, since the
 menu is the shell a child uses to pick an app, not one of the apps devlink
 is meant to drive to. There is no separate "open the menu" command.
+
+### TILT
+
+The orientation readback, and the reason it exists is not debugging: it is
+the only check the axis mapping can ever have.
+
+`firmware/runtime/tilt.h` publishes one gravity vector for every app to
+read. Converting the QMI8658's own axes into the panel's is one function
+(`device_to_panel()`), and **which way the part is mounted on this PCB is
+not recorded anywhere in this repository**. No test can settle it, on the
+board or in the emulator, because nothing in software knows which way is up:
+a spirit level built on a flipped axis passes every automated check this
+project can ever build and reads as broken to a child in one second.
+
+So the check is a hand. Hold the puck in each pose and run `bun
+tools/dev.ts tilt`:
+
+| pose | expected `g` |
+|---|---|
+| flat on a table, screen up | `0 0 +1`, 0 degrees from flat |
+| upright, portrait, top edge up | `0 +1 0`, 90 degrees, up = `TOP` |
+| a quarter turn, right edge up | `-1 0 0`, 90 degrees, up = `LEFT` |
+| flat, screen down | `0 0 -1`, 180 degrees |
+
+The reply carries two columns on purpose. `raw` is what the accelerometer
+reported in its own axes, unfiltered; `g` is what the running app was
+actually handed, after the filter, the axis mapping and (for a landscape
+app) the runtime's rotation into its own drawing space. A wrong pose read
+with only one column says "something is wrong" and cannot say what. `up` is
+`0` top, `1` right, `2` bottom, `3` left of the app's own space; `valid` is
+`0` when no fresh reading exists, in which case every other number on the
+line is stale or unset.
+
+`ERR no tilt` means the build has no orientation signal wired at all.
 
 ### TUNE
 
@@ -617,6 +652,7 @@ bun tools/dev.ts erase
 bun tools/dev.ts key short
 bun tools/dev.ts boot click
 bun tools/dev.ts chord
+bun tools/dev.ts tilt
 bun tools/dev.ts tune
 bun tools/dev.ts tune get lift
 bun tools/dev.ts tune set lift 180

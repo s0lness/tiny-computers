@@ -688,6 +688,49 @@ async function cmdApp() {
   }
 }
 
+// The axis ritual's instrument (firmware/runtime/tilt.h). Prints both
+// columns the ritual compares: what the accelerometer reported in its own
+// axes, and what the current app was actually handed after the runtime
+// mapped, filtered and rotated it.
+//
+// This is the only check that can ever exist for the device-to-panel
+// mapping, because nothing in software knows which way is up: a spirit
+// level built on a flipped axis passes every automated test this project
+// can write and reads as broken to a child in one second. Hold the puck in
+// tilt.h's five poses, run this in each, and correct device_to_panel() once.
+const UP_EDGE_NAMES = ["TOP", "RIGHT", "BOTTOM", "LEFT"];
+
+async function cmdTilt() {
+  const bridge = await openBridge();
+  try {
+    await bridge.send("TILT");
+    const reply = await expectLine(
+      bridge.lines,
+      /^(TILT (?:-?[\d.]+ ){7}-?\d+ -?\d+|ERR .*)$/,
+      3000,
+      "TILT reply"
+    );
+    if (!reply.startsWith("TILT")) {
+      console.log(reply);
+      process.exitCode = 1;
+      return;
+    }
+    const f = reply.split(/\s+/).slice(1);
+    const num = (i: number) => Number(f[i]).toFixed(3);
+    const up = Number(f[7]);
+    const valid = Number(f[8]) === 1;
+    console.log(`raw  (device axes) ${num(0)} ${num(1)} ${num(2)}`);
+    console.log(`g    (app sees)    ${num(3)} ${num(4)} ${num(5)}`);
+    console.log(`tilt ${Number(f[6]).toFixed(1)} deg from flat, up = ${UP_EDGE_NAMES[up] ?? up}`);
+    if (!valid) {
+      console.log("INVALID: no fresh IMU reading. Every number above is stale or unset.");
+      process.exitCode = 1;
+    }
+  } finally {
+    await bridge.close();
+  }
+}
+
 async function cmdSwitch(args: string[]) {
   const idx = Number(args[0]);
   if (!Number.isFinite(idx)) {
@@ -1442,6 +1485,10 @@ function printUsage() {
       "  key <press|long|short|release> inject a PMIC key event",
       "  boot <down|up|click>          inject the BOOT button's level or click",
       "  chord                         inject the BOOT+PWR app-menu gesture",
+      "  tilt                          read the orientation signal: the accelerometer's own axes,",
+      "                                what the running app was handed, and which edge is up.",
+      "                                Runs firmware/runtime/tilt.h's axis ritual, the only check",
+      "                                there is for the device-to-panel mapping",
       "  tune                          list live-tunable constants (name, current, min, max, default;",
       "                                overridden values are marked)",
       "  tune get <name>               read one tunable's current value",
@@ -1519,6 +1566,9 @@ async function main() {
       break;
     case "chord":
       await cmdChord();
+      break;
+    case "tilt":
+      await cmdTilt();
       break;
     case "tune":
       await cmdTune(rest);

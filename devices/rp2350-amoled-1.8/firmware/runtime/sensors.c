@@ -962,7 +962,17 @@ static void touch_diag_poll_core1(uint32_t nowMs) {
 }
 #endif // TOUCH_POLL_SELFTEST
 
-/* ---- IMU: shake-to-erase, core1 side ------------------------------------
+/* ---- IMU: shake-to-erase AND orientation, core1 side ---------------------
+ *
+ * ONE READ, TWO CONSUMERS. This poll existed for the shake detector alone;
+ * it now also feeds tilt_submit_device_g() (tilt.h), which is where the
+ * gravity vector every orientation-aware app reads comes from. The i2c
+ * transaction, its cadence and its timeout handling are unchanged: the
+ * orientation signal costs this core one call and this bus nothing. See
+ * sensors.h's "the IMU serves two consumers" section, and tilt.h for what
+ * happens to the numbers after they leave here (the filter, the axis
+ * mapping, and the fact that this part has no magnetometer, so none of this
+ * will ever yield a heading).
  *
  * QMI8658_init() (called once on core0, before sensors_start()) leaves the
  * part at QMI8658AccRange_8g, which is what fixes the raw-to-mg scale factor
@@ -1007,6 +1017,15 @@ static void imu_poll_core1(uint32_t nowMs) {
     float ax = ((float)rawX * 1000.0f) / QMI8658_ACC_LSB_DIV;
     float ay = ((float)rawY * 1000.0f) / QMI8658_ACC_LSB_DIV;
     float az = ((float)rawZ * 1000.0f) / QMI8658_ACC_LSB_DIV;
+
+    // Orientation, published for every app. Handed over in g (the shake
+    // detector below works in mg, which is why the divide is here rather
+    // than above): tilt.h's whole contract is stated in g, and doing the
+    // conversion at this one call site keeps mg from leaking into the
+    // published signal where it would have to be undone by every consumer.
+    // Nothing about this call can block, printf or touch i2c1 - see tilt.c,
+    // which is the same object code the emulator runs.
+    tilt_submit_device_g(ax * 0.001f, ay * 0.001f, az * 0.001f, nowMs);
 
     float mag = sqrtf(ax * ax + ay * ay + az * az);
     float dev = fabsf(mag - 1000.0f);

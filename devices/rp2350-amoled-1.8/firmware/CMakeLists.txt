@@ -66,6 +66,13 @@ target_sources(main PRIVATE
     runtime/runtime.c
     runtime/gfx.c
     runtime/sensors.c
+    # tilt.c is the orientation signal, and it is portable for the same
+    # reason sound_synth.c below is: it also compiles into emu.wasm
+    # unmodified, so the emulator's gravity is filtered by this firmware's
+    # own filter, with the same time constant and the same axis mapping,
+    # rather than by a browser-side second implementation that would drift.
+    # sensors.c (core1) feeds it; nothing here touches i2c1.
+    runtime/tilt.c
     # sound_synth.c is the portable half (no PIO/DMA/i2c/pico-sdk
     # dependency): it also compiles into emu.wasm unmodified (emulator/wasm/
     # build.ts), so the emulator's WebAudio preview is genuinely this

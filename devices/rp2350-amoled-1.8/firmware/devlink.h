@@ -101,6 +101,24 @@ typedef struct {
     // protoName by a fixed rule (devlink.c stays blind to what the name
     // even means), so it is its own hook rather than a string transform.
     const char *(*tune_define_name)(int index);
+    // TILT: the orientation readback, and the ONLY way to run the axis
+    // ritual firmware/runtime/tilt.h describes. Which way the QMI8658 is
+    // rotated on this PCB is not recorded in any document in this
+    // repository, no software oracle can check it (nothing in software
+    // knows which way is up), and a spirit level built on a flipped axis
+    // passes every automated test this project can ever write. So the one
+    // instrument that can settle it is a human holding the board in five
+    // known poses and reading these numbers back.
+    //
+    // devlink stays blind to what they mean, as it does for every other
+    // hook here: raw3 is the accelerometer's own three axes, g3 is the
+    // same reading after the runtime has mapped and filtered it into the
+    // space an app sees, and up is a small integer the caller prints. Both
+    // arrays are three floats. Returns false if this build has no
+    // orientation signal at all, which devlink answers as "ERR no tilt"
+    // rather than crashing, the same policy the tune hooks get.
+    bool (*tilt_read)(float *raw3, float *g3, float *tiltDeg, int *up, int *valid);
+
     bool (*tune_get)(const char *name, float *out);
     // outApplied receives the value actually applied after clamping, so a
     // client can be told what really took effect, not just echo back what

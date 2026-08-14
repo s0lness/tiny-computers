@@ -131,9 +131,16 @@ Consequences worth having in mind before laying anything out:
 
 - The panel fits about **4 finger-widths across and 6 down**. That is the real
   resolution of anything that has to be touched, not 368x448.
-- A menu of three tiles across the 448px landscape width gives each tile about
-  149px, which is only about two child fingers. That is usable, and it is much
-  closer to the limit than the pixel count suggests.
+- **A row of targets across the 448px width runs out at five, and this is the
+  worked example.** Three tiles across gives 149px, about two child fingers;
+  four gives 112px; six gives 74px, which is under one finger; twelve gives
+  37px. A layout that only uses the horizontal axis spends the whole 368px of
+  height on a target that needs 75 of it, so its capacity is fixed by the
+  short axis alone. The menu was exactly this and was rewritten as a grid on
+  2026-08-15 for exactly this reason - see
+  `docs/decisions/0011-the-menu-is-a-grid-and-nothing-is-hidden.md`. The
+  general lesson, before laying anything out: count the targets the PANEL
+  holds (about twenty at 75px), not the ones one row holds.
 - Anything a finger must land on precisely (a ring to drag, a small control)
   is being asked for a precision the hardware cannot give. Prefer targets that
   are forgiving in one dimension: an angle around a large ring is forgiving,
@@ -164,7 +171,12 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
                       four.c (Connect Four for two people passing the puck,
                       slide a thumb and release to drop; nothing plays by
-                      itself), menu.c (the app picker), digits.c
+                      itself), menu.c (the app picker: a grid of 112px
+                      cells filling the glass, all apps visible at once,
+                      press-drag-release to launch - decision 0011),
+                      stubapps.c (empty unless the menu-stub define is
+                      set; how that layout gets captured at six and twelve
+                      apps, see its own header), digits.c
                       (shared seven-segment numerals), shapes.c (round
                       silhouettes built from rectangles, used by menu.c's
                       icons)
@@ -626,6 +638,47 @@ avoid it if you ever touch that code path directly). Coordinates are clamped
 downstream, both in `runtime_core.c`'s touch resolution and again in
 `sketch.c`'s own stroke code: they come straight from 12-bit touch registers
 and the driver never validates them.
+
+## Which way is down (`firmware/runtime/tilt.h`)
+
+**Read this before writing any app that reacts to being tilted.** There is
+one orientation signal, and it is `app_frame_t.tilt` (`app.h`): a filtered
+gravity vector in g, in the app's own drawing space, plus the angle from
+flat and which edge is up. An app reads it the way it reads `touchDown`,
+never by touching the IMU - which is core1's chip like every other part on
+`i2c1`, per the ownership rule above.
+
+The five things worth knowing before you build on it:
+
+- **Flat on a table, screen up, is `(0, 0, 1)`. Upright with the app's top
+  edge up is `(0, 1, 0)`.** `+x` right, `+y` down the screen as you drew it,
+  `+z` into the glass. A ball rolls toward `(gx, gy)`; a bubble floats away
+  from it.
+- **It is already in YOUR coordinates.** The runtime rotates it for
+  landscape apps, exactly as `gfx_land_rect()` rotates their rectangles. Do
+  not rotate it yourself.
+- **It is filtered, once, for everyone** (150ms time constant), so the
+  device feels the same in every app. Do not add your own smoothing; if the
+  feel is wrong, change the one constant in `tilt.h` and say why.
+- **Check `valid`.** It is false before the first reading and if the IMU
+  goes quiet, and a level drawn from an invalid reading is a confident lie.
+- **There is no magnetometer on this board.** The QMI8658 is a six-axis
+  part, so this can tell you which way is DOWN and can never tell you which
+  way is NORTH. A compass cannot be built here; see
+  `docs/decisions/0011-what-this-board-can-actually-do.md` for what to build
+  instead, and `0012-one-orientation-signal.md` for this signal's design.
+
+**The device-to-panel axis mapping is a hypothesis, not a measurement**
+(nothing in this repo records how the part is rotated on the PCB, and no
+software oracle knows which way is up). `bun tools/dev.ts tilt` runs the
+five-pose ritual on real hardware; `tilt.h` has the poses and the expected
+readings. If an orientation app leans the wrong way, that mapping is the
+first suspect, and it is one function.
+
+In the emulator: two sliders in the bottom bar (tip and roll), and
+`emu_sensor_vector()` for tests, which can drive any orientation including
+the ones the sliders cannot reach. `emulator/wasm/tests/feature-tilt.ts` is
+the worked example.
 
 ## Sound (`firmware/runtime/sound.c`, `sound_synth.c`, `sound_i2s.pio`)
 

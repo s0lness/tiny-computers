@@ -408,6 +408,63 @@ void sensors_inject_erase(void) {
     if (!g_fingerDown) g_eraseSeq++;
 }
 
+/* ---- orientation: the host's gravity vector, fed through the board's own
+ * filter -------------------------------------------------------------------
+ *
+ * emu_sensor_vector() (emu_abi.h) sets the pose; emu_tick() submits it to
+ * tilt_submit_device_g() (firmware/runtime/tilt.h) every frame, and
+ * runtime_core.c reads the published result exactly as it does on the
+ * board. Nothing here filters, maps axes or decides which edge is up: all
+ * three live in tilt.c, which is compiled into this module unmodified, so
+ * the emulator's orientation is the board's orientation. That is the same
+ * "same object code, not a reimplementation" argument decision 0003 makes
+ * for graphics and app logic and emu_abi.h extends to sound.
+ *
+ * SUBMITTED EVERY TICK, not once per emu_sensor_vector() call, and this is
+ * not busywork: the filter is a function of elapsed time (tilt.h), so a
+ * pose set once and held has to keep arriving for the filtered value to
+ * converge on it, exactly the way the real part keeps reporting the same
+ * gravity while the puck lies still on a table. A host that sets a pose and
+ * then ticks sees it settle over tilt.h's 150ms time constant, same as a
+ * hand holding the board still.
+ *
+ * The default is (0, 0, 1): lying flat on a table, screen up. Chosen as the
+ * NEUTRAL pose - no in-plane gravity, so a ball does not roll and a bubble
+ * sits centred until the host actually tilts something - and it is a real
+ * pose a real device is in most of the time, not an invented one.
+ *
+ * These axes are the panel's own, so what arrives here is already what
+ * tilt.h calls panel space. device_to_panel() inside tilt.c is therefore
+ * the identity for this target BY CONSTRUCTION rather than by luck, which
+ * is worth being explicit about: the emulator CANNOT be used to check the
+ * board's real device-to-panel mapping. Only tilt.h's on-board ritual can.
+ */
+static float g_gravX = 0.0f, g_gravY = 0.0f, g_gravZ = 1.0f;
+
+void emu_sensor_vector(int index, float x, float y, float z) {
+    (void)index; // emu_device() declares exactly one vector sensor
+                 // ("gravity"); a host passing another index is a host bug,
+                 // ignored rather than trapped, same policy emu_button()
+                 // uses for a bad button index.
+    g_gravX = x;
+    g_gravY = y;
+    g_gravZ = z;
+}
+
+float emu_tilt(int field) {
+    app_tilt_t t;
+    rtcore_last_tilt(&t);
+    switch (field) {
+        case 0: return t.gx;
+        case 1: return t.gy;
+        case 2: return t.gz;
+        case 3: return t.tiltDeg;
+        case 4: return (float)t.up;
+        case 5: return t.valid ? 1.0f : 0.0f;
+        default: return 0.0f;
+    }
+}
+
 /* ---- diagnostics: always zero. Nothing in wasm has i2c timeouts or queue
  * drops to count; see emu_abi.h's "What is not real" section. */
 void sensors_stats(sensors_stats_t *out) {
@@ -493,6 +550,11 @@ int emu_init(void) {
 void emu_tick(uint32_t nowMs) {
     g_nowMs = nowMs;
     g_pushCount = 0;
+    // Before rtcore_tick(), so this frame's app sees this frame's pose
+    // rather than the previous one's: on the board core1 is publishing
+    // continuously and asynchronously, so "the sample is already there when
+    // core0 looks" is what the app actually experiences.
+    tilt_submit_device_g(g_gravX, g_gravY, g_gravZ, nowMs);
     rtcore_tick(nowMs);
 }
 
@@ -654,7 +716,17 @@ int emu_device(void) {
     p = json_append(p, "{\"id\":\"pwr\",\"label\":\"PWR\",\"edge\":\"right\",\"at\":0.62,\"longPressMs\":1500}");
     p = json_append(p, "],");
     p = json_append(p, "\"touch\":{\"points\":1},");
-    p = json_append(p, "\"sensors\":[{\"id\":\"shake\",\"kind\":\"event\"}],");
+    // Two sensors, and the ORDER IS THE ABI: emu_sensor_event() and
+    // emu_sensor_vector() both address them by their index in this array
+    // (emu_abi.h), so "shake" stays at 0. "gravity" declares the axes and
+    // unit tilt.h publishes: g, panel axes, +z into the glass, so flat on a
+    // table is (0,0,1). No magnetometer is declared because this board has
+    // none - the QMI8658 is a six-axis part, and no heading exists here to
+    // hand a host or an app (see firmware/runtime/tilt.h).
+    p = json_append(p, "\"sensors\":[");
+    p = json_append(p, "{\"id\":\"shake\",\"kind\":\"event\"},");
+    p = json_append(p, "{\"id\":\"gravity\",\"kind\":\"gravity\",\"label\":\"tilt\",\"unit\":\"g\"}");
+    p = json_append(p, "],");
     p = json_append(p, "\"apps\":[");
     for (int i = 0; i < g_appCount; i++) {
         if (i > 0) p = json_append(p, ",");

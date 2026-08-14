@@ -30,6 +30,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// The orientation signal. Included here, rather than left for each consumer
+// to include separately, because this header is where "the published
+// signals" live: anyone reading this file to find out what core1 publishes
+// must find gravity too, and runtime_core.c's documented seam stays exactly
+// three headers wide (app.h, gfx.h, sensors.h - see runtime_core.h).
+//
+// tilt.h is NOT a chip header and does not break this file's ownership rule:
+// it holds no i2c, it is portable enough to compile into emu.wasm unchanged
+// (like runtime_core.c and sound_synth.c), and the only thing that ever
+// feeds it a real accelerometer reading is core1, from inside this file's
+// own IMU poll. See the "shake" section below for what core1 does with that
+// one i2c read now that it serves two consumers.
+#include "tilt.h"
+
 /* ---- touch -------------------------------------------------------------
  *
  * Samples arrive through a single-producer/single-consumer ring: core1 is
@@ -218,6 +232,28 @@ void sensors_inject_key(uint8_t bits);
  * why the two are not redundant.
  */
 void sensors_request_poweroff(void);
+
+/* ---- the IMU serves two consumers, off one read -------------------------
+ *
+ * core1 polls the QMI8658's six accelerometer bytes every IMU_POLL_MS
+ * (sensors.c) and hands the result to two places:
+ *
+ *   1. the shake detector below, which is a private matter of this file;
+ *   2. tilt_submit_device_g() (tilt.h), which filters it, maps it into
+ *      panel axes and publishes it for every app.
+ *
+ * Same transaction, same 20ms cadence, no extra bus traffic: orientation
+ * costs this firmware one function call on core1 and nothing on i2c1. That
+ * is deliberate, and it is also the reason there is no "wantsTilt" opt-in
+ * anywhere - there is nothing to save by not publishing it.
+ *
+ * NOTHING OUTSIDE sensors.c MAY READ THE IMU. Not an app, not the runtime,
+ * not a diagnostic: the ownership rule at the top of this file covers the
+ * QMI8658 exactly as much as it covers the touch controller, and an app
+ * that wants orientation has app_frame_t.tilt (app.h). If a second IMU read
+ * ever appears in this tree, the whole point of tilt.h has been lost - see
+ * its header comment, and docs/decisions/0011.
+ */
 
 /* ---- shake -------------------------------------------------------------
  *

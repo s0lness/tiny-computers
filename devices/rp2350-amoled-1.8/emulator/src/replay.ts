@@ -56,6 +56,13 @@ export class Replayer {
         case "sensor":
           emu.emu_sensor_event(ev.i);
           break;
+        case "sensorv":
+          // Optional export (a firmware with no vector sensor omits it), so
+          // a trace recorded against one module and replayed against
+          // another that lacks it is skipped rather than crashing the
+          // replay - same tolerance emu_app_switch already gets.
+          emu.emu_sensor_vector?.(ev.i, ev.x, ev.y, ev.z);
+          break;
         case "tick":
           emu.emu_tick(ev.t);
           return ev.t;
