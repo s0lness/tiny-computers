@@ -432,6 +432,36 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 #define HOLD_STILL_RADIUS_PX 12.0f
 #define LONG_PRESS_MS        550.0f
 
+// How long a raw reading has to stay outside HOLD_STILL_RADIUS_PX, with no
+// return, before it is believed as real movement rather than this panel's
+// own noise - see holdOutsideSinceMs's own struct comment for the full
+// reasoning and why per-sample distance (even filtered through the
+// drawing pipeline's own accept test) cannot be trusted on its own here.
+// Calibrated the same way LIFT_DEBOUNCE_MS was: measured, not guessed,
+// against a touchsim profile tuned to this controller's own hardware
+// reading (splits=10 in 40s of stationary contact - see
+// emulator/wasm/tests/repro-touch-dropout-palette-open.ts). 150ms was
+// proven at 97-100% open-reliability across repeated 30- and 50-trial
+// runs, AND at 0/80 false opens across four 20-trial runs of a slow,
+// real, continuous drag under the same full dropout+jitter severity
+// (that file's own scenario C) - both directions of the trade this
+// mechanism makes, measured, not assumed safe from one side alone.
+//
+// A FALSE LEAD, kept here rather than erased, because the mistake is
+// worth not repeating: an early calibration run measured that same drag
+// scenario false-opening 10-20% of the time and this comment used to
+// report it as a genuine, inherent cost of tolerating this panel's own
+// noise. It was not real - it was a stale timestamp in the TEST
+// harness's own settle tick (nowMs=10 while the rest of the scenario
+// counted from nowMs=1000), which made holdStartMs read as "550ms
+// already elapsed" on the very first sample of certain trials,
+// independent of anything sketch.c does. Fixed in the test file, not
+// here; see repro-touch-dropout-palette-open.ts's own settle-tick
+// comment. Left as a reminder that a discriminator change and its own
+// test harness both need to be trusted before a measured number is
+// reported as a property of the code under test.
+#define HOLD_MOVE_GRACE_MS 150.0f
+
 /* ---------------------------------------------------------------------
  * EXPERIMENTAL: the palette panel itself, REWORKED to a 3x3 grid that may
  * cover the whole panel.
@@ -879,6 +909,74 @@ typedef struct {
     bool     holdCandidate;
     int      holdAnchorX, holdAnchorY; // the confirmed stroke's own start point
     uint32_t holdStartMs;              // pendStartMs at confirmation - see LONG_PRESS_MS's comment
+
+    // holdOutsideSinceMs is what actually decides "moved, cancel the
+    // candidacy" now - not a per-sample distance test. Found 2026-08-14,
+    // second round: fixing the false-lift bug (lastContactMs) made the
+    // palette open in the emulator, but the owner still could not open it
+    // on the real board. A TOUCH_POLL_SELFTEST session with his finger held
+    // deliberately still measured splits=10 in 40 seconds - splits, not
+    // glitches, meaning the reported position was jumping hundreds of
+    // pixels AND a second reading was landing near the wrong spot often
+    // enough to get "confirmed" into a stroke_end/stroke_begin pair.
+    //
+    // The first attempt at a fix reused the drawing pipeline's own jump/
+    // glitch/split classification (only trust a sample the pipeline judged
+    // "smoothly accepted"), on the theory that a jitter excursion already
+    // fails that test by construction. It does not, reliably: that
+    // classification's own allowed-jump radius GROWS with time since the
+    // last accepted sample (`MAX_SPEED_PX_PER_MS * dtMs`, up to
+    // MAX_JUMP_PX), because it exists to let a stroke that reappears after
+    // a real dropout jump back to wherever the finger actually travelled
+    // to while it was gone. A held-still finger produces almost no
+    // accepted samples at all (the true position never changes, so
+    // newReport itself barely fires), which means dtMs keeps growing right
+    // up until the moment a jitter sample finally arrives - at which point
+    // the allowance has often grown large enough to accept a 100-250px
+    // jitter excursion outright as "plausible travel". Caught by this
+    // file's own repro test before it reached hardware a second time (see
+    // emulator/wasm/tests/repro-touch-dropout-palette-open.ts): a single
+    // accepted jitter sample was measured landing 130px from the anchor.
+    //
+    // What actually distinguishes a held finger from a real stroke is not
+    // any single sample, confirmed or not - it is that a stroke travels
+    // away and keeps going, while a held finger's reported position
+    // wanders and comes BACK. So this is measured the same way
+    // LIFT_DEBOUNCE_MS already measures "is this genuinely gone, or just a
+    // blip": every haveTouch sample's RAW (x, y) - not filtered, not
+    // accepted-only - is checked against the anchor. Inside
+    // HOLD_STILL_RADIUS_PX, holdOutsideSinceMs resets to 0: the finger is
+    // still where it was, whatever this one sample says. Outside it,
+    // holdOutsideSinceMs starts timing (if it was not already) and
+    // candidacy is only actually cancelled once the excursion has
+    // PERSISTED, sample after sample with no return, for HOLD_MOVE_GRACE_MS
+    // - long enough that a 1-3-report jitter episode (this controller's own
+    // measured shape) reliably returns to the true position before the
+    // grace period closes, short enough that a real stroke - which does not
+    // return - is still recognised as one well within LONG_PRESS_MS's own
+    // 550ms budget. See HOLD_MOVE_GRACE_MS's own comment for the calibrated
+    // value and what it was measured against.
+    //
+    // This also survives a split for free, and for the same underlying
+    // reason it survives noise: nothing about stroke_end()/stroke_begin()
+    // touches holdOutsideSinceMs, and a split only ever fires on a sample
+    // this same raw-distance check would already have flagged as "outside,
+    // timing" rather than "confirmed moved" - the two mechanisms are
+    // reading the same evidence, just with different patience.
+    //
+    // THE COST, stated rather than assumed: a real stroke's own movement
+    // is no longer noticed instantly, but only after HOLD_MOVE_GRACE_MS of
+    // sustained travel - a real but small delay, well inside the 550ms
+    // budget. HOLD_STILL_RADIUS_PX (12px) is unchanged, and a real stroke
+    // slower than that in 550ms already read as a hold before any of this -
+    // not a new trade, the same one the original design made. Measured
+    // directly, not assumed safe: a slow, real, continuous drag under the
+    // full dropout+jitter severity false-opened the palette 0 times across
+    // 80 trials (repro-touch-dropout-palette-open.ts's own scenario C) -
+    // see HOLD_MOVE_GRACE_MS's own comment for why an EARLIER run of that
+    // same measurement said otherwise, and was wrong about the code, not
+    // about the number it printed.
+    uint32_t holdOutsideSinceMs; // 0 = currently believed still; nonzero = timing an excursion
 
     // The palette panel, while showing. No more paletteX0/Y0 - the grid is
     // a fixed partition of the whole panel now (palette_cell_bounds()),
@@ -1687,6 +1785,7 @@ static void sketch_tick(const app_frame_t *f) {
                         st->holdAnchorX = st->pendX;
                         st->holdAnchorY = st->pendY;
                         st->holdStartMs = st->pendStartMs;
+                        st->holdOutsideSinceMs = 0; // freshly armed: believed still until proven otherwise
 
                         // Begin at the first report and immediately extend to
                         // this one, so no travel is lost to the confirmation.
@@ -1762,15 +1861,41 @@ static void sketch_tick(const app_frame_t *f) {
             // measured through that repetition, not just at the rare moment
             // the position actually changes.
             if (st->fingerDown && st->holdCandidate) {
+                // Raw (x, y), deliberately not filtered through the
+                // drawing pipeline's own accept test - see
+                // holdOutsideSinceMs's own struct comment for why that
+                // filter cannot be trusted here (its allowance grows with
+                // time since the last accepted sample, which is exactly
+                // backwards for a finger that has been sitting still). The
+                // noise tolerance lives entirely in HOLD_MOVE_GRACE_MS
+                // below: a single far reading only starts a clock, it does
+                // not by itself cancel anything.
                 float ddx = (float)(x - st->holdAnchorX);
                 float ddy = (float)(y - st->holdAnchorY);
-                if (ddx * ddx + ddy * ddy > HOLD_STILL_RADIUS_PX * HOLD_STILL_RADIUS_PX) {
-                    // Moved: this is becoming a real stroke, not a long
-                    // press. Whatever it has drawn so far stands - it is a
-                    // legitimate stroke start, not something to undo.
-                    st->holdCandidate = false;
-                } else if (nowMs - st->holdStartMs >= LONG_PRESS_MS) {
-                    open_palette(st, gfx_fb, x, y, nowMs, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                if (ddx * ddx + ddy * ddy <= HOLD_STILL_RADIUS_PX * HOLD_STILL_RADIUS_PX) {
+                    // Back inside the radius: whatever excursion was being
+                    // timed is over, and it did not last. This is what
+                    // makes a brief jitter episode free - "wandered and
+                    // came back", per holdOutsideSinceMs's own comment.
+                    st->holdOutsideSinceMs = 0;
+                } else {
+                    if (st->holdOutsideSinceMs == 0) st->holdOutsideSinceMs = nowMs;
+                    if (nowMs - st->holdOutsideSinceMs >= HOLD_MOVE_GRACE_MS) {
+                        // Outside the radius for HOLD_MOVE_GRACE_MS straight,
+                        // with no return: this is becoming a real stroke,
+                        // not a long press. Whatever it has drawn so far
+                        // stands - it is a legitimate stroke start, not
+                        // something to undo.
+                        st->holdCandidate = false;
+                    }
+                }
+                if (st->holdCandidate && nowMs - st->holdStartMs >= LONG_PRESS_MS) {
+                    // holdAnchorX/Y, not raw (x, y) or whatever this exact
+                    // instant's reading happens to be: the anchor is the
+                    // best estimate of where she actually is, precisely
+                    // because a genuine hold - by construction, having
+                    // survived every excursion above - never really left it.
+                    open_palette(st, gfx_fb, st->holdAnchorX, st->holdAnchorY, nowMs, &dMinX, &dMinY, &dMaxX, &dMaxY);
                 }
             }
         } else if (!st->fingerDown) {

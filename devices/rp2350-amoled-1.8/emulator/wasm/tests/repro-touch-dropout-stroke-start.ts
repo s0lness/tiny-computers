@@ -171,7 +171,23 @@ async function main() {
     const dev = await loadDevice();
     dev.tick(0);
     dev.appSwitch(APP_DRAW);
-    dev.tick(10);
+    // 1000, not 10: this settle tick's own nowMs becomes the touch queue's
+    // "last known time" baseline, and every touch() call issued before the
+    // NEXT tick() is stamped against it (see emu_touch/emu_tick's own
+    // pairing) - so it has to be consistent with the time base the rest of
+    // this scenario actually uses (t/tD/tE below all start at 1000), or
+    // the very first confirmed stroke's own pendStartMs comes out nearly a
+    // second stale. Harmless for everything this file originally checked
+    // (stroke-start rate, split/glitch counts, LIFT_DEBOUNCE_MS - all
+    // re-anchor themselves from later, correctly-timed samples), but found
+    // 2026-08-14 once sketch.c's palette feature added holdStartMs, which
+    // is deliberately set ONCE at confirmation and never refreshed: a
+    // stale pendStartMs there reads as "550ms have already passed" on the
+    // very next sample, and this file's scenario D confirms a real stroke
+    // moving nowhere near the palette's own hold gesture, catching it
+    // immediately as a spurious "long press" that rolled the stroke back
+    // before it could ever end normally.
+    dev.tick(1000);
     check("switched into sketch", dev.appCurrent() === APP_DRAW, `app_current()=${dev.appCurrent()}`);
     dev.drainLog();
 
@@ -415,7 +431,7 @@ async function main() {
                                       // left over from scenarios A-C.
     devD.tick(0);
     devD.appSwitch(APP_DRAW);
-    devD.tick(10);
+    devD.tick(1000); // 1000, matching tD's own start below - see the main dev's own settle-tick comment above
     devD.drainLog();
 
     const liftMsD = devD.tuneGet("lift");
@@ -513,7 +529,7 @@ async function main() {
     const devE = await loadDevice();
     devE.tick(0);
     devE.appSwitch(APP_DRAW);
-    devE.tick(10);
+    devE.tick(1000); // 1000, matching tE's own start below - see the main dev's own settle-tick comment above
     devE.drainLog();
 
     const defaultLift = devE.tuneGet("lift");
