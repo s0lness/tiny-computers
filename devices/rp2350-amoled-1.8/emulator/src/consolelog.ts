@@ -1,11 +1,19 @@
-// A rolling buffer of the firmware's own log lines (env.js_log, emu_abi.h:
-// "This is the firmware's printf"), shown in an on-page console pane. Also
-// mirrored to the real devtools console, and readable back out for a freeze
-// bundle (see freeze.ts).
+// A rolling buffer of log lines shown in the on-page console pane, from two
+// sources: the emulated firmware's own printf (env.js_log, emu_abi.h) and,
+// once a real board is connected (devlink.ts), the board's own serial
+// output. Both land in the same pane, which is exactly the confusion this
+// task exists to prevent (see main.ts's device-line wiring): "source"
+// defaults to "fw" so every existing call site (main.ts's consoleLog.push,
+// unchanged) needs no update and reads exactly as it did before a device
+// was ever part of this page. Also mirrored to the real devtools console,
+// and readable back out for a freeze bundle (see freeze.ts).
+
+export type LogSource = "fw" | "device";
 
 export interface LogLine {
   t: number;
   text: string;
+  source: LogSource;
 }
 
 export class ConsoleLog {
@@ -18,11 +26,11 @@ export class ConsoleLog {
     this.onLine = onLine;
   }
 
-  push(text: string): void {
-    const line: LogLine = { t: performance.now(), text };
+  push(text: string, source: LogSource = "fw"): void {
+    const line: LogLine = { t: performance.now(), text, source };
     this.lines.push(line);
     if (this.lines.length > this.max) this.lines.shift();
-    console.log("[fw]", text);
+    console.log(source === "device" ? "[dev]" : "[fw]", text);
     this.onLine?.(line);
   }
 

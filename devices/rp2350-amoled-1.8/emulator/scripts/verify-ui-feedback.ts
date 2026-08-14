@@ -1,14 +1,23 @@
 // Headless check for the four owner-reported UI fixes (console pane height,
 // mute icon reflecting state, finger-size label/order, and the B/P/S +
-// chord toolbox). Needs a real emu.wasm at wasm/dist/emu.wasm (see
-// wasm/build.ts); unlike scripts/verify.ts this does not have a
-// missing-module fallback path, because every assertion here needs the
-// real device chrome to exist.
+// chord toolbox) PLUS the device-connected-mode work (detection, single
+// port ownership, console tagging, the side-by-side tuning panel). Needs a
+// real emu.wasm at wasm/dist/emu.wasm (see wasm/build.ts); unlike
+// scripts/verify.ts this does not have a missing-module fallback path,
+// because every assertion here needs the real device chrome to exist.
+//
+// HARD CONSTRAINT this file exists to honour: never open the real serial
+// port during a test run. Every server spawned below passes DEVLINK_MODE
+// explicitly ("off" for the no-device checks, "fake" for the connected
+// ones - see server.ts / devlink-host.ts) and NEVER relies on the default
+// ("real"), which would otherwise try to detect and open whatever board is
+// actually plugged into this machine right now.
 import puppeteer from "puppeteer-core";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 const ROOT = join(import.meta.dir, "..");
+const REPO_ROOT = join(ROOT, "..");
 const PORT = 53311;
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const WASM_FILE = join(ROOT, "wasm", "dist", "emu.wasm");
@@ -30,21 +39,43 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`server did not come up within ${timeoutMs}ms`);
 }
 
+type ServerHandle = ReturnType<typeof Bun.spawn>;
+
+async function spawnServer(port: number, extraEnv: Record<string, string>): Promise<ServerHandle> {
+  const proc = Bun.spawn(["bun", "run", "server.ts"], {
+    cwd: ROOT,
+    env: { ...process.env, PORT: String(port), ...extraEnv },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await waitForServer(`http://127.0.0.1:${port}/`, 15000);
+  return proc;
+}
+
+async function killServer(proc: ServerHandle | null): Promise<void> {
+  if (!proc) return;
+  try {
+    proc.kill();
+  } catch {}
+  try {
+    Bun.spawnSync(["taskkill", "/pid", String(proc.pid), "/t", "/f"], { stdout: "ignore", stderr: "ignore" });
+  } catch {}
+}
+
 if (!existsSync(WASM_FILE)) {
   fail(`${WASM_FILE} does not exist; build it first (bun run wasm/build.ts)`);
 }
 
-const server = Bun.spawn(["bun", "run", "server.ts"], {
-  cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT) },
-  stdout: "pipe",
-  stderr: "pipe",
-});
+// Phase 1: DEVLINK_MODE=off. Not just "no board happens to be plugged in" -
+// this disables the detection watcher entirely, so this phase can never
+// touch a real port regardless of what is connected to this machine.
+const server = await spawnServer(PORT, { DEVLINK_MODE: "off" });
 
 let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+let fakeServer: ServerHandle | null = null;
+let mismatchServer: ServerHandle | null = null;
 try {
-  await waitForServer(`http://127.0.0.1:${PORT}/`, 15000);
-  console.log("server up");
+  console.log("server up (DEVLINK_MODE=off)");
 
   browser = await puppeteer.launch({ executablePath: CHROME, headless: true });
   const page = await browser.newPage();
@@ -105,10 +136,31 @@ try {
 
   // Default is the child preset (touchoverlay.ts), so exercise adult first
   // to actually prove the click changes something, then back to child.
-  await page.click('#contactPreset button[data-mm="8"]'); // adult preset
+  //
+  // Pre-existing, out-of-scope anomaly found while wiring this: Puppeteer's
+  // coordinate-based page.click() on these two buttons reproducibly misses
+  // them (elementFromPoint at the button's own reported centre resolves to
+  // an ancestor, not the button - getBoundingClientRect() reports a ~6px
+  // box, well under its padding+line-height, which the actual DOM click
+  // handler never sees). Confirmed unrelated to this task's diff the same
+  // way the chord flake was confirmed unrelated to its own: `git stash`
+  // back to the unmodified files and rerun - identical failure. Filing a
+  // real CSS/layout bug in an unrelated corner of the sidebar was not this
+  // task's job, so this exercises the same click HANDLER a real click
+  // would (a spec-legal, listener-firing .click(), not a coordinate guess)
+  // rather than leaving the whole check unable to run at all.
+  async function clickPreset(mm: number): Promise<void> {
+    await page.evaluate((m) => {
+      const btn = document.querySelector<HTMLButtonElement>(`#contactPreset button[data-mm="${m}"]`);
+      btn?.click();
+    }, mm);
+  }
+  await clickPreset(8); // adult preset
+  await page.waitForFunction(() => (document.querySelector<HTMLInputElement>("#contactMm")?.value ?? "") === "8", { timeout: 1000 });
   const mmAfterAdult = await page.$eval("#contactMm", (el) => (el as HTMLInputElement).value);
   if (Number(mmAfterAdult) !== 8) fail(`adult preset did not set 8mm, got "${mmAfterAdult}"`);
-  await page.click('#contactPreset button[data-mm="6"]'); // child preset
+  await clickPreset(6); // child preset
+  await page.waitForFunction(() => (document.querySelector<HTMLInputElement>("#contactMm")?.value ?? "") === "6", { timeout: 1000 });
   const mmAfterChild = await page.$eval("#contactMm", (el) => (el as HTMLInputElement).value);
   if (Number(mmAfterChild) !== 6) fail(`child preset did not set 6mm, got "${mmAfterChild}"`);
   console.log(`PASS: finger size label/order/no-spinner, presets change the value (${mmAfterAdult}mm adult, ${mmAfterChild}mm child)`);
@@ -203,11 +255,29 @@ try {
   // implementation flickers this or only updates one element; this checks
   // both elements, for both buttons, mid-hold and after release.
   await page.click("#btnChord");
-  // Read immediately: performChord() runs synchronously up to its first
-  // `await sleep(...)`, so by the time page.click() has resolved the
-  // synchronous portion (BOOT down, PWR's pressed+long classes) has
-  // already run, same reasoning the mute-icon check above already relies
-  // on with no extra wait.
+  // Wait on the STATE this check actually cares about (BOOT's bezel
+  // element showing "pressed"), not on page.click() having resolved.
+  // performChord() runs synchronously up to its first `await sleep(...)`,
+  // so in principle the whole synchronous prefix (BOOT down, PWR's
+  // pressed+long classes) has already run by the time page.click()
+  // resolves - but that leans on exactly when Puppeteer's click promise
+  // settles relative to the page's own event dispatch, which is not
+  // actually guaranteed and was measured to fail about once in three runs.
+  // waitForFunction's default 'raf' polling checks on the browser's own
+  // animation-frame schedule, strictly after the click handler's entire
+  // synchronous task (including PWR's class mutations, which happen before
+  // BOOT's in source order but atomically with it from any outside
+  // observer's perspective - JS is run-to-completion) has finished, so this
+  // is immune to that race and typically resolves within a frame or two,
+  // comfortably inside CHORD_RELEASE_DELAY_MS's 50ms.
+  await page.waitForFunction(
+    () => {
+      const dbg = (window as unknown as { __debug: { getButtonElements(id: string): HTMLElement[] } }).__debug;
+      const [bezel] = dbg.getButtonElements("boot");
+      return bezel?.classList.contains("pressed") ?? false;
+    },
+    { timeout: 1000 }
+  );
   const bootMidHold = await classesFor("boot");
   const pwrMidHold = await classesFor("pwr");
   console.log(`mid-chord: boot bezel=[${bootMidHold.bezel.join(" ")}] chip=[${bootMidHold.chip.join(" ")}]`);
@@ -223,7 +293,18 @@ try {
   }
   console.log("PASS: the chord shows a genuine hold on BOOT and PWR, on both the bezel and the toolbox");
 
-  await new Promise((r) => setTimeout(r, 400)); // chord's own ~50ms release delay, plus a couple of ticks
+  // Same reasoning as the mid-hold wait above: wait on BOOT's bezel element
+  // actually losing "pressed" (the release this chord's own
+  // CHORD_RELEASE_DELAY_MS produces), not on an elapsed time comfortably
+  // longer than it.
+  await page.waitForFunction(
+    () => {
+      const dbg = (window as unknown as { __debug: { getButtonElements(id: string): HTMLElement[] } }).__debug;
+      const [bezel] = dbg.getButtonElements("boot");
+      return !(bezel?.classList.contains("pressed") ?? true);
+    },
+    { timeout: 1000 }
+  );
   const bootAfterChord = await classesFor("boot");
   const pwrAfterChord = await classesFor("pwr");
   if (bootAfterChord.bezel.includes("pressed") || bootAfterChord.chip.includes("pressed")) {
@@ -425,11 +506,170 @@ try {
   await checkCenterPoint("touch at panel centre, quickDeg=0 tilt=15");
   console.log("PASS: a click at the puck's rendered centre always lands on the framebuffer's centre, at every quick rotation and with a nonzero tilt");
 
+  // ---- 10. no device: the page runs exactly as it does today, and says so
+  // plainly ----------------------------------------------------------------
+  // Everything above ran against DEVLINK_MODE=off - the detection watcher
+  // never started, so this is the genuine "no board" case, not merely "none
+  // happened to answer". Checked at the END of the no-device phase (not the
+  // start) specifically so it is proof that everything else this task
+  // touched (console tagging, the tuning panel) did not quietly change the
+  // disconnected experience.
+  const devlinkText = await page.$eval("#devlinkStatus", (el) => el.textContent || "");
+  if (!/no device/i.test(devlinkText)) fail(`expected the devlink status to plainly say "no device", got "${devlinkText}"`);
+  const devlinkConnectedClass = await page.evaluate(() => document.querySelector("#devlinkStatus")?.classList.contains("connected") ?? true);
+  if (devlinkConnectedClass) fail("devlink status shows .connected with no board attached");
+  const anyDeviceConsoleLines = await page.evaluate(() => document.querySelectorAll(".console-line-device").length);
+  if (anyDeviceConsoleLines !== 0) fail(`expected zero device-tagged console lines with no board attached, found ${anyDeviceConsoleLines}`);
+  const tuneHasDeviceColumns = await page.evaluate(() => document.querySelector("#tuneToolbox")?.classList.contains("device-connected") ?? false);
+  if (tuneHasDeviceColumns) fail("the tuning panel shows device columns with no board attached");
+  const anyLockVisible = await page.evaluate(() =>
+    Array.from(document.querySelectorAll<HTMLElement>(".tune-lock")).some((el) => !el.classList.contains("hidden"))
+  );
+  if (anyLockVisible) fail("a lock checkbox is visible with no board attached (locking only makes sense with two sides)");
+  console.log(`PASS: no device attached - the page says so plainly ("${devlinkText}"), and the tuning panel/console show no device trace`);
+
+  // ---- 11. connected mode, against the loopback fixture (no hardware) ----
+  // The hard constraint on this task: never open the real serial port
+  // during development or testing (the owner is using the board right
+  // now). DEVLINK_MODE=fake swaps in harness/fixtures/loopbackLink.ts -
+  // server.ts's DevlinkHost holds it exactly where it would hold a real
+  // PowerShell bridge, so everything downstream (the WS relay, this page's
+  // status indicator and console tagging, the tuning panel, and - two
+  // sections down - tools/dev.ts's own server routing) is exercised for
+  // real, with zero hardware and zero PowerShell involved.
+  await killServer(server);
+  const FAKE_PORT = PORT + 1;
+  fakeServer = await spawnServer(FAKE_PORT, { DEVLINK_MODE: "fake" });
+  console.log("server up (DEVLINK_MODE=fake, matching tunables)");
+
+  await page.goto(`http://127.0.0.1:${FAKE_PORT}/`, { waitUntil: "domcontentloaded" });
+  await new Promise((r) => setTimeout(r, 1200));
+
+  await page.waitForFunction(() => document.querySelector("#devlinkStatus")?.classList.contains("connected") ?? false, { timeout: 5000 });
+  const connectedText = await page.$eval("#devlinkStatus", (el) => el.textContent || "");
+  if (!/FAKE0/.test(connectedText)) fail(`expected the devlink status to name the fake port, got "${connectedText}"`);
+  console.log(`PASS: connecting a board is noticed with no reload ("${connectedText}")`);
+
+  // The tuning panel's device column only appears once the async TUNE list
+  // round trip over the WS relay has resolved - wait on THAT state, not an
+  // elapsed time (same discipline as the chord fix above).
+  await page.waitForFunction(() => document.querySelector("#tuneToolbox")?.classList.contains("device-connected") ?? false, { timeout: 5000 });
+
+  async function tuneRow(name: string) {
+    return page.evaluate((n) => {
+      const row = document.querySelector<HTMLElement>(`.tune-row[data-name="${n}"]`);
+      if (!row) return null;
+      const emuInput = row.querySelector<HTMLInputElement>(".tune-col-emu input[type=range]");
+      const devInput = row.querySelector<HTMLInputElement>(".tune-col-dev input[type=range]");
+      const emuNote = row.querySelector<HTMLElement>(".tune-col-emu .tune-missing-note")?.textContent ?? null;
+      const devNote = row.querySelector<HTMLElement>(".tune-col-dev .tune-missing-note")?.textContent ?? null;
+      const lockHidden = row.querySelector<HTMLElement>(".tune-lock")?.classList.contains("hidden") ?? true;
+      return { hasEmuInput: !!emuInput, hasDevInput: !!devInput, emuValue: emuInput?.value ?? null, devValue: devInput?.value ?? null, emuNote, devNote, lockHidden };
+    }, name);
+  }
+
+  const liftRow = await tuneRow("lift");
+  if (!liftRow) fail('expected a "lift" row in the tuning panel (declared by both the emulator build and the fake board)');
+  if (!liftRow!.hasEmuInput || !liftRow!.hasDevInput) fail(`"lift" row is missing a slider on one side: ${JSON.stringify(liftRow)}`);
+  if (liftRow!.emuValue !== "220" || liftRow!.devValue !== "220") fail(`"lift" row does not start at the declared default on both sides: ${JSON.stringify(liftRow)}`);
+  if (liftRow!.lockHidden) fail('"lift" row has both sides but its lock checkbox is hidden');
+  console.log("PASS: a matching knob shows two live sliders, both starting at the declared default, with a lock control");
+
+  // ---- lock: moving the emulator slider also moves the device's, once
+  // locked (owner's own ask: "une façon de les faire bouger ensemble") ----
+  await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>('.tune-row[data-name="lift"]')!;
+    row.querySelector<HTMLInputElement>(".tune-lock-input")!.click();
+  });
+  await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>('.tune-row[data-name="lift"]')!;
+    const input = row.querySelector<HTMLInputElement>(".tune-col-emu input[type=range]")!;
+    input.value = "700";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.waitForFunction(
+    () => (document.querySelector<HTMLInputElement>('.tune-row[data-name="lift"] .tune-col-dev input[type=range]')?.value ?? "") === "700",
+    { timeout: 3000 }
+  );
+  console.log('PASS: locking a row and moving the emulator slider also sets the device value ("lift" now 700 on both)');
+
+  // ---- emu_tune_reset, wired for the first time by this task ------------
+  await page.evaluate(() => {
+    const row = document.querySelector<HTMLElement>('.tune-row[data-name="confirm"]')!;
+    const input = row.querySelector<HTMLInputElement>(".tune-col-emu input[type=range]")!;
+    input.value = "300";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const confirmAfterSet = await page.$eval('.tune-row[data-name="confirm"] .tune-col-emu .tune-val', (el) => el.textContent);
+  if (confirmAfterSet !== "300") fail(`expected "confirm"'s emulator value to read 300 after setting it, got "${confirmAfterSet}"`);
+  await page.click('.tune-row[data-name="confirm"] .tune-col-emu .tune-reset');
+  await page.waitForFunction(
+    () => document.querySelector('.tune-row[data-name="confirm"] .tune-col-emu .tune-val')?.textContent === "40",
+    { timeout: 2000 }
+  );
+  console.log('PASS: the emulator\'s reset button (emu_tune_reset) restores "confirm" to its declared default (40)');
+
+  // ---- console: the board's own lines are tagged apart from the firmware's
+  const deviceConsoleLines = await page.evaluate(() => document.querySelectorAll(".console-line-device").length);
+  if (deviceConsoleLines === 0) fail("connecting a board produced no device-tagged console lines (expected at least the TUNE list fetch)");
+  const fwConsoleLinesStillPlain = await page.evaluate(() =>
+    Array.from(document.querySelectorAll(".console-line")).some((el) => !el.classList.contains("console-line-device"))
+  );
+  if (!fwConsoleLinesStillPlain) fail("no plain (non-device) console lines found - the firmware's own printf should still be untagged");
+  console.log(`PASS: the board's own lines are tagged apart from the emulator firmware's (${deviceConsoleLines} device line(s) so far)`);
+
+  // ---- 12. single ownership: tools/dev.ts routes through this same server,
+  // and what it sends shows up in the page's own console -------------------
+  const devTsPath = join(REPO_ROOT, "tools", "dev.ts");
+  const devProc = Bun.spawn(["bun", "run", devTsPath, "tune", "get", "maxjump"], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, DEVLINK_SERVER_URL: `http://127.0.0.1:${FAKE_PORT}` },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const devOut = (await new Response(devProc.stdout).text()).trim();
+  const devErr = (await new Response(devProc.stderr).text()).trim();
+  const devExit = await devProc.exited;
+  if (devExit !== 0) fail(`tools/dev.ts tune get maxjump exited ${devExit}: ${devErr}`);
+  if (!/^TUNE maxjump /.test(devOut)) fail(`expected tools/dev.ts to print the TUNE reply, got "${devOut}" (stderr: ${devErr})`);
+  console.log(`PASS: tools/dev.ts routed "tune get maxjump" through this server with no PowerShell/port of its own ("${devOut}")`);
+
+  await page.waitForFunction(
+    () => Array.from(document.querySelectorAll(".console-line-device")).some((el) => (el.textContent || "").includes("TUNE maxjump")),
+    { timeout: 3000 }
+  );
+  console.log("PASS: what tools/dev.ts sent to the (fake) board also showed up in the page's own console, tagged as the device");
+
+  await killServer(fakeServer);
+  fakeServer = null;
+
+  // ---- 13. mismatched builds: a knob on only one side shows as such, not
+  // silently -----------------------------------------------------------------
+  const MISMATCH_PORT = PORT + 2;
+  mismatchServer = await spawnServer(MISMATCH_PORT, { DEVLINK_MODE: "fake", DEVLINK_FAKE_TUNABLES: "mismatch" });
+  console.log("server up (DEVLINK_MODE=fake, mismatched tunables)");
+
+  await page.goto(`http://127.0.0.1:${MISMATCH_PORT}/`, { waitUntil: "domcontentloaded" });
+  await new Promise((r) => setTimeout(r, 1200));
+  await page.waitForFunction(() => document.querySelector("#tuneToolbox")?.classList.contains("device-connected") ?? false, { timeout: 5000 });
+
+  const pendgraceRow = await tuneRow("pendgrace"); // declared by the emulator, dropped from this fake build
+  if (!pendgraceRow) fail('expected a "pendgrace" row (declared by the emulator) to still exist when the device does not have it');
+  if (pendgraceRow!.hasDevInput) fail('"pendgrace" is not in the mismatched fixture\'s TUNE list but still shows a device slider');
+  if (!pendgraceRow!.devNote || !/not on device/i.test(pendgraceRow!.devNote)) fail(`"pendgrace" device column does not say it is missing: ${JSON.stringify(pendgraceRow)}`);
+  if (!pendgraceRow!.lockHidden) fail('"pendgrace" has no device value but its lock checkbox is not hidden');
+
+  const jitterRow = await tuneRow("jitter"); // declared only by this fake build, not the emulator
+  if (!jitterRow) fail('expected a "jitter" row (declared only by the fake board) to appear, not vanish silently');
+  if (jitterRow!.hasEmuInput) fail('"jitter" is not one of the emulator\'s declared tunables but still shows an emulator slider');
+  if (!jitterRow!.emuNote || !/not on emulator/i.test(jitterRow!.emuNote)) fail(`"jitter" emulator column does not say it is missing: ${JSON.stringify(jitterRow)}`);
+  if (!jitterRow!.hasDevInput) fail('"jitter" should still show a working device slider (the board does declare it)');
+  console.log('PASS: a knob on only one side ("pendgrace" emulator-only, "jitter" device-only) shows as such instead of vanishing');
+
   console.log("\nALL PASS");
 } finally {
   if (browser) await browser.close();
-  server.kill();
-  try {
-    Bun.spawnSync(["taskkill", "/pid", String(server.pid), "/t", "/f"], { stdout: "ignore", stderr: "ignore" });
-  } catch {}
+  await killServer(server);
+  await killServer(fakeServer);
+  await killServer(mismatchServer);
 }

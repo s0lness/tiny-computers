@@ -16,6 +16,11 @@
       <div class="topbar">
         <b id="deviceName">device emulator</b>
         <span id="reloadDot" class="reload-dot" title="watching the wasm build for changes"></span>
+        <!-- Detection: unmistakable, no reload needed - see main.ts's
+             updateDevlinkStatusUI and devlinkClient.ts. Text, not just a
+             dot: "no device" has to be readable at a glance, not inferred
+             from a colour. -->
+        <span id="devlinkStatus" class="devlink-status">no device</span>
         <!-- Sound is a device OUTPUT (the same samples the firmware plays,
              see audio.ts), so it sits with the device's own identity here,
              not in the input group or the capture actions. -->

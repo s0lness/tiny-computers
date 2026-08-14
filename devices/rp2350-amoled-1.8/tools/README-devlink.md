@@ -471,6 +471,31 @@ but were not wired up as CLI subcommands until this task; they are now.
 Port and baud are overridable: `DEVLINK_PORT` (default `COM4`),
 `DEVLINK_BAUD` (default `115200`).
 
+### Routing through the emulator's dev server
+
+The COM port is exclusive: only one process can hold it. The emulator's dev
+server (`emulator/server.ts`, via `emulator/devlink-host.ts`) is the single
+owner when it is running - it detects the board itself (polling for USB VID
+`2E8A`) and opens the bridge before this CLI ever gets a chance to race it
+for the handle.
+
+Every command above still works exactly as documented: `openBridge()`
+(`tools/dev.ts`) tries the emulator server first (`GET
+http://127.0.0.1:5330/api/devlink/status`, then a WebSocket at
+`/api/devlink` if it reports a board connected) and falls back to opening
+the port directly - the behaviour described everywhere else in this file -
+whenever the server is not running or is not currently holding a bridge.
+`DEVLINK_SERVER_URL` overrides the server address (default
+`http://127.0.0.1:5330`).
+
+Routing through the server has one visible side effect, and it is the
+point of it: whatever this CLI sends also shows up in the emulator page's
+own console, tagged as coming from the device (so a script and a person
+watching the page never wonder whether they saw the same thing). It is
+otherwise invisible - a `PING`, a `TUNE` fetch, a `shot` behave identically
+either way, they are just no longer capable of fighting the emulator's dev
+server for the port.
+
 ### Bring-up notes (first real run against hardware)
 
 All seven subcommands (`ping`, `shot`, `app`, `switch`, `tap`, `erase`,

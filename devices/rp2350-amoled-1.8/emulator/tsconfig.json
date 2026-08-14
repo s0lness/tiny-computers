@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*.ts", "server.ts", "build.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "server.ts", "build.ts", "scripts/**/*.ts", "devlink-host.ts", "harness/**/*.ts"]
 }

@@ -35,7 +35,12 @@ async function waitForServer(url: string, timeoutMs: number): Promise<void> {
 
 const server = Bun.spawn(["bun", "run", "server.ts"], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT) },
+  // DEVLINK_MODE=off: this is a headless CI-style check, not a session
+  // where a real board should ever be touched. server.ts's own default
+  // (DEVLINK_MODE unset) is "real" - it detects and opens whatever board
+  // is actually plugged into this machine, which a verify script must
+  // never do by accident (see devlink-host.ts / server.ts).
+  env: { ...process.env, PORT: String(PORT), DEVLINK_MODE: "off" },
   stdout: "pipe",
   stderr: "pipe",
 });

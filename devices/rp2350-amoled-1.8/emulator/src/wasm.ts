@@ -35,6 +35,10 @@ export interface EmuExports {
   // emulator builds no tuning panel.
   emu_tune_get?(index: number): number;
   emu_tune_set?(index: number, value: number): void;
+  // Restores tunable `index` to its declared default (emu_abi.h). Optional
+  // for the same reason emu_tune_get/emu_tune_set are: a firmware built
+  // without SKETCH_LIVE_TUNE (or any tunables at all) omits it.
+  emu_tune_reset?(index: number): void;
   // Sound: two counters to diff against what was last seen, not a call the
   // host makes (sound is an output, driven by firmware logic like the
   // timer's alarm, never by the host directly). See emu_abi.h's "sound"

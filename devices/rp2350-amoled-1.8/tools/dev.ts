@@ -114,7 +114,20 @@ async function writeBridgeScript(): Promise<string> {
 // Line-oriented reader over the bridge's stdout
 // ---------------------------------------------------------------------
 
-export class LineReader {
+// The shape expectLine()/readLineWithTimeout() actually depend on: "give me
+// the next line, or null when the source is done." LineReader (below) is
+// one implementation, backed by the PowerShell bridge's own stdout; a
+// second one (WsLineSource, further down) is backed by the emulator
+// server's /api/devlink socket instead, for when this tool routes THROUGH
+// the server rather than opening the port itself (see openBridge()'s own
+// comment for when each is used). Every read loop in this file is written
+// against this interface, not the concrete class, so it works unchanged
+// against either transport.
+export interface LineSource {
+  readLine(): Promise<string | null>;
+}
+
+export class LineReader implements LineSource {
   private reader: ReadableStreamDefaultReader<Uint8Array>;
   private buf = "";
   private decoder = new TextDecoder();
@@ -150,7 +163,7 @@ export class LineReader {
 }
 
 export async function readLineWithTimeout(
-  lines: LineReader,
+  lines: LineSource,
   timeoutMs: number,
   what = "reply"
 ): Promise<string> {
@@ -190,7 +203,7 @@ export async function readLineWithTimeout(
 // kind of debug print the firmware starts emitting later is tolerated the
 // same way without this file needing to change.
 export async function expectLine(
-  lines: LineReader,
+  lines: LineSource,
   shape: RegExp,
   timeoutMs: number,
   what = "reply"
@@ -355,16 +368,35 @@ export function encodeGreyPNG(pixels: Uint8Array, w: number, h: number): Uint8Ar
 // ---------------------------------------------------------------------
 // Bridge lifecycle
 // ---------------------------------------------------------------------
+//
+// The COM port is exclusive: exactly one process can hold it open. The
+// emulator's dev server (server.ts, via devlink-host.ts) is now the single
+// owner of the real port when it is running - it watches for the board and
+// holds the bridge below itself, so this tool no longer opens the port
+// directly whenever the server can be routed through instead. This keeps
+// every command below working unchanged (they all just call openBridge()),
+// keeps this tool usable stand-alone with no server running (falls back to
+// opening the port directly, exactly as before this task), and gives a
+// useful side effect: a command sent this way also shows up in the
+// emulator page's own console, tagged as coming from the device
+// (consolelog.ts / main.ts).
 
-interface Bridge {
-  lines: LineReader;
+export interface Bridge {
+  lines: LineSource;
   send(cmd: string): Promise<void>;
   close(): Promise<void>;
 }
 
 let activeBridge: Bridge | null = null;
 
-async function openBridge(): Promise<Bridge> {
+// Opens the PowerShell bridge directly, exactly as this tool always has.
+// Exported (and parameterised on port/baud rather than only reading the
+// module-level env-derived constants) so the emulator server's DevlinkHost
+// (emulator/devlink-host.ts) can reuse the exact same "how to open this
+// board's serial port" logic - including the DTR-before-Open() ordering,
+// the single most likely way a first real run silently fails - for the
+// bridge IT holds, rather than a second, drift-prone copy of this script.
+export async function openDirectBridge(port: string = PORT, baud: string = BAUD): Promise<Bridge> {
   const scriptPath = await writeBridgeScript();
   const proc = Bun.spawn(
     [
@@ -375,9 +407,9 @@ async function openBridge(): Promise<Bridge> {
       "-File",
       scriptPath,
       "-Port",
-      PORT,
+      port,
       "-Baud",
-      BAUD,
+      baud,
     ],
     { stdin: "pipe", stdout: "pipe", stderr: "inherit" }
   );
@@ -425,6 +457,143 @@ async function openBridge(): Promise<Bridge> {
   // mid-open.
   await Bun.sleep(300);
   return bridge;
+}
+
+// ---------------------------------------------------------------------
+// Routing through the emulator server, when it is running and holding the
+// port itself (see server.ts / devlink-host.ts). A WebSocket stands in for
+// the PowerShell bridge's stdin/stdout pair: a "send" message writes a
+// command line to the server's own bridge, and a "line" message is one raw
+// line back from it (a devlink reply, or noise sharing the port - the
+// server does not distinguish, same as the PowerShell bridge never has).
+// ---------------------------------------------------------------------
+
+// Read fresh on every call, not captured once at module load: lets a test
+// (harness/selftest.ts) point this at a throwaway in-process server by
+// setting the env var right before calling openServerBridge(), with no
+// need to force a second, separately-cached module instance to see it.
+function serverUrl(): string {
+  return process.env.DEVLINK_SERVER_URL ?? "http://127.0.0.1:5330";
+}
+
+class WsLineSource implements LineSource {
+  private queue: string[] = [];
+  private waiters: ((v: string | null) => void)[] = [];
+  private closed = false;
+
+  constructor(ws: WebSocket) {
+    ws.addEventListener("message", (ev) => {
+      const data = (ev as unknown as { data?: unknown }).data;
+      let msg: unknown;
+      try {
+        msg = JSON.parse(String(data));
+      } catch {
+        return;
+      }
+      const m = msg as { type?: string; text?: string; error?: string };
+      if (m.type === "line" && typeof m.text === "string") {
+        this.push(m.text);
+      } else if (m.type === "error" && typeof m.error === "string") {
+        // Surfaced as a synthetic ERR line: the same shape every command
+        // below already handles as a failure reply, so routing through the
+        // server needs no second failure path.
+        this.push(`ERR ${m.error}`);
+      }
+      // "status" messages: not this tool's concern, ignored here.
+    });
+    ws.addEventListener("close", () => this.finish());
+    ws.addEventListener("error", () => this.finish());
+  }
+
+  private push(line: string): void {
+    const w = this.waiters.shift();
+    if (w) w(line);
+    else this.queue.push(line);
+  }
+  private finish(): void {
+    this.closed = true;
+    while (this.waiters.length) this.waiters.shift()!(null);
+  }
+
+  readLine(): Promise<string | null> {
+    if (this.queue.length > 0) return Promise.resolve(this.queue.shift()!);
+    if (this.closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+}
+
+// Returns null (never throws) whenever routing through the server is not
+// possible right now - server not running, unreachable, or running but
+// holding no bridge of its own - so every caller's fallback is always just
+// "open the port directly", exactly what this tool did before the server
+// existed. Exported so harness/selftest.ts can exercise both outcomes
+// directly, without ever letting a fallback cascade into a real port open.
+export async function openServerBridge(): Promise<Bridge | null> {
+  const url = serverUrl();
+  let statusRes: Response;
+  try {
+    statusRes = await fetch(`${url}/api/devlink/status`, { signal: AbortSignal.timeout(800) });
+  } catch {
+    return null; // no server listening on this URL
+  }
+  if (!statusRes.ok) return null;
+  let status: { connected: boolean; port: string | null };
+  try {
+    status = (await statusRes.json()) as typeof status;
+  } catch {
+    return null;
+  }
+  if (!status.connected) return null; // server is up but is not holding a port right now
+
+  const wsUrl = `${url.replace(/^http/, "ws")}/api/devlink`;
+  let ws: WebSocket;
+  try {
+    ws = new WebSocket(wsUrl);
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("timed out opening the devlink socket")), 2000);
+      ws.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
+      ws.addEventListener("error", () => { clearTimeout(timer); reject(new Error("could not open the devlink socket")); }, { once: true });
+    });
+  } catch {
+    return null;
+  }
+
+  const lines = new WsLineSource(ws);
+  const bridge: Bridge = {
+    lines,
+    async send(cmd: string) {
+      ws.send(JSON.stringify({ type: "send", cmd }));
+    },
+    // Unlike openDirectBridge's close(), this does NOT release the COM
+    // port: the server keeps holding it (for the page, and for the next
+    // command) regardless of whether this particular tool invocation is
+    // done with it. It only disconnects this tool's own socket.
+    async close() {
+      try {
+        ws.close();
+      } catch {
+        // already closed
+      }
+      await Promise.race([
+        new Promise<void>((resolve) => ws.addEventListener("close", () => resolve(), { once: true })),
+        Bun.sleep(500),
+      ]);
+      if (activeBridge === bridge) activeBridge = null;
+    },
+  };
+  activeBridge = bridge;
+  return bridge;
+}
+
+// The one function every command below calls. Tries the server first
+// (fast to rule out: an unreachable 127.0.0.1 port fails in milliseconds
+// under Bun, see AGENTS.md's loopback note), falls back to opening the
+// port directly - so this tool works identically whether or not the
+// emulator's dev server happens to be running.
+async function openBridge(): Promise<Bridge> {
+  const server = await openServerBridge();
+  if (server) return server;
+  return openDirectBridge();
 }
 
 process.on("SIGINT", () => {
@@ -688,7 +857,7 @@ const TUNE_RESET_RE = /^TUNE (\S+) (\S+) (\S+)$/;
 const TUNE_ERR_RE = /^ERR .*$/;
 const TUNE_FREEZE_LINE_RE = /^#define \S+_DEFAULT \S+f$/;
 
-async function readUntilEnd(bridge: Bridge, lineOk: (line: string) => boolean, what: string): Promise<string[]> {
+export async function readUntilEnd(bridge: Bridge, lineOk: (line: string) => boolean, what: string): Promise<string[]> {
   const out: string[] = [];
   for (;;) {
     const line = await readLineWithTimeout(bridge.lines, 3000, what);

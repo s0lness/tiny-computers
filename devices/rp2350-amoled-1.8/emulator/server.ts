@@ -2,15 +2,19 @@
 // (built separately, see emulator/wasm/emu_abi.h), and a handful of small
 // write routes: /api/quit (unchanged from before), /api/freeze and
 // /api/trace (write debugging artifacts to a predictable path an agent can
-// read directly), and /api/livereload (a websocket the page listens on so
+// read directly), /api/livereload (a websocket the page listens on so
 // editing firmware and rebuilding shows up on screen without a manual
-// refresh: "fast iteration" is the whole point of this being a local tool).
+// refresh: "fast iteration" is the whole point of this being a local tool),
+// and /api/devlink + /api/devlink/status (the real board: detection, the
+// single serial-port owner, and the board's own console output - see
+// devlink-host.ts for the whole story).
 //
 // Launched by hand (`bun run server.ts` / `bun dev`); no console to Ctrl+C
 // once backgrounded, so the quit button is not optional (local-app.md).
 import { watch, existsSync, mkdirSync, writeFileSync, statSync, openSync, readSync, closeSync } from "node:fs";
 import { join, basename } from "node:path";
 import index from "./src/index.html";
+import { DevlinkHost, type DevlinkMode } from "./devlink-host";
 
 const PORT = Number(process.env.PORT) || 5330;
 
@@ -27,7 +31,15 @@ function guard(req: Request): boolean {
 
 function quit(req: Request): Response {
   if (!guard(req)) return new Response("nope", { status: 403 });
-  setTimeout(() => process.exit(0), 150);
+  // Releases the real COM port (if this server is holding one) before
+  // exiting: devlinkHost.stop() awaits the bridge's own close(), which in
+  // turn awaits the PowerShell child's exit (bounded, see tools/dev.ts's
+  // openDirectBridge). Quitting without this would leave the port locked
+  // by a lingering child process until the OS or a manual kill cleaned it
+  // up - exactly the kind of "single owner" bug this task exists to close.
+  setTimeout(() => {
+    void devlinkHost.stop().finally(() => process.exit(0));
+  }, 150);
   return Response.json({ ok: true, stopping: true });
 }
 
@@ -217,7 +229,34 @@ function startWasmWatcher(): void {
 }
 startWasmWatcher();
 
-const server = Bun.serve({
+// ---- devlink: single owner of the real board's serial port -------------
+//
+// DEVLINK_MODE defaults to "real" (the owner just plugs a board in and it
+// is noticed - see devlink-host.ts's own header for the detection/ownership
+// story), which is why this server must NEVER be started this way during
+// development or testing on a machine where a real board might be
+// connected: "fake" (the in-process loopback fixture, harness/fixtures/
+// loopbackLink.ts) or "off" (touches nothing at all) are what every check
+// in scripts/verify-ui-feedback.ts passes explicitly.
+const DEVLINK_MODE = (process.env.DEVLINK_MODE as DevlinkMode | undefined) ?? "real";
+const DEVLINK_FAKE_TUNABLES = process.env.DEVLINK_FAKE_TUNABLES === "mismatch" ? "mismatch" : "default";
+
+const devlinkHost = new DevlinkHost({ mode: DEVLINK_MODE, fakeTunables: DEVLINK_FAKE_TUNABLES });
+const devlinkClients = new Set<import("bun").ServerWebSocket<unknown>>();
+
+devlinkHost.onStatus((status) => {
+  const msg = JSON.stringify({ type: "status", ...status });
+  for (const ws of devlinkClients) ws.send(msg);
+});
+devlinkHost.onLine((text) => {
+  const msg = JSON.stringify({ type: "line", text });
+  for (const ws of devlinkClients) ws.send(msg);
+});
+await devlinkHost.start();
+
+type WsKind = { kind: "devlink" | "livereload" };
+
+const server = Bun.serve<WsKind>({
   port: PORT,
   // Local-only tool: without an explicit hostname Bun listens on every
   // interface (:::5330), reachable by anyone on the same network.
@@ -225,13 +264,33 @@ const server = Bun.serve({
   development: { hmr: true, console: true },
   websocket: {
     open(ws) {
-      wsClients.add(ws);
+      const kind = (ws.data as WsKind | undefined)?.kind;
+      if (kind === "devlink") {
+        devlinkClients.add(ws);
+        ws.send(JSON.stringify({ type: "status", ...devlinkHost.status }));
+      } else {
+        wsClients.add(ws);
+      }
     },
     close(ws) {
       wsClients.delete(ws);
+      devlinkClients.delete(ws);
     },
-    message() {
-      // The page never sends anything on this socket; it only listens.
+    message(ws, message) {
+      const kind = (ws.data as WsKind | undefined)?.kind;
+      if (kind !== "devlink") return; // livereload: the page never sends anything on that socket
+      let msg: unknown;
+      try {
+        msg = JSON.parse(String(message));
+      } catch {
+        return;
+      }
+      const m = msg as { type?: string; cmd?: string };
+      if (m.type === "send" && typeof m.cmd === "string") {
+        if (!devlinkHost.sendRaw(m.cmd)) {
+          ws.send(JSON.stringify({ type: "error", error: "no device connected" }));
+        }
+      }
     },
   },
   routes: {
@@ -239,8 +298,25 @@ const server = Bun.serve({
     "/api/freeze": { POST: saveFreeze },
     "/api/trace": { POST: saveTrace },
     "/api/livereload": {
-      GET(req, srv) {
-        if (srv.upgrade(req)) return;
+      GET(req: Request, srv: import("bun").Server<WsKind>) {
+        if (srv.upgrade(req, { data: { kind: "livereload" } })) return;
+        return new Response("upgrade failed", { status: 400 });
+      },
+    },
+    // Single owner of the real serial port (devlink-host.ts): this route
+    // never opens a port itself, it only relays to/from whatever
+    // DevlinkHost already holds. /status is a plain GET so tools/dev.ts can
+    // cheaply check "is the server up AND holding a bridge right now"
+    // before deciding whether to route a command through the socket below
+    // or fall back to opening the port directly (see dev.ts's openBridge).
+    "/api/devlink/status": {
+      GET() {
+        return Response.json(devlinkHost.status);
+      },
+    },
+    "/api/devlink": {
+      GET(req: Request, srv: import("bun").Server<WsKind>) {
+        if (srv.upgrade(req, { data: { kind: "devlink" } })) return;
         return new Response("upgrade failed", { status: 400 });
       },
     },

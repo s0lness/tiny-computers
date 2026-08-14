@@ -19,6 +19,7 @@ import { buildTuneControls } from "./tunables";
 import { buildAppStrip, type AppStripControl } from "./appstrip";
 import { ShortcutRegistry, assignShortcut } from "./shortcuts";
 import { ConsoleLog, type LogLine } from "./consolelog";
+import { DevlinkClient, type DevlinkStatus } from "./devlinkClient";
 import { Recorder, type Trace } from "./recorder";
 import { Replayer } from "./replay";
 import { postFreeze, canvasToPngBase64, openAnnotationModal, type FreezeBundle } from "./freeze";
@@ -69,6 +70,7 @@ const replayBarEl = $("#replayBar");
 const btnStopReplay = $<HTMLButtonElement>("#btnStopReplay");
 const btnPause = $<HTMLButtonElement>("#btnPause");
 const stageEl = $("#stage");
+const devlinkStatusEl = $("#devlinkStatus");
 
 // ---- state ----
 let emu: EmuExports | null = null;
@@ -83,6 +85,14 @@ let accentColor = "#c4621f";
 
 const recorder = new Recorder();
 const consoleLog = new ConsoleLog(500, appendConsoleLine);
+// Detection (an unmistakable page indicator, updated with no reload the
+// instant a board appears or disappears), single ownership of the real
+// serial port (this page never opens it itself, only server.ts's
+// DevlinkHost does - see devlinkClient.ts and server.ts), the board's own
+// console lines (tagged apart from the emulated firmware's, see
+// appendConsoleLine below), and the tuning panel's device column
+// (tunables.ts) all come from this one client.
+const devlinkClient = new DevlinkClient();
 const pushOverlay = new PushOverlay();
 const touchOverlay = new TouchOverlay();
 const shortcuts = new ShortcutRegistry();
@@ -157,13 +167,47 @@ const pushHistory: { tMs: number; x: number; y: number; w: number; h: number }[]
 const PUSH_HISTORY_MAX = 400;
 
 // ---- console pane ----
+// Two machines can speak into this one pane: the emulated firmware's own
+// printf (source "fw", the historical and still-default case, rendered
+// exactly as before this task) and, once a real board is connected, the
+// board's own serial output (source "device" - see devlinkClient.ts's
+// "line" messages, wired below in wireStaticUI). A "dev" tag plus a
+// distinct colour (app.css) marks the latter: two near-identical streams
+// of text with no way to tell which machine is speaking would be its own
+// bug, the same confusion the tuning panel's side-by-side columns
+// (tunables.ts) exist to prevent for the knobs.
 function appendConsoleLine(line: LogLine): void {
   const div = document.createElement("div");
-  div.className = "console-line";
-  div.textContent = line.text;
+  div.className = line.source === "device" ? "console-line console-line-device" : "console-line";
+  if (line.source === "device") {
+    const tag = document.createElement("span");
+    tag.className = "console-line-tag";
+    tag.textContent = "dev";
+    div.appendChild(tag);
+    div.appendChild(document.createTextNode(line.text));
+  } else {
+    div.textContent = line.text;
+  }
   consolePaneEl.appendChild(div);
   while (consolePaneEl.childElementCount > 300) consolePaneEl.removeChild(consolePaneEl.firstChild!);
   consolePaneEl.scrollTop = consolePaneEl.scrollHeight;
+}
+
+// ---- devlink status: unmistakable, updated with no reload ----
+// Owner's own framing: "quand il faut que ça remarque si il y a un device
+// qui est plugé" - plugging or unplugging while the page is open must be
+// visible immediately. devlinkClient.ts pushes a status message the instant
+// server.ts's DevlinkHost notices a change (see that file's PowerShell
+// watcher); this just renders whatever it says. Text, not just a coloured
+// dot (the reload-dot's own mistake would be repeating here): a dot alone
+// is not "plainly says no device is present", which the connected-UI test
+// (scripts/verify-ui-feedback.ts) checks for in words.
+function updateDevlinkStatusUI(status: DevlinkStatus): void {
+  devlinkStatusEl.classList.toggle("connected", status.connected);
+  devlinkStatusEl.textContent = status.connected ? `device: ${status.port}` : "no device";
+  devlinkStatusEl.title = status.connected
+    ? `a board is connected on ${status.port} - tools/dev.ts routes through this page's server instead of opening the port itself`
+    : "no board detected on this machine's USB (VID 2E8A) - plug one in, no reload needed";
 }
 
 // ---- wasm error banner ----
@@ -368,12 +412,14 @@ function buildChrome(d: DeviceDescriptor): void {
     appStripControl = buildAppStrip($("#appStrip"), d.apps || [], emu);
 
     // Live tunables (emu_abi.h's "tunables"): hidden entirely when the
-    // loaded module declares none, same "the wrap only shows up if the
-    // descriptor has something to put in it" rule appStripWrap already
-    // follows for apps just above.
+    // loaded module declares none AND no device is connected to reveal any
+    // of its own (tunables.ts manages this wrap's visibility itself now,
+    // since a connected board can have tunables the emulator build does
+    // not, same "the wrap only shows up if there is something to put in
+    // it" rule appStripWrap follows for apps just above, just no longer
+    // decidable from the emulator's own descriptor alone).
     const tunables = d.tunables || [];
-    $("#tuneToolboxWrap").classList.toggle("hidden", tunables.length === 0);
-    buildTuneControls($("#tuneToolbox"), tunables, emu);
+    buildTuneControls($("#tuneToolbox"), $("#tuneToolboxWrap"), tunables, emu, devlinkClient);
   }
 
   shakeSensorIndex = (d.sensors || []).findIndex((s) => s.id.toLowerCase() === "shake");
@@ -936,6 +982,10 @@ function wireStaticUI(): void {
   wirePanelInput();
   connectLiveReload();
   wireTraceFile();
+
+  devlinkClient.onStatus(updateDevlinkStatusUI);
+  devlinkClient.onLine((text) => consoleLog.push(text, "device"));
+  devlinkClient.connect();
 
   // Owner report: resizing the browser window left the puck off centre.
   // See positionDevice()'s own comment for the fix; this is what makes a

@@ -83,6 +83,23 @@
 }
 .reload-dot.connected { background: var(--positive); }
 
+/* ---------- devlink status: unmistakable, plain text plus colour (never
+   colour alone). Purple (--chip-a-*), not the terracotta accent: the
+   accent already means "this control is active" everywhere else on this
+   page (mute, chord hold, app-strip selection), and a real board being
+   plugged in is a DIFFERENT kind of fact, not one more active control. The
+   same purple marks the board's own console lines below, so the one colour
+   reads as "this is the real device speaking" everywhere it appears. ---- */
+.devlink-status {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--chip-bg);
+  border-radius: var(--radius-chip);
+  padding: 2px 7px;
+  margin-left: 6px;
+}
+.devlink-status.connected { color: var(--chip-a-text); background: var(--chip-a-bg); }
+
 .filebtn { position: relative; overflow: hidden; }
 .filebtn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
@@ -325,6 +342,35 @@
 .tune-note { font-size: 10px; color: var(--muted); line-height: 1.4; margin: 0 0 6px; }
 .tune-note code { font-size: 10px; }
 
+/* Once a board is connected, every row grows a second column: "he moved
+   sliders in the emulator, drew on the board, and felt nothing change" -
+   two visible numbers, one per machine, cannot be misread as one. Hidden
+   entirely (.tune-col-dev stays .hidden) with no device connected, which is
+   what keeps a disconnected page's tuning panel looking exactly as it did
+   before this task. */
+.tune-device-status { font-size: 10px; color: var(--muted); margin: 0 0 8px; }
+.tune-row .row-head { align-items: center; }
+.tune-lock {
+  display: flex; align-items: center; gap: 3px;
+  font-size: 10px; color: var(--chip-a-text);
+  cursor: pointer; user-select: none;
+}
+.tune-lock input { margin: 0; }
+.tune-cols { display: flex; gap: 8px; }
+.tune-col { flex: 1 1 0; min-width: 0; }
+/* "emu"/"device" sub-labels only appear once there is a second column to
+   distinguish from - a single-column row (no device connected) needs no
+   label, same as it needed none before this task. */
+.tune-col-label { display: none; font-size: 9px; text-transform: uppercase; color: var(--faint); margin-bottom: 2px; }
+#tuneToolbox.device-connected .tune-col-label { display: block; }
+.tune-col-dev { border-left: 1px dashed var(--border-fine); padding-left: 8px; }
+.tune-col input[type=range] { width: 100%; }
+.tune-col-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; }
+.tune-col-foot .tune-val { font-size: 11px; color: var(--accent-dark); font-variant-numeric: tabular-nums; }
+.tune-col-dev .tune-col-foot .tune-val { color: var(--chip-a-text); }
+.tune-reset { font-size: 10px; padding: 1px 5px; }
+.tune-missing-note { font-size: 10px; color: var(--faint); font-style: italic; }
+
 .toggle-row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; }
 .toggle-row input[type=checkbox] { margin: 0; }
 
@@ -377,6 +423,23 @@
 }
 .console-line { white-space: pre-wrap; word-break: break-word; color: var(--hint); }
 .console-line + .console-line { border-top: 1px dashed var(--border-fine); }
+/* The board's own serial output, once connected (devlinkClient.ts's "line"
+   messages): same purple as .devlink-status.connected above, plus an
+   explicit "dev" tag, not colour alone - see main.ts's appendConsoleLine
+   for why two near-identical text streams need more than a hue apart. */
+.console-line-device { color: var(--chip-a-text); }
+.console-line-tag {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--chip-a-bg);
+  color: var(--chip-a-text);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-right: 5px;
+  vertical-align: 1px;
+}
 
 /* ---------- freeze annotation modal ---------- */
 .freeze-modal { max-width: none; width: fit-content; }

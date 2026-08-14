@@ -5,7 +5,8 @@
     "dev": "bun run server.ts",
     "build": "bun run build.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "bun run scripts/verify.ts"
+    "verify": "bun run scripts/verify.ts",
+    "harness:selftest": "bun run harness/selftest.ts"
   },
   "devDependencies": {
     "@types/bun": "latest",
