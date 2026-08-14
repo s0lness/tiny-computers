@@ -1597,7 +1597,15 @@ static void paint_cap_row(int y, int rowIdx, float deg, uint16_t c) {
     float rr = (float)(CAP_R * CAP_R) - dv * dv;
     if (rr <= 0.0f) return;
     float half = sqrtf(rr);
-    fill_band_run(y, rowIdx, (int)floorf(dxCap - half), (int)ceilf(dxCap + half), c);
+    // A pixel belongs to the cap when its CENTRE is inside the disc, which is
+    // the same rule paint_head_outline_row and phi_deg_for_col already use
+    // (centres sit at dx + 0.5). Filling from floorf() to ceilf() instead
+    // rounds every row OUTWARD, so each one overhangs by up to a pixel: that
+    // is what made the end look crenelated and squared off rather than
+    // round, which the owner spotted on the panel.
+    int lo = (int)ceilf(dxCap - half - 0.5f);
+    int hi = (int)floorf(dxCap + half - 0.5f);
+    fill_band_run(y, rowIdx, lo, hi, c);
 }
 
 // One row of the head's outward crescent: the outer HEAD_OUTLINE_PX of the
