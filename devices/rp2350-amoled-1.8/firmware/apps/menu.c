@@ -1055,6 +1055,33 @@ static void draw_icon_lucide_chrono(int ox, int oy, uint16_t color) {
     float hx[2] = { dx + s_lucideChronoHandX[0], dx + s_lucideChronoHandX[1] };
     float hy[2] = { dy + s_lucideChronoHandY[0], dy + s_lucideChronoHandY[1] };
     shapes_stroke_polyline_aa_land(hx, hy, 2, LUCIDE_STROKE_HALF, color);
+
+    // TWO STEMS, ours and not Lucide's. Lucide's timer glyph leaves the top
+    // bar floating clear of the circle, and the conversion was faithful to
+    // that. The owner drew the two missing lines straight onto the render:
+    // "assure toi que le haut du chronometre est bien relie au reste de
+    // l'appareil comme je l'ai decide".
+    //
+    // He is holding an addition to his own standing rule, stated on the very
+    // first icon round and never withdrawn since: one connected piece of ink,
+    // nothing floating. A detached bar is the same defect as the hourglass's
+    // loose grain of sand and the old chrono's floating tab, and it does not
+    // stop being one because an upstream icon set drew it that way.
+    //
+    // Deliberately thinner than LUCIDE_STROKE_HALF: these are the crown's
+    // stem, not another bar. They run from inside the bar's own ink down past
+    // the ring's outer edge, so both joins overlap rather than abut, which is
+    // what MIN composition needs to merge them into one mark.
+    {
+        const float stemHalf = 3.0f;
+        float sx[2], sy[2];
+        sx[0] = dx + 42.0f; sy[0] = dy + 10.0f;
+        sx[1] = dx + 43.0f; sy[1] = dy + 27.0f;
+        shapes_stroke_polyline_aa_land(sx, sy, 2, stemHalf, color);
+        sx[0] = dx + 54.0f; sy[0] = dy + 10.0f;
+        sx[1] = dx + 53.0f; sy[1] = dy + 27.0f;
+        shapes_stroke_polyline_aa_land(sx, sy, 2, stemHalf, color);
+    }
 }
 
 // ---- sketch candidates: pencil.svg and pencil-line.svg. pen-tool.svg
@@ -1157,9 +1184,9 @@ static void draw_icon_lucide_timer_loadercircle(int ox, int oy, uint16_t color) 
 // 0 = keep painting the current shipped icon for that app; 1 (2 for
 // sketch/timer's second candidate) previews the named Lucide candidate
 // instead. All 0 until the owner has looked - see this pass's own report.
-#define CHRONO_ICON_LUCIDE 0
-#define SKETCH_ICON_LUCIDE 0 // 0=off, 1=pencil, 2=pencil-line
-#define TIMER_ICON_LUCIDE  0 // 0=off, 1=hourglass, 2=loader-circle
+#define CHRONO_ICON_LUCIDE 1
+#define SKETCH_ICON_LUCIDE 1 // 0=off, 1=pencil, 2=pencil-line
+#define TIMER_ICON_LUCIDE  1 // 0=off, 1=hourglass, 2=loader-circle
 
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
