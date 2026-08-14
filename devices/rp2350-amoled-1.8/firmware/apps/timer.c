@@ -2622,13 +2622,12 @@ static void timer_tick(const app_frame_t *f) {
             // period (sound_synth.c) - audibly chopped, not "repeated
             // gently". One call here is the whole hook.
             //
-            // SILENT, 2026-08-14, owner's decision: "j'aimerais que tu
-            // enlèves les sons de l'application minuteur". The chime itself
-            // is kept in sound_synth.c and the hook above still describes
-            // where it went, because this is a product choice and not a
-            // defect: putting it back is uncommenting one line. The alarm
-            // still announces itself by flashing the whole panel.
-            // sound_play(SOUND_ID_TIMER_ALARM);
+            // Silenced on 2026-08-14 at the owner's request, then put back
+            // the same day at his request too. Recorded rather than tidied
+            // away: this line has now been a product decision twice, in both
+            // directions, so the next person to wonder whether the silence
+            // was deliberate has the answer without asking.
+            sound_play(SOUND_ID_TIMER_ALARM);
             printf("timer: ringing\r\n");
             return;
         }
