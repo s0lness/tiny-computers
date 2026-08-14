@@ -427,6 +427,28 @@ afternoon twice before the rename went in.
 
 ## Gotchas that bite
 
+- **`zig.exe` hangs, and it looks exactly like a broken toolchain.** Builds
+  start failing with `zig cc exited 5` and no diagnostics, then stop
+  producing output at all. The cause is HUNG zig processes holding the shared
+  global cache lock: eight of them were found at once on 2026-08-14, one 21
+  hours old, all with a few hundredths of a second of CPU (a real build burns
+  CPU; these were deadlocked). The run queue was at 41. Three agents lost
+  time to it the same afternoon.
+
+  Diagnose and clear it by AGE AND CPU, never by name - `taskkill /IM` on a
+  shared machine is how someone's browser dies:
+
+  ```powershell
+  Get-Process zig | Select-Object Id, StartTime, CPU
+  Get-Process zig | Where-Object { $_.CPU -lt 1 -and $_.StartTime -lt (Get-Date).AddMinutes(-2) } |
+    ForEach-Object { Stop-Process -Id $_.Id -Force }
+  ```
+
+  Builds go back to succeeding first try. `emulator/wasm/build.ts` retries the
+  crash and links through a temp file, which covers the intermittent case; it
+  cannot do anything about a lock held by a process that never exits.
+
+
 - **We carry a patch to `AMOLED_1IN8_DisplayWindows`.** Upstream's DMA loop is
   `for (i = Ystart; i < Yend - 1; i++)`, which sends one row fewer than the
   window `SetWindows` just declared to the panel (it programs `Yend-1` as the

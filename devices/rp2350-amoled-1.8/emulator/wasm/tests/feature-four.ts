@@ -11,7 +11,7 @@
 // WHAT THIS FILE PROVES, IN ORDER:
 //   1. the board renders as a slab with white holes, filling the VISIBLE
 //      canvas edge to edge (gfx.h PANEL_BEZEL_MARGIN_PX - the case hides a
-//      band the emulator cannot show), with a red arrow at the head of the
+//      band the emulator cannot show), with a red waiting piece above the
 //      centre column, and the arena footprint is REPORTED not assumed;
 //   2. a thumb on the glass highlights its column unmistakably - the chute
 //      washes pale red the whole height of the screen, and the lowest empty
@@ -22,7 +22,7 @@
 //   4. THE BOARD NEVER MOVES ON ITS OWN. Two people play this, one puck
 //      between them, and nothing in the app takes a turn: over five seconds
 //      of nobody touching the glass, every one of the 42 holes still holds
-//      what it held and not one pixel outside the single column the arrow is
+//      what it held and not one pixel outside the single column the waiting
 //      parked over changes. This is the property the owner actually asked
 //      for ("il faudrait que ce soit chacun son tour avec deux joueurs"), so
 //      it is asserted directly rather than inferred from the absence of an
@@ -31,7 +31,7 @@
 //      has to say and has no words to say it with. All three cues are
 //      checked at the moment they matter, the instant the turn changes: the
 //      whole slab changes temperature (warm for red, cool for blue), the new
-//      player's chute washes in at the centre and fades, and the new ARROW
+//      player's chute washes in at the centre and fades, and the new PIECE
 //      pops in in their colour;
 //   6. the second player then plays, with the identical gesture, and their
 //      piece is blue;
@@ -50,11 +50,11 @@
 // was rewritten when the timer stopped being a dial).
 //
 // SECOND REWRITE, when the board went full width and full height and the
-// waiting piece became an arrow: "je pense que j.aimerais qu.elle prenne
+// waiting piece briefly became an arrow: "je pense que j.aimerais qu.elle prenne
 // absolument tout l.ecran en largeur... on fait disparaitre la balle mais on
 // peut remplacer par un highlight de la colonne avec une fleche". Three
 // classes of assertion had to change. Anything that read a HOLE at its
-// centre, because the arrow now lives inside one (holeAt samples the rim
+// centre, because the arrow lived inside one for a round (holeAt samples the rim
 // instead). Anything that said "below the hopper", because there is no
 // hopper (unchangedOutsideColumn says what is actually meant). And the
 // colour predicates themselves, which compared raw byte pairs and matched a
@@ -109,17 +109,18 @@ const BEZEL = 10;                       // gfx.h PANEL_BEZEL_MARGIN_PX
 const SAFE_X0 = BEZEL, SAFE_X1 = LAND_W - BEZEL;
 const SAFE_Y0 = BEZEL, SAFE_Y1 = LAND_H - BEZEL;
 const SAFE_W = SAFE_X1 - SAFE_X0, SAFE_H = SAFE_Y1 - SAFE_Y0;
-const CELL_W = Math.floor(SAFE_W / COLS);
-const BOARD_X0 = SAFE_X0 + Math.floor((SAFE_W - COLS * CELL_W) / 2);
-const CELL_H = Math.floor(SAFE_H / ROWS);            // FOUR_FULL_HEIGHT=1
-const BOARD_Y0 = SAFE_Y0 + Math.floor((SAFE_H - ROWS * CELL_H) / 2);
-const HOLE_R = Math.min(CELL_W, CELL_H) / 2 - 4;
+// Square cells: six rows plus a hopper tall enough for a whole waiting piece
+// pin CELL at 49 inside the visible canvas. Derived the way four.c derives
+// it rather than written down, so one edit to the bezel moves both.
+const CELL = 49;
+const SLAB_PAD = 6;
+const BOARD_W = COLS * CELL;
+const BOARD_X0 = SAFE_X0 + Math.floor((SAFE_W - BOARD_W) / 2);
+const BOARD_Y0 = SAFE_Y1 - SLAB_PAD - ROWS * CELL;
+const HOLE_R = CELL / 2 - 4;
 const GHOST_STROKE = HOLE_R / 3;
-// The arrow that replaced the waiting piece: at full height it sits in the
-// top hole, so its centre is row 0's centre.
-const ARROW_CY = BOARD_Y0 + CELL_H / 2;
-const ARROW_HALF_W = 18, ARROW_HALF_H = 13, ARROW_STROKE = 6.5;
-const ARROW_ROW = 0;                    // four.c ARROW_ROW at FOUR_FULL_HEIGHT=1
+// The waiting piece, back above the board after a round as an arrow.
+const HOPPER_CY = SAFE_Y0 + HOLE_R;
 const RELEASE_GRACE_MS = 300;
 const HANDOFF_MS = 420;
 const CELEBRATE_SKIP_MS = 1200;
@@ -127,8 +128,8 @@ const CENTRE_COL = 3; // four.c parks the waiting piece at COLS/2 every turn
 
 // col_x() uses C integer division for the half-cell, row_y() does not: both
 // mirror four.c exactly rather than being "close enough".
-const colX = (c: number) => BOARD_X0 + Math.floor(CELL_W / 2) + c * CELL_W;
-const rowY = (r: number) => BOARD_Y0 + CELL_H / 2 + r * CELL_H;
+const colX = (c: number) => BOARD_X0 + Math.floor(CELL / 2) + c * CELL;
+const rowY = (r: number) => BOARD_Y0 + CELL / 2 + r * CELL;
 // A gutter between two rows, which is where a probe of the SLAB or of the
 // chute has to land: anywhere else in a column is a hole.
 const gutterY = (r: number) => (rowY(r) + rowY(r + 1)) / 2;
@@ -410,20 +411,19 @@ function playMove(dev: Device, col: number, t0: number, ly = 200): number {
     return settle(dev, t, RELEASE_GRACE_MS + 1300);
 }
 
-// How many pixels of `player`'s own saturated colour the arrow's box holds.
-// The arrow is two round-capped strokes meeting at an apex, so there is no
-// single pixel guaranteed to be ink - the exact centre of the chevron falls
-// BETWEEN its two arms, which is how a probe of one point would have
-// reported "no arrow" on a perfectly good one. Counting over the box is both
-// robust and the thing actually worth asserting: that there is a meaningful
-// amount of that player's colour up there.
-function arrowInk(fb: Uint8Array, col: number, player: number): number {
+// How many pixels of `player`'s own saturated colour sit in the hopper
+// above column `col` - i.e. is the waiting piece there, and whose is it.
+//
+// Counted over a box rather than probed at one point. That was needed when
+// the cue was a chevron (whose exact centre falls BETWEEN its two arms) and
+// it stays useful now that it is a disc again: a count also distinguishes a
+// FILLED piece from the hollow ring a full column shows, which a single
+// centre sample cannot.
+function pieceInk(fb: Uint8Array, col: number, player: number): number {
     const isColour = player === P_RED ? isRedish : isBluish;
-    const halfW = ARROW_HALF_W + ARROW_STROKE + 2;
-    const halfH = ARROW_HALF_H + ARROW_STROKE + 2;
     let n = 0;
-    for (let ly = Math.round(ARROW_CY - halfH); ly <= Math.round(ARROW_CY + halfH); ly++) {
-        for (let lx = Math.round(colX(col) - halfW); lx <= Math.round(colX(col) + halfW); lx++) {
+    for (let ly = Math.round(HOPPER_CY - HOLE_R - 8); ly <= Math.round(HOPPER_CY + HOLE_R + 2); ly++) {
+        for (let lx = Math.round(colX(col) - HOLE_R - 2); lx <= Math.round(colX(col) + HOLE_R + 2); lx++) {
             if (lx < 0 || lx >= LAND_W || ly < 0 || ly >= LAND_H) continue;
             if (isColour(landPx(fb, lx, ly))) n++;
         }
@@ -431,21 +431,21 @@ function arrowInk(fb: Uint8Array, col: number, player: number): number {
     return n;
 }
 
-// Do the two framebuffers agree everywhere OUTSIDE the column the arrow is
-// parked over? That column is allowed to change: the arrow bobs there
+// Do the two framebuffers agree everywhere OUTSIDE the column the waiting
+// piece is parked over? That column is allowed to change: the piece bobs there
 // forever, and that is the point of it (it is the one moving thing on a
 // still screen, and one of the three cues saying whose turn it is).
 //
 // THIS USED TO BE "nothing below the hopper changes", and it stopped meaning
 // anything the moment the board went full height: there is no hopper any
-// more, the arrow lives INSIDE the board's top row, and a y threshold would
+// more, and the cue at the top of a column is inside that column, so a y threshold would
 // either have excluded most of the board or have included the one thing that
 // is supposed to move. Rewritten to describe the new layout rather than
 // loosened to survive it - and it is a strictly stronger statement, because
 // it now covers the whole panel outside a single 61px column instead of
 // everything under an arbitrary line.
 function unchangedOutsideColumn(a: Uint8Array, b: Uint8Array, col: number): { lx: number; ly: number } | null {
-    const lo = colX(col) - CELL_W / 2 - 8, hi = colX(col) + CELL_W / 2 + 8;
+    const lo = colX(col) - CELL / 2 - 10, hi = colX(col) + CELL / 2 + 10;
     for (let ly = 0; ly < LAND_H; ly++) {
         for (let lx = 0; lx < LAND_W; lx++) {
             if (lx >= lo && lx <= hi) continue;
@@ -458,15 +458,15 @@ function unchangedOutsideColumn(a: Uint8Array, b: Uint8Array, col: number): { lx
 
 // Is this hole FILLED by a piece, and by whose? Sampled at four points near
 // the hole's rim rather than at its centre, and this is not fussiness: at
-// full height the arrow lives inside row 0's hole, so a centre sample there
+// for one round the arrow lived inside row 0's hole, so a centre sample there
 // reads the chevron's ink and calls an empty hole occupied. A piece is a
-// disc that fills the hole, so all four rim points agree; an arrow is two
+// disc that fills the hole, so all four rim points agree; an arrow was two
 // strokes that reach none of them (checked against the chevron's own
 // geometry: the nearest of the four is 10px clear of the nearest arm).
 //
 // The first version of this DID sample the centre, and the census it built
 // reported the top row of the parked column as holding a piece that was
-// never played. Worth keeping the reason written down: the arrow moved into
+// never played. Worth keeping the reason written down: a cue moved into
 // the board when the board went full height, and every "read the hole" probe
 // in this file had quietly assumed nothing else was ever drawn in one.
 function holeAt(fb: Uint8Array, c: number, r: number): "R" | "B" | "." | "?" {
@@ -690,13 +690,13 @@ async function main() {
     check("the slab's bounding-box corner is still paper - a lozenge, not a rectangle (decision 0009)",
         near(slabCorner, C_WHITE), describe(slabCorner));
 
-    // Red starts, and the screen says so twice over: the ARROW at the head of
+    // Red starts, and the screen says so twice over: the WAITING PIECE above
     // the centre column is red, and the whole board is wearing red's warm
-    // grey. The arrow is what the waiting piece used to be, and it inherited
-    // the turn cue with the job (four.c section 3).
-    const redArrow = arrowInk(fb, CENTRE_COL, P_RED);
-    check("red starts: a red arrow at the head of the centre column, pointing down",
-        redArrow > 150, ` red pixels in the arrow box`);
+    // grey. The piece is the stronger of the two cues that have held this job
+    // (four.c section 3) - a filled disc, not a stroke.
+    const redWaiting = pieceInk(fb, CENTRE_COL, P_RED);
+    check("red starts: a red waiting piece above the centre column",
+        redWaiting > 150, `${redWaiting} red pixels in the hopper`);
 
     // ---- 2. the highlight ----------------------------------------------
     console.log("\n-- a thumb goes down on column 2 --");
@@ -737,10 +737,10 @@ async function main() {
     check("the lowest empty hole of that column wears a red landing ring, hollow in the middle",
         isRedish(ringInk) && near(ringHole, C_WHITE), `ring ${describe(ringInk)}, middle ${describe(ringHole)}`);
 
-    const arrowOnCol2 = arrowInk(fb, 2, P_RED);
-    const arrowOffCentre = arrowInk(fb, CENTRE_COL, P_RED);
-    check("the arrow rides the highlighted column, and is not left behind where it was parked",
-        arrowOnCol2 > 150 && arrowOffCentre === 0, `${arrowOnCol2} red pixels on column 2, ${arrowOffCentre} still at the centre`);
+    const pieceOnCol2 = pieceInk(fb, 2, P_RED);
+    const pieceOffCentre = pieceInk(fb, CENTRE_COL, P_RED);
+    check("the waiting piece rides the highlighted column, and is not left behind where it was parked",
+        pieceOnCol2 > 150 && pieceOffCentre === 0, `${pieceOnCol2} red pixels on column 2, ${pieceOffCentre} still at the centre`);
 
     // ---- the thumb slides ------------------------------------------------
     console.log("\n-- the thumb slides across to column 5 --");
@@ -810,7 +810,7 @@ async function main() {
         const washUp = blueness(landPx(now, colX(CENTRE_COL), washRow)) -
                        blueness(landPx(now, colX(CENTRE_COL - 2), washRow)) >= 3;
         if (washUp) sawBlueWashAtCentre = true;
-        const ink = arrowInk(now, CENTRE_COL, P_BLUE);
+        const ink = pieceInk(now, CENTRE_COL, P_BLUE);
         // The frame worth photographing is the one where BOTH halves of the
         // announcement are at their most legible: the wash still up, and the
         // piece as far through its pop as it gets while it is. Taking the
@@ -824,18 +824,18 @@ async function main() {
         !dev.fwLogLines().some((l) => l.includes("four: drop") && l.includes("player=2")),
         "no blue piece appeared by itself");
     check("at the turn change the centre column washes in the NEW player's colour, full height", sawBlueWashAtCentre);
-    check("and the new ARROW arrives in blue", bluePieceRadius > 150, `blue arrow reached ${bluePieceRadius} pixels of ink`);
+    check("and the new waiting piece arrives in blue", bluePieceRadius > 150, `blue waiting piece reached ${bluePieceRadius} pixels of ink`);
     if (handoffShot) {
         await writeScreenshot("four-turn.png", handoffShot,
-            "the instant the turn changes: the board has gone cool, the centre column is washed blue, blue's arrow is arriving");
+            "the instant the turn changes: the board has gone cool, the centre column is washed blue, blue's waiting piece is arriving");
     }
 
     fb = dev.fbSnapshot();
     const slabNow = landPx(fb, colX(1), gutterY(0));
     check("THE WHOLE BOARD has changed temperature - it wears blue's grey now, not red's",
         near(slabNow, C_SLAB_BLUE) && !near(slabNow, C_SLAB_RED), `${describe(slabNow)} (red would be ${describe(C_SLAB_RED)})`);
-    const settledArrow = arrowInk(fb, CENTRE_COL, P_BLUE);
-    check("and the arrow has settled at the centre, in blue", settledArrow > 150, `${settledArrow} blue pixels in the arrow box`);
+    const settledWaiting = pieceInk(fb, CENTRE_COL, P_BLUE);
+    check("and the waiting piece has settled at the centre, in blue", settledWaiting > 150, `${settledWaiting} blue pixels in the arrow box`);
 
     // ---- 4. THE BOARD NEVER MOVES ON ITS OWN ----------------------------
     // The property the owner actually asked for, asserted directly. Five
@@ -856,7 +856,7 @@ async function main() {
     check("every one of the 42 holes holds exactly what it held five seconds ago",
         holeCensus(afterIdle) === censusBefore, `${censusBefore} -> ${holeCensus(afterIdle)}`);
     const moved = unchangedOutsideColumn(beforeIdle, afterIdle, CENTRE_COL);
-    check("and not one pixel outside the parked column changes either - the board is still, the arrow breathes",
+    check("and not one pixel outside the parked column changes either - the board is still, the waiting piece breathes",
         moved === null, moved ? `landscape pixel (${moved.lx},${moved.ly}) changed` : "0 pixels changed outside that one column");
 
     // ---- 6. the second player plays, same gesture ----------------------
@@ -952,7 +952,7 @@ async function main() {
         const isColour = isRedish(centre) ? isRedish : isBluish(centre) ? isBluish : null;
         if (!isColour) return 0;
         let d = 0;
-        while (d < CELL_W - HOLE_R - 1 && isColour(landPx(snap, colX(c) + d, rowY(r)))) d++;
+        while (d < CELL - HOLE_R - 1 && isColour(landPx(snap, colX(c) + d, rowY(r)))) d++;
         return d;
     }
 
@@ -986,20 +986,20 @@ async function main() {
     // No waiting piece during the celebration: the absence of "something to
     // drop" is what says a touch now means something else (decision 0002's
     // "no modal state" - the screen says so).
-    // Asked per column, and only of columns whose top hole is EMPTY. At full
-    // height the arrow's box IS row 0's hole, so a column holding a piece up
-    // there has that piece's own colour inside the box by construction - and
-    // the winning line frequently reaches row 0, which is how the first
-    // version of this check reported an arrow on a board that had none.
-    let anyArrow = false;
-    const arrowWhere: string[] = [];
+    // Straightforward again now that the waiting piece is back above the
+    // board: the hopper is its own band, so nothing else is ever drawn there
+    // and a count of coloured pixels in it means exactly what it says. The
+    // version this replaces had to skip columns whose TOP HOLE held a piece,
+    // because the arrow lived inside that hole and a winning line reaching
+    // row 0 read as an arrow that was not there.
+    let anyWaiting = false;
+    const waitingWhere: string[] = [];
     for (let c = 0; c < COLS; c++) {
-        if (holeAt(fb, c, Math.max(ARROW_ROW, 0)) !== ".") continue; // occupied: cannot tell
-        const ink = arrowInk(fb, c, P_RED) + arrowInk(fb, c, P_BLUE);
-        if (ink > 0) { anyArrow = true; arrowWhere.push(`col ${c}: ${ink}px`); }
+        const ink = pieceInk(fb, c, P_RED) + pieceInk(fb, c, P_BLUE);
+        if (ink > 0) { anyWaiting = true; waitingWhere.push(`col ${c}: ${ink}px`); }
     }
-    check("no arrow is shown while the game is over - the screen says a touch means something else now",
-        !anyArrow, arrowWhere.join(", "));
+    check("no waiting piece is shown while the game is over - the screen says a touch means something else now",
+        !anyWaiting, waitingWhere.join(", "));
 
     // ---- a touch moves it along, the board drains, a new game begins ----
     console.log("\n-- a touch during the celebration, then the board drains --");

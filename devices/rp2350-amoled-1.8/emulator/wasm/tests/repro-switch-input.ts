@@ -72,6 +72,42 @@ function tileCenterPanelXY(appIndex: number, appCount: number): [number, number]
     return [PANEL_W - 1 - ly, lx];
 }
 
+// THE MENU LAUNCHES ON RELEASE NOW, not on touch-down, so every "tap" in
+// this file is a press-hold-release. Rewritten rather than loosened when
+// menu.c changed (the same way repro-ring-shrink-residue.ts was rewritten
+// when the timer stopped being a dial): the bug this file reproduces is
+// about a stale wasDown swallowing the PRESS, and that bug is still
+// reproducible - it just takes the gesture the menu actually has.
+//
+// The hold has to satisfy menu.c's arming rule (MENU_ARM_SAMPLES contact
+// samples spanning MENU_ARM_MS at MENU_ARM_RATE_HZ), and the release has to
+// outlast MENU_RELEASE_GRACE_MS of silence before it is believed. Both
+// numbers are menu.c's; the arithmetic behind them is in apps/four.c.
+const MENU_RELEASE_GRACE_MS = 300;
+
+// Presses at (px, py), holds it there, and returns the clock. Leaves the
+// finger DOWN - callers that want a launch call menuRelease(), and the one
+// caller that wants the finger to stay down through the switch does not.
+function menuHold(dev: Device, px: number, py: number, tMs: number): number {
+    let t = tMs;
+    for (let i = 0; i < 8; i++) {
+        dev.touch(true, px, py);
+        dev.tick(t);
+        t += 15;
+    }
+    return t;
+}
+
+function menuRelease(dev: Device, tMs: number): number {
+    let t = tMs;
+    for (let waited = 0; waited < MENU_RELEASE_GRACE_MS + 150; waited += 15) {
+        dev.touch(false, 0, 0);
+        dev.tick(t);
+        t += 15;
+    }
+    return t;
+}
+
 let passCount = 0;
 let failCount = 0;
 function check(label: string, ok: boolean, detail?: string) {
@@ -215,25 +251,35 @@ async function main() {
     const appCount = dev.appCount(); // from emu_device()'s own "apps" array
     const [drawX, drawY] = tileCenterPanelXY(APP_DRAW, appCount);
     console.log(`-- tap "draw" tile at panel (${drawX}, ${drawY}) --`);
-    dev.touch(true, drawX, drawY);
-    dev.tick(5000);
+    let tGest = menuHold(dev, drawX, drawY, 5000);
+    check("holding on the draw tile does NOT launch it yet - release is the verb now",
+        dev.appCurrent() === APP_INDEX_MENU, `app_current()=${dev.appCurrent()}`);
+    tGest = menuRelease(dev, tGest);
     const afterTapDraw = dev.appCurrent();
-    check("tapping the draw tile launches sketch", afterTapDraw === APP_DRAW, `app_current()=${afterTapDraw}`);
+    check("releasing over the draw tile launches sketch", afterTapDraw === APP_DRAW, `app_current()=${afterTapDraw}`);
 
     // The tap continues into a drag: the finger never left the glass. This
     // is the exact moment the suspected mechanism targets: does the newly
     // entered app's first tick see a stale "already down" and miss the
     // press edge it needs to start a stroke?
+    // A stroke in the app that was just entered. This used to continue the
+    // very touch that launched it (the finger never left the glass), which
+    // was the sharpest form of the question this file exists to ask: does
+    // the newly entered app's first tick see a stale "already down" and miss
+    // the press edge it needs? Release-to-launch means the finger is by
+    // definition UP at the moment of the switch, so the sharp form is gone -
+    // but the question is not, and the answer still has to be yes: a press
+    // arriving immediately after a switch must start a stroke.
     const preDrawHash = dev.fbHash();
-    console.log("-- drag while still down, to draw a stroke --");
-    dev.touch(true, drawX + 8, drawY + 8);
-    dev.tick(5020);
-    dev.touch(true, drawX + 20, drawY + 20);
-    dev.tick(5040);
-    dev.touch(true, drawX + 34, drawY + 34);
-    dev.tick(5060);
+    console.log("-- press inside the app that was just entered, and drag --");
+    let tDraw = tGest;
+    for (const [dx, dy] of [[0, 0], [8, 8], [20, 20], [34, 34]] as const) {
+        dev.touch(true, drawX + dx, drawY + dy);
+        dev.tick(tDraw);
+        tDraw += 20;
+    }
     dev.touch(false, 0, 0);
-    dev.tick(5200); // past LIFT_DEBOUNCE_MS, lift registers
+    dev.tick(tDraw + 400); // past LIFT_DEBOUNCE_MS, lift registers
     const postDrawHash = dev.fbHash();
     check(
         "sketch actually drew something (framebuffer changed)",
@@ -253,10 +299,8 @@ async function main() {
     // consumer - was running). FAILS before the fix, PASSES after.
     const [chronoX, chronoY] = tileCenterPanelXY(APP_CHRONO, appCount);
     console.log(`-- tap "chrono" tile at panel (${chronoX}, ${chronoY}) --`);
-    dev.touch(true, chronoX, chronoY);
-    dev.tick(8000);
-    dev.touch(false, 0, 0);
-    dev.tick(8050);
+    const tChrono = menuRelease(dev, menuHold(dev, chronoX, chronoY, 8000));
+    (function keepClockMoving() { dev.tick(tChrono); })();
     const afterTapChrono = dev.appCurrent();
     check("tapping the chrono tile launches chrono", afterTapChrono === APP_CHRONO, `app_current()=${afterTapChrono}`);
 

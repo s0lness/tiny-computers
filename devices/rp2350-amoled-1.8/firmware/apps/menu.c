@@ -1223,48 +1223,57 @@ static void draw_icon_lucide_timer_loadercircle(int ox, int oy, uint16_t color) 
  * that document's original rule: the float brush, shapes.h's anti-aliased
  * disc and annulus, no ruler and no straight line anywhere in it.
  *
- * The silhouette is the app's own board, reduced until it still reads at
- * 96px: a 4x3 arrangement of holes with the bottom row of FOUR filled -
- * the game's name, drawn. Four columns rather than seven because seven
- * holes across a 96px box is 13px each and dissolves into a texture;
- * three rows rather than six for the same reason. A filled cell is drawn
- * at the ring's OUTER radius, so a played hole and an empty one are the
- * same size and the row reads as four of one thing rather than as four
- * smaller things.
+ * THIRD DESIGN, and the first two are recorded because each was rejected by
+ * a MEASUREMENT rather than by taste - see tools/measure-menu-icons.ts,
+ * which reports every icon's optical size and ink so that "does this one sit
+ * with the others" has an answer instead of an opinion. The other three are
+ * all exactly 90px tall and carry 2446-2884 ink px.
  *
- * Stroke weight is FOUR_STROKE_HALF rather than LUCIDE_STROKE_HALF: at this
- * circle size Lucide's own 10px stroke would close a ring into a disc, which
- * would erase the entire empty/filled distinction the icon is built on. 6px
- * on a 20px circle is 0.30 of the shape, which is where Lucide's own 8px on
- * its ~28px shapes sits (0.29), so the icon carries the same visual weight
- * as its three neighbours without borrowing a number that does not fit. A
- * first render at 5px read visibly lighter than the pencil and the hourglass
- * beside it.
+ *   1. the app's board reduced to a 4x3 grid of holes, bottom row filled.
+ *      68px tall and 25-45% MORE ink: small and heavy at once. Twelve shapes
+ *      in a 96px box is a texture, and a texture has to be dark to be seen
+ *      at all, so the fix for "it does not read" was making it heavier,
+ *      which made it read even less like the three light open glyphs beside
+ *      it.
+ *   2. four rings tangent along a diagonal. Measured beautifully - 90x90,
+ *      ink in range - and read as BEADS ON A STRING. Four circles spanning
+ *      a 90px box are 22px each, and a 22px ring at any legible stroke has
+ *      a 9-13px hole, which is a dot with a rim rather than a counter. The
+ *      lesson worth keeping: the measurement is necessary and not
+ *      sufficient, and only the render answers what a shape SAYS.
+ *
+ * What works is FEWER, BIGGER circles: four rings of 45px in a 2x2, tangent
+ * to each other, filling the box. Big enough to read as counters - a 29px
+ * hole inside each - which is the thing the first two versions could not buy
+ * at any weight. It says four round pieces, which is this game's name and
+ * its only component. It does not say "in a row", and that is the trade
+ * taken for a glyph that is legible at 96px, on a panel held at arm's length
+ * by someone who cannot read the word underneath. There is no word
+ * underneath.
+ *
+ * NOT Lucide, and that is decision 0009's own instruction rather than an
+ * inconsistency: its exception for this file covers "the case where a
+ * matching Lucide source exists to convert", and Lucide has no Connect Four
+ * glyph - grid-3x3 is a ruled grid of lines (exactly what four.c's board
+ * deliberately is not) and grip/circle-dot are dots that say nothing about
+ * the game. So this goes back to that document's original rule: the float
+ * brush, shapes.h's anti-aliased annulus, no ruler and no straight line in
+ * it anywhere.
  * ------------------------------------------------------------------- */
-#define FOUR_ICON_COLS   4
-#define FOUR_ICON_ROWS   3
-#define FOUR_ICON_PITCH  24.0f
-#define FOUR_ICON_R       7.0f
-#define FOUR_STROKE_HALF  3.0f
+#define FOUR_ICON_STROKE_HALF  2.5f   // 5px on a 45px circle = 0.11 of the
+                                       // shape, which is Lucide's own ratio
+                                       // (8px on its ~80px glyphs)
+#define FOUR_ICON_R           19.5f    // ring centreline; outer edge +stroke
+#define FOUR_ICON_A           25.5f    // first centre, in icon-box coords
+#define FOUR_ICON_B           70.5f    // second: 45 apart, so rings are tangent
 
 static void draw_icon_four(int ox, int oy, uint16_t color) {
-    for (int row = 0; row < FOUR_ICON_ROWS; row++) {
-        for (int col = 0; col < FOUR_ICON_COLS; col++) {
-            float cx = (float)ox + FOUR_ICON_PITCH * ((float)col + 0.5f);
-            // Vertically centred in the ICON_H box rather than filling it:
-            // three rows of 24 is 72 of the 96, so 12 of padding top and
-            // bottom, which matches the horizontal case exactly (four rows
-            // of 24 is the full 96, and the outermost circle's own edge is
-            // 2px in from the box).
-            float cy = (float)oy + (float)(ICON_H - FOUR_ICON_ROWS * (int)FOUR_ICON_PITCH) / 2.0f
-                       + FOUR_ICON_PITCH * ((float)row + 0.5f);
-            if (row == FOUR_ICON_ROWS - 1) {
-                shapes_fill_disc_aa_land(cx, cy, FOUR_ICON_R + FOUR_STROKE_HALF, color);
-            } else {
-                shapes_fill_annulus_aa_land(cx, cy, FOUR_ICON_R + FOUR_STROKE_HALF,
-                                             FOUR_ICON_R - FOUR_STROKE_HALF, color);
-            }
-        }
+    const float cs[4] = { FOUR_ICON_A, FOUR_ICON_B, FOUR_ICON_A, FOUR_ICON_B };
+    const float rs[4] = { FOUR_ICON_A, FOUR_ICON_A, FOUR_ICON_B, FOUR_ICON_B };
+    for (int i = 0; i < 4; i++) {
+        shapes_fill_annulus_aa_land((float)ox + cs[i], (float)oy + rs[i],
+                                     FOUR_ICON_R + FOUR_ICON_STROKE_HALF,
+                                     FOUR_ICON_R - FOUR_ICON_STROKE_HALF, color);
     }
 }
 
@@ -1304,96 +1313,205 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
 }
 
 /* ---------------------------------------------------------------------
- * Painting. Icons are drawn exactly once, from menu_enter(): there is no
- * selection state any more (see menu_state_t below), so there is nothing
- * that ever changes about the screen after the initial draw - a touch
- * launches immediately and the arena is reset by the switch before another
- * frame could ever run, so there is never a "repaint just this icon"
- * case the way the old bordered-cursor design needed. menu_enter() does
- * not need to push either: the runtime pushes the whole panel once after
- * enter() returns (see app.h).
+ * THE GESTURE: press, drag, release.
+ *
+ * It used to launch on the first tick a touch was seen. The owner wants the
+ * same idiom the rest of the device uses instead - the sketchpad's palette
+ * and Connect Four both work this way: put a thumb down, slide until the
+ * thing you want is lit, let go. Three reasons it is worth the extra code,
+ * in order of how much they matter:
+ *
+ *   - A TAP CANNOT BE TAKEN BACK. Launching on touch-down means a child who
+ *     puts a thumb down to look is already inside an app, and the only way
+ *     out is a two-button chord she has to be taught. Release-to-launch
+ *     gives her the whole gesture to change her mind in.
+ *   - ONE IDIOM, LEARNED ONCE. Press-slide-release now opens a colour, drops
+ *     a piece, and picks an app. Nothing on this device asks for anything
+ *     different.
+ *   - IT MAKES THE TARGET VISIBLE. Under a tap there is no moment at which
+ *     the device can say which app you are about to get: by the time it
+ *     knows, it has already switched. Under a drag there is a whole
+ *     gesture's worth of it, which is what the halo below is for.
+ *
+ * CANCELLING is the point of the change, so it gets a real region rather
+ * than a corner: everything below MENU_LAUNCH_BAND_H is dead space where
+ * nothing is lit and a release does nothing. The icons sit at y 24-120 and
+ * the band runs to 220, so a hundred pixels of slack below them still
+ * launch and you have to drag deliberately downward to cancel. Dragging off
+ * the bottom edge of the glass passes through that zone on the way out, so
+ * "leave the panel" cancels too without needing a rule of its own.
+ *
+ * DROPOUTS. The controller drops contact about 34 times a second while a
+ * finger is down, so a gesture that ENDS on release cannot believe
+ * f->touchDown going false - see apps/four.c's header section 2 for the
+ * arithmetic behind the two numbers below, which are its numbers: a release
+ * verdict needs MENU_RELEASE_GRACE_MS of continuous silence, and a gesture
+ * arms only on contact sustained at a rate no stray burst can fake.
+ *
+ * The state machine below is four.c's, second copy. Deliberate duplication,
+ * not an oversight: it is thirty lines, the two apps do different things at
+ * the end of it (four.c drops a piece and hands the puck over, this one
+ * switches app), and sharing it would mean a new runtime-level header for
+ * two callers. If a third app needs it, extract it then. The arithmetic that
+ * justifies the constants lives in exactly one place either way, which is
+ * the part that would actually rot.
  * ------------------------------------------------------------------- */
-static void paint_icon(int i) {
+#define MENU_LAUNCH_BAND_H    220
+#define MENU_RELEASE_GRACE_MS 300
+#define MENU_ARM_SAMPLES        4
+#define MENU_ARM_MS            40
+#define MENU_ARM_RATE_HZ       15u
+
+// The halo: a soft grey disc behind the icon under the thumb. Round, so it
+// needs no corner treatment at all (decision 0009), and one shapes.h call.
+// Big enough to read as "this one" past a thumb, light enough that the black
+// icon still sits clearly on top of it.
+//
+// CAPPED TO THE COLUMN IT LIVES IN, and that cap is load-bearing rather than
+// tidy. Every push here is one column's strip, and shapes.h's primitives
+// take no clip - so a halo wider than its own column paints into the
+// neighbour, outside the rectangle that gets pushed, and stays there. That
+// is decision 0001's second invariant broken and a grey crescent left
+// stranded beside the icon you just left. It showed up as 250 outside-push
+// violations the first time this ran, from 2px of overflow each side at four
+// apps (112px columns, radius 58). The cap also means the halo shrinks
+// correctly as apps are added rather than silently starting to bleed at five.
+#define MENU_HALO_R_MAX 58.0f
+#define MENU_HALO_GAP    3.0f
+
+static uint16_t menu_halo_color(void) {
+    return px_swap(0xDEFB); // #DEDEDE
+}
+
+/* ---------------------------------------------------------------------
+ * Painting. One column at a time, and every push is a FULL-HEIGHT LANDSCAPE
+ * STRIP - gfx maps a landscape rectangle to the panel with width and height
+ * swapped, so the pushed row length is the landscape HEIGHT, which is
+ * LAND_H = 368 and a multiple of 8 on every push, at rest and mid-gesture
+ * alike (decision 0001). The same discipline apps/four.c uses, for the same
+ * reason: there is no per-frame bounding-box arithmetic left to get wrong.
+ *
+ * A strip is redrawn from white every time rather than patched, so a halo
+ * that has moved away cannot leave anything behind.
+ * ------------------------------------------------------------------- */
+static void render_column(int i, bool hovered) {
     int bx, bw;
     column_rect_land(i, &bx, &bw);
+    gfx_fill_rect_land(bx, 0, bw, LAND_H, PX_WHITE);
     int iconX = bx + (bw - ICON_W) / 2;
     int iconY = ICON_TOP_MARGIN;
+    if (hovered) {
+        float r = (float)bw / 2.0f - MENU_HALO_GAP;
+        if (r > MENU_HALO_R_MAX) r = MENU_HALO_R_MAX;
+        shapes_fill_disc_aa_land((float)(bx + bw / 2), (float)(iconY + ICON_H / 2),
+                                  r, menu_halo_color());
+    }
     draw_icon_for(g_apps[i], iconX, iconY, PX_BLACK);
 }
 
+static void push_column(int i) {
+    int bx, bw;
+    column_rect_land(i, &bx, &bw);
+    gfx_push_land(bx, 0, bw, LAND_H);
+}
+
 static void menu_paint_all(void) {
-    for (int i = 0; i < g_appCount; i++) paint_icon(i);
+    for (int i = 0; i < g_appCount; i++) render_column(i, false);
 }
 
 /* ---------------------------------------------------------------------
  * State and the app_t callbacks.
  * ------------------------------------------------------------------- */
-
-// Just one flag: whether the current touch (if any) has already launched
-// something. There is deliberately no "which icon is selected" field any
-// more - the old cursor's whole reason for existing was to make a
-// button-driven "move, then confirm" gesture legible (see this file's
-// header comment on the removed BOOT/PWR path), and a touch-only menu has
-// no such two-step gesture to make legible: a touch IS the confirmation,
-// the instant it lands. Removing the cursor is a simplification, not a
-// loss - the child never chose "which one is highlighted" as a separate
-// step even in the old design (tapping a tile always launched immediately
-// too), so no capability goes away with the state that used to back it.
 typedef struct {
-    bool armed;
+    bool     contactSeen;      // a gesture is in progress (dropouts included)
+    bool     armed;            // it has survived ARM_SAMPLES/ARM_MS at rate
+    uint32_t gestureStartMs;
+    uint32_t lastContactMs;    // last sample that actually reported contact
+    int      contactCount;
+    int      hoverCol;         // the lit column, or -1 for none/cancel
 } menu_state_t;
 
 static menu_state_t *s_menu;
 
-// Called by the runtime (see menu.h) before it switches into the menu, so
-// the runtime can tell menu_enter() which app to default a selection
-// cursor to. That cursor is gone (see menu_state_t's comment above), so
-// this file has nothing left to do with the value - but the function stays
-// and keeps accepting it regardless: runtime_core.c calls this
-// unconditionally on every chord that opens the menu (see its own "BOOT+PWR
-// long-press chord" comment) and this file is not the one that gets to
-// change that contract (see this file's header comment on scope).
+// Called by the runtime (see menu.h) before it switches into the menu, so it
+// can tell menu_enter() which app to default a selection cursor to. That
+// cursor is gone, so this file has nothing left to do with the value - but
+// the function stays and keeps accepting it: runtime_core.c calls it
+// unconditionally on every chord that opens the menu, and this file is not
+// the one that gets to change that contract.
 void menu_set_return_app(int index) {
     (void)index;
 }
 
 static void menu_enter(void) {
     s_menu = APP_STATE(menu_state_t);
+    s_menu->hoverCol = -1;
     menu_paint_all();
 }
 
+// Which column a touch is over, or -1 when it is in the cancel band below
+// the icons. Only x decides which column (the target is the full-height
+// column - see column_hit_test); y decides only whether it counts at all.
+static int menu_hit(int lx, int ly) {
+    if (ly >= MENU_LAUNCH_BAND_H) return -1;
+    return column_hit_test(lx);
+}
+
+static void menu_set_hover(int col) {
+    if (col == s_menu->hoverCol) return;
+    int old = s_menu->hoverCol;
+    s_menu->hoverCol = col;
+    if (old >= 0) { render_column(old, false); push_column(old); }
+    if (col >= 0) { render_column(col, true); push_column(col); }
+}
+
 static void menu_tick(const app_frame_t *f) {
-    // Touch only, per this file's header comment - no BOOT cursor, no
-    // PWR-short launch. f->touchDown is a LEVEL (true for every tick a
-    // finger is down), not an edge, so s_menu->armed is this file's own
-    // latch: launch on the first tick a touch is seen, then stay quiet
-    // until the finger lifts, so a touch that drags across several columns
-    // while still down cannot launch a second app out from under the
-    // first switch. Reading the level rather than app_frame_t's own
-    // touchPressed edge is deliberate hardening, not a style choice: this
-    // is now the ONLY way to launch anything (see header comment), so it
-    // should not depend on catching one specific tick's edge if a future
-    // touch-resolution change ever makes that edge less reliable than the
-    // level it is derived from.
+    menu_state_t *s = s_menu;
+
     if (f->touchDown) {
-        if (!s_menu->armed) {
-            s_menu->armed = true;
+        if (!s->contactSeen) {
+            s->contactSeen = true;
+            s->gestureStartMs = f->nowMs;
+            s->contactCount = 0;
+        }
+        s->lastContactMs = f->nowMs;
+        s->contactCount++;
+
+        uint32_t elapsed = f->nowMs - s->gestureStartMs;
+        if (!s->armed && s->contactCount >= MENU_ARM_SAMPLES && elapsed >= MENU_ARM_MS &&
+            (uint32_t)s->contactCount * 1000u >= MENU_ARM_RATE_HZ * elapsed) {
+            s->armed = true;
+        }
+        if (s->armed) {
             int lx, ly;
             panel_to_land(f->touchX, f->touchY, &lx, &ly);
-            (void)ly; // the touch target is a full-height column - see
-                      // column_hit_test()'s comment - so only which column
-                      // lx falls in decides the hit, never ly.
-            int hit = column_hit_test(lx);
-            // Launches immediately: see this file's header comment on why
-            // a touch resolves "confirm" on its own, with no separate
-            // step. The arena is about to be reset by the switch, so there
-            // is nothing worth repainting here first.
-            app_switch_to(hit);
-            return;
+            menu_set_hover(menu_hit(lx, ly));
         }
-    } else {
-        s_menu->armed = false;
+        return;
     }
+
+    // No contact this tick. That is almost always a dropout, not a lift, so
+    // nothing happens until the silence has lasted long enough to believe.
+    if (!s->contactSeen) return;
+    if ((f->nowMs - s->lastContactMs) < MENU_RELEASE_GRACE_MS) return;
+
+    bool wasArmed = s->armed;
+    int col = s->hoverCol;
+    s->contactSeen = false;
+    s->armed = false;
+    s->contactCount = 0;
+    menu_set_hover(-1);   // unlight first, so a cancel leaves the menu
+                           // exactly as it was found
+
+    if (!wasArmed || col < 0) {
+        // Cancelled: released in the dead band below the icons, dragged off
+        // the glass, or never armed at all (a stray). The menu stays open,
+        // which is the whole point of being able to change your mind.
+        if (wasArmed) printf("menu: cancelled\r\n");
+        return;
+    }
+    printf("menu: launch %d\r\n", col);
+    app_switch_to(col);
 }
 
 const app_t g_menuApp = {
