@@ -1626,7 +1626,14 @@ static void paint_head_outline_row(int y, int rowIdx, float deg) {
         float du = ((float)dx + 0.5f) - dxCap;
         float d2 = du * du + dv * dv;
         if (d2 > outer2 || d2 < inner2) continue;
-        if (phi_deg_for_col(dx, dyCenter) < deg) continue; // trailing side: ink continues
+        // Keep the leading half only. Measured as a wrapped difference
+        // rather than a plain comparison, because at the 30:00 ceiling the
+        // head sits at exactly 360 and "ahead of it" means angles just past
+        // 0: a plain phi < deg test is true for every pixel there, which
+        // erased the head at precisely the value it matters most.
+        float ahead = phi_deg_for_col(dx, dyCenter) - deg;
+        if (ahead < 0.0f) ahead += 360.0f;
+        if (ahead > 180.0f) continue; // trailing side: ink continues
         gfx_fill_rect_land(RING_CX + dx, y, 1, 1, PX_WHITE);
     }
 }
