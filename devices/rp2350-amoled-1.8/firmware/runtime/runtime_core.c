@@ -423,7 +423,20 @@ static int g_menuReturnApp = 0;
 // is not a taste number: it is where the PMIC's own long-press verdict lands,
 // so the fade begins exactly when the hardware agrees a long press is
 // happening. What shortens is the ramp between them, from 3.5s to 2s.
-#define PWR_HOLD_POWEROFF_MS        3500u
+// 2000, down from 3500 on 2026-08-15, the second 1.5s the owner asked for.
+//
+// The dim START cannot follow it down: 1500 is where the AXP2101's own
+// long-press verdict lands, and dimming earlier would make the panel react
+// to ordinary short presses. So the fade is now 500ms, and that is the real
+// cost of this change rather than the shorter hold: the fade is the only
+// warning before the rails cut, and at 500ms it reads closer to a blink than
+// to a ramp. Told to the owner before it was made.
+//
+// Also worth knowing: 2000 is only 500ms past the verdict the BOOT+PWR chord
+// uses, so a chord attempt whose BOOT went unseen (BOOT is polled at 20Hz)
+// now becomes a power-off in two seconds rather than five. g_pwrChordTainted
+// still cancels it whenever BOOT IS seen.
+#define PWR_HOLD_POWEROFF_MS        2000u
 // How long to wait, after the panel reaches black and a shutdown command
 // has been sent, before concluding it did not take. The AXP2101 cutting its
 // own rails should be near-instant if it happens at all; 1.5s is generous
