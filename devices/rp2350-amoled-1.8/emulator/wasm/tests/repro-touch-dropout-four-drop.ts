@@ -12,10 +12,12 @@
 // checks throughout.
 //
 // Connect Four is exposed to the SAME hazard and its consequence is worse.
-// The gesture's verb is RELEASE, and a false release does not blur a
-// stroke here: it drops her piece, possibly in a column she was still
-// sliding past, and ends her turn. Nothing in the rules of Connect Four can
-// undo that. So the release verdict is the thing under test.
+// The gesture's verb is RELEASE, and a false release does not blur a stroke
+// here: it drops a piece, possibly in a column the thumb was still sliding
+// past, and ends that player's turn. Nothing in the rules of Connect Four
+// can undo that, and with two people sharing one puck it also hands the puck
+// over, so the wrong player is now up as well. The release verdict is
+// therefore the thing under test.
 //
 // THE PROFILE. Identical to repro-touch-dropout-stroke-start.ts's and
 // repro-touch-dropout-palette-open.ts's dropoutHeavy: 34 dropout episodes
@@ -123,8 +125,8 @@ async function main() {
     // MOVING, which is what a controller's dropouts make indistinguishable
     // from a lift unless the firmware keeps a separate contact clock. Here
     // the consequence of getting it wrong is not a split stroke, it is a
-    // piece dropped in whatever column her thumb happened to be resting on
-    // while she was still thinking.
+    // piece dropped in whatever column the thumb happened to be resting on
+    // while its owner was still thinking.
     const HOLD_TRIALS = 25;
     const HOLD_MS = 3000;
     let heldWithoutDropping = 0;
@@ -154,13 +156,13 @@ async function main() {
     // The whole gesture, end to end, at the rate a child's thumb actually
     // moves. What is asserted is not just "a piece fell" but "exactly one
     // piece fell, in the column the thumb finished on, and none fell while
-    // she was still sliding" - a false release mid-slide is the failure
+    // the thumb was still sliding" - a false release mid-slide is the failure
     // this app cannot afford, and it would pass a looser check that only
     // looked at the end state.
     console.log("");
     const SLIDE_TRIALS = 25;
     const SLIDE_MS = 900;
-    const SETTLE_MS = 320;   // she stops on her column before letting go
+    const SETTLE_MS = 320;   // the thumb stops on its column before letting go
     let correct = 0, droppedEarly = 0, missed = 0, wrongColumn = 0;
     for (let i = 0; i < SLIDE_TRIALS; i++) {
         const dev = await freshDevice();
@@ -208,6 +210,71 @@ async function main() {
     check("a slide finished by a genuine lift drops exactly one piece, in the column the thumb finished on",
         rate >= 90, `${rate.toFixed(0)}% over ${SLIDE_TRIALS} trials`);
     check("no trial dropped a piece while the thumb was still sliding", droppedEarly === 0, `${droppedEarly} early drop(s)`);
+
+    // ---- scenario D: DRUMMING ON THE GLASS WHILE THE PUCK CHANGES HANDS
+    // must not place a second piece.
+    //
+    // This one is here because of the two-player change. With a machine
+    // playing the other side there was always a move in between, and the
+    // hand that had just dropped a piece had something to watch. Two people
+    // passing one puck do not: the player who just released is still holding
+    // it, their thumb is still on it, and the next press is the OTHER
+    // player's move. four.c answers that with the hand-off (a beat in which
+    // no gesture may arm - see its section 6), and this is that beat under a
+    // touch stream that is dropping contact the whole time, since a dropout
+    // storm is precisely a stream of fake releases and a fake release is
+    // what would place the piece.
+    //
+    // The window drummed on is deliberately shorter than the fall plus the
+    // hand-off (~350ms of fall, before bounces, plus HANDOFF_MS) so that
+    // every press AND every release inside it lands while the app is not
+    // accepting gestures at all. What it must not do is wedge: the last
+    // check makes a real gesture afterwards and requires it to work.
+    console.log("");
+    const devD = await freshDevice();
+    const simD = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+    let tD = 1000;
+    const [dx, dy] = landToPanel(colX(2), THUMB_LY);
+    simD.setPointer(true, dx, dy);
+    for (let e = 0; e < 500; e += STEP_MS) { tD += STEP_MS; devD.feed(simD.poll(tD), tD); }
+    simD.setPointer(false, 0, 0);
+    let firstDrop: string | undefined;
+    for (let e = 0; e < RELEASE_GRACE_MS + 200; e += STEP_MS) {
+        tD += STEP_MS;
+        devD.feed(simD.poll(tD), tD);
+        for (const l of devD.drainLog()) if (l.includes("four: drop")) firstDrop = l;
+    }
+    check("the first player's piece went in", !!firstDrop && firstDrop.includes("player=1"), firstDrop ?? "(no drop)");
+
+    // Drum: 8 presses of ~40ms with ~45ms gaps, all inside the fall and the
+    // hand-off that follows it.
+    const drumDrops: string[] = [];
+    for (let beat = 0; beat < 8; beat++) {
+        simD.setPointer(true, dx, dy);
+        for (let e = 0; e < 40; e += STEP_MS) { tD += STEP_MS; devD.feed(simD.poll(tD), tD); }
+        simD.setPointer(false, 0, 0);
+        for (let e = 0; e < 45; e += STEP_MS) { tD += STEP_MS; devD.feed(simD.poll(tD), tD); }
+        for (const l of devD.drainLog()) if (l.includes("four: drop")) drumDrops.push(l);
+    }
+    check("drumming on the glass while the piece falls and the puck changes hands places nothing",
+        drumDrops.length === 0, drumDrops.length ? drumDrops.map((l) => l.trim()).join(" | ") : "0 extra pieces");
+
+    // ...and the app is not wedged by it: a real gesture afterwards plays,
+    // for the OTHER player.
+    for (let e = 0; e < 1200; e += STEP_MS) { tD += STEP_MS; devD.feed(simD.poll(tD), tD); }
+    devD.drainLog();
+    simD.setPointer(true, ...landToPanel(colX(6), THUMB_LY) as [number, number]);
+    for (let e = 0; e < 400; e += STEP_MS) { tD += STEP_MS; devD.feed(simD.poll(tD), tD); }
+    simD.setPointer(false, 0, 0);
+    let secondDrop: string | undefined;
+    for (let e = 0; e < RELEASE_GRACE_MS + 400; e += STEP_MS) {
+        tD += STEP_MS;
+        devD.feed(simD.poll(tD), tD);
+        for (const l of devD.drainLog()) if (l.includes("four: drop")) secondDrop = l;
+    }
+    check("and the beat does not wedge it - the next real gesture plays, for the OTHER player",
+        !!secondDrop && secondDrop.includes("player=2") && secondDrop.includes("col=6"),
+        secondDrop ?? "(no second drop)");
 
     // ---- scenario C: strays must never drop anything. -------------------
     // The mirror image of a dropout: phantom contacts reported while nothing

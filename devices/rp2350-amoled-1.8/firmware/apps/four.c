@@ -75,13 +75,11 @@
  * 3. NO TEXT. ANYWHERE. FOR ANYTHING.
  * ---------------------------------------------------------------------
  *
- * Whose turn it is: the colour of the waiting piece at the top. Red is
- * hers, blue is the device's. Nothing else says it, and nothing else needs
- * to: when it is her turn the red piece bobs gently at the top of the
- * screen, which is an invitation; when it is the device's turn, a blue
- * piece appears over a blue-washed chute and performs her own gesture back
- * at her before dropping (see PH_THINK), which is both "wait, I am playing"
- * and a demonstration of how the game is played.
+ * Whose turn it is: SEE SECTION 6. It used to be a secondary cue, because
+ * the device played the other side and you always knew it was your turn
+ * again the moment its piece landed. Two people passing one small puck do
+ * not have that, so it is now the single most important thing on screen and
+ * three things say it at once.
  *
  * Who won: the four in a row BREATHE - each winning piece pulses in size
  * and blooms a ring outward, in the winner's colour, forever until touched
@@ -169,15 +167,65 @@
  * never a stray pixel.
  *
  * ---------------------------------------------------------------------
- * 6. THE DEVICE PLAYS, AND IT PLAYS DELIBERATELY BADLY
+ * 6. TWO PLAYERS. NOTHING PLAYS BY ITSELF. AND WHOSE TURN IT IS.
  * ---------------------------------------------------------------------
  *
- * See ai_choose() for the full design and the cost. Short version: this is
- * a toy for a child who mostly plays alone, so the device takes the other
- * side; a four-ply search fits this chip a hundred times over and would
- * beat a five year old every game, which ends with her never opening the
- * app again. So it looks exactly one move ahead, and it is only ALLOWED to
- * act on what it sees some of the time.
+ * THE DEVICE USED TO PLAY THE OTHER SIDE, and this section is where that
+ * went, kept rather than deleted because the reasoning was confident and
+ * wrong and that is worth a paragraph.
+ *
+ * The argument was: this is a toy for a child who mostly plays alone, so
+ * the device should take the other side, and it must play deliberately
+ * badly (one ply, and only ALLOWED to act on what it saw 55%/35% of the
+ * time) or it beats a five year old every game and she never opens the app
+ * again. That was built, and it worked - the owner's verdict on playing it
+ * was "ouais c'est pas mal du tout le jeu !". Then, in the same breath:
+ * "Il faudrait que ce soit chacun son tour avec deux joueurs. Et quand je
+ * place un rouge ca place direct un bleu."
+ *
+ * The second sentence is not a bug report. It is him describing the
+ * opponent working exactly as designed, as the thing he does not want. The
+ * mistake was about WHO THIS IS FOR: it is not a child playing alone
+ * against a machine, it is two people passing one puck back and forth. So
+ * the opponent is gone - deleted, not hidden behind a flag, along with
+ * everything that existed only to make a machine legible (the aiming
+ * animation, the 620ms think, the weakness roll, the one-ply score, the
+ * play-near-the-action term). Both sides are placed by a hand, with the
+ * same press-slide-release gesture. Nothing in this file ever moves a piece
+ * on its own, and feature-four.ts asserts exactly that: over five seconds
+ * of nobody touching the glass, NOT ONE PIXEL BELOW THE HOPPER CHANGES.
+ *
+ * WHOSE TURN IT IS NOW CARRIES THE WHOLE BURDEN. With a machine playing you
+ * always knew, because you had just moved. Two humans sharing a 1.8 inch
+ * screen genuinely lose track, no text is allowed, and the only instant the
+ * cue changes is the instant it matters. Three things say it, at three
+ * different scales, so that missing one is not enough to be lost:
+ *
+ *   - THE WHOLE BOARD IS TINTED. The slab is warm grey on red's turn and
+ *     cool grey on blue's (col_slab()). It is subtle per pixel and enormous
+ *     in area, which is the one cue that works in peripheral vision, before
+ *     you have focused on anything: whoever is handed the puck sees the
+ *     object has changed temperature before they read anything on it. It
+ *     also covers the case nothing else does, someone glancing back after
+ *     looking away, with no memory of what just happened.
+ *   - THE HAND-OFF. At the turn change the new player's chute washes in
+ *     full at the centre column and fades out over HANDOFF_MS, while the
+ *     new waiting piece POPS in above it (ease_out_back, the same balloon
+ *     the palette uses). A colour sweep the height of the screen, arriving
+ *     at the exact moment the turn changes, is impossible to miss if you
+ *     are looking at the screen at all - which the player who just dropped
+ *     necessarily is.
+ *   - THE WAITING PIECE, afterwards, bobbing at the top in that player's
+ *     colour. This is the steady-state cue, and it is the one that was
+ *     carrying this alone before.
+ *
+ * THE HAND-OFF IS ALSO A LOCK-OUT, and that is half its job. No gesture may
+ * arm during it. Without the machine's move in between, "red releases" and
+ * "blue may now play" used to be the same instant, and the hand that just
+ * dropped a piece is still on the puck: one more press and it has played
+ * the other player's move for them. HANDOFF_MS is the beat that makes
+ * passing the puck possible, and it is spent showing whose turn it now is
+ * rather than waiting for a machine to think.
  *
  * ---------------------------------------------------------------------
  * 7. WHAT DOES NOT SURVIVE, ON PURPOSE
@@ -287,11 +335,23 @@
 #define BOUNCE_MIN_V 0.10f // below this the piece is done bouncing
 #define BOUNCE_MAX 2
 
-// How long the device visibly aims before dropping. It is not thinking
-// (ai_choose costs microseconds); this is entirely so that its move is a
-// THING SHE WATCHES HAPPEN rather than a piece that teleports onto the
-// board, and so that the gesture is demonstrated back to her.
-#define THINK_MS 620
+// THE HAND-OFF: the beat between one player's piece landing and the other
+// being allowed to play, spent announcing whose turn it now is (section 6).
+//
+// It is a real affordance, not a replacement for the machine's think time
+// that used to sit here. Two things need it. The eye needs somewhere to
+// land at the instant the only turn cue changes, which is what the fading
+// chute and the popping piece give it. And the HAND needs it: the person
+// who just dropped a piece still has the puck, and without a beat their
+// next press is the other player's move. 420ms is long enough to read as
+// deliberate and to pass the puck into, short enough that a player who
+// already knows their column is not waiting on it - and the piece is still
+// falling for the first ~350ms of the previous move anyway, so what a
+// player actually experiences is a continuous handover rather than a pause.
+#define HANDOFF_MS 420
+// What fraction of the hand-off the waiting piece's pop occupies. See the
+// pop's own comment in render_span for why it is not the whole window.
+#define HANDOFF_POP_FRAC 0.55f
 
 // The celebration runs until touched, but a child who has wandered off
 // should not come back to a device stuck on a four-day-old win, and the
@@ -339,12 +399,17 @@
 // sqrt(2*310/0.008) = 278ms. 300 leaves margin.
 #define DRAIN_SETTLE_MS 300
 
-// The idle invitation: while it is her turn and her thumb is not on the
-// glass, the waiting piece bobs. This is the only thing on screen that says
-// "it is your turn" and it costs one column strip per frame at a throttled
-// rate.
-#define BOB_MS 1600.0f
-#define BOB_AMP 4.0f
+// The idle invitation: with nobody's thumb on the glass, the waiting piece
+// bobs. This is the steady-state "it is your turn, and you are the one this
+// colour", the cue that keeps saying it long after the hand-off's own sweep
+// has gone, and it costs one column strip per frame at a throttled rate.
+// Amplitude and period were both raised from 4px/1600ms when the device
+// stopped playing the other side: it went from a nicety to one of the three
+// things carrying the turn (section 6), and it is the only motion on an
+// otherwise perfectly still screen, so it should read as breathing rather
+// than as drift.
+#define BOB_MS 1300.0f
+#define BOB_AMP 5.0f
 #define BOB_STEP_MS 60
 
 // Repaint throttle for animations. Physics is integrated on every tick from
@@ -442,29 +507,32 @@
  * paper is nearly invisible at this size, and a colour she has to squint at
  * is a colour that does not tell her whose turn it is.
  *
- * Red is HERS. The device is blue.
+ * Red plays first. Neither colour belongs to the device any more (section
+ * 6); they are just the two people holding it.
  *
  * Both are the sketchpad palette's own red and blue (sketch.c
  * palette_color(): 0xF800, 0x001F), on purpose: the device should have one
  * vocabulary of colour across its apps, not one per app.
  *
- * The slab is a neutral light grey rather than the real toy's blue,
+ * The slab is a near-neutral light grey rather than the real toy's blue,
  * because a blue board would compete with a blue player. The pale washes
  * are the two player colours lifted most of the way to white, so a
- * highlighted column reads as "this one is yours/mine" without ever
- * competing with an actual piece.
+ * highlighted column reads as "this one is yours" without ever competing
+ * with an actual piece.
  *
- * Written as a function rather than a static const array for the reason
+ * Written as functions rather than static const arrays for the reason
  * sketch.c's palette_color() gives: px_swap() is a real function call and a
  * static initialiser needs a constant expression.
  * ================================================================== */
 #define P_NONE  0
-#define P_CHILD 1  // red
-#define P_DEV   2  // blue
+#define P_RED   1  // plays first
+#define P_BLUE  2
+
+static uint8_t other_player(uint8_t p) { return p == P_RED ? P_BLUE : P_RED; }
 
 static uint16_t col_piece(uint8_t player) {
-    return player == P_CHILD ? px_swap(0xF800)   // red
-                             : px_swap(0x001F);  // blue
+    return player == P_RED ? px_swap(0xF800)   // red
+                           : px_swap(0x001F);  // blue
 }
 
 // The washes are deliberately at HALF strength rather than a whisper: a
@@ -474,24 +542,39 @@ static uint16_t col_piece(uint8_t player) {
 // piece's own saturation, so a washed column can never be mistaken for a
 // column with a piece in it.
 static uint16_t col_wash(uint8_t player) {
-    return player == P_CHILD ? px_swap(0xFD55)   // #FFAAAD
-                             : px_swap(0xADFF);  // #ADBEFF
+    return player == P_RED ? px_swap(0xFD55)   // #FFAAAD
+                           : px_swap(0xADFF);  // #ADBEFF
 }
 
 static uint16_t col_wash_full(void) {
     return px_swap(0xB596);  // #B5B2B5: this column cannot take a piece
 }
 
-static uint16_t col_slab(void) {
-    return px_swap(0xDEFB);  // #DEDEDE, a neutral light grey
+// THE BOARD ITSELF CARRIES WHOSE TURN IT IS, warm grey for red and cool grey
+// for blue against the old neutral #DEDEDE. This is the peripheral-vision
+// third of section 6's turn cue and it is deliberately near-invisible pixel
+// by pixel: a saturated board would fight both the pieces and the washes,
+// and would be the loudest thing on a screen whose loudest thing should be
+// the game. What makes it work is not contrast, it is AREA - 362x312 of it,
+// a fifth of the panel, changing at once. Someone handed the puck registers
+// that the object has changed temperature before they have focused on
+// anything on it.
+//
+// P_NONE means "no side owns this moment": the neutral grey, used while the
+// board is draining and during the beat after a full board that nobody won.
+// PH_WIN passes the WINNER, so the whole board also states who won.
+static uint16_t col_slab(uint8_t player) {
+    if (player == P_RED)  return px_swap(0xE6DA);  // #E6DBD6, warm
+    if (player == P_BLUE) return px_swap(0xD6DC);  // #D6DBE6, cool
+    return px_swap(0xDEFB);                         // #DEDEDE, neutral
 }
 
 /* =====================================================================
  * State. One arena allocation, per app.h.
  * ================================================================== */
 enum {
-    PH_PLAY,     // waiting for whoever's turn it is; her gesture is live
-    PH_THINK,    // the device is aiming: its chute and waiting piece are shown
+    PH_PLAY,     // whoever's turn it is may play; their gesture is live once
+                  // the hand-off has elapsed (turnStartMs, section 6)
     PH_FALL,     // a piece is falling
     PH_WIN,      // the winning line breathes
     PH_DRAWPAUSE,// a full board, nobody won: a beat before the drain
@@ -499,13 +582,14 @@ enum {
 };
 
 typedef struct {
-    uint8_t  board[ROWS * COLS];   // P_NONE / P_CHILD / P_DEV, row 0 is the TOP row
+    uint8_t  board[ROWS * COLS];   // P_NONE / P_RED / P_BLUE, row 0 is the TOP row
     uint8_t  height[COLS];         // pieces in each column, 0..ROWS
     uint8_t  turn;                 // whose move it is
+    uint32_t turnStartMs;          // when it became theirs: the hand-off's t=0
     uint8_t  phase;
     uint32_t phaseStartMs;
 
-    // Her gesture. See section 2 of this file's header comment.
+    // The gesture, whoever's it is. See section 2 of this file's header.
     bool     contactSeen;          // a gesture is in progress (dropouts included)
     bool     armed;                // it has survived ARM_SAMPLES/ARM_MS
     uint32_t gestureStartMs;
@@ -520,17 +604,10 @@ typedef struct {
     float    fallY, fallV;
     int      bouncesLeft;
 
-    // The device's move, chosen at the start of PH_THINK so that the chute
-    // it aims down is the one it will actually use.
-    int      aiCol;
-
     // The winning line: up to 6 cells, since a run can be longer than four.
     uint8_t  winCells[6];
     int      winCount;
     uint8_t  winner;
-
-    int      lastPlayCol;          // what ai_choose() plays near
-    uint32_t rng;
 
     uint32_t lastRenderMs;
     uint8_t  dirty;                // bit c set: column c must be repainted
@@ -580,20 +657,6 @@ static int run_len(const four_state_t *s, int c, int r, uint8_t p, int dc, int d
     return n;
 }
 
-// The longest line `p` would own through (c,r) if it played there, capped at
-// 4 (a five-long run is not more interesting than a four-long one to
-// anything that reads this).
-static int line_len(const four_state_t *s, int c, int r, uint8_t p) {
-    static const int DC[4] = { 1, 0, 1,  1 };
-    static const int DR[4] = { 0, 1, 1, -1 };
-    int best = 1;
-    for (int i = 0; i < 4; i++) {
-        int n = 1 + run_len(s, c, r, p, DC[i], DR[i]) + run_len(s, c, r, p, -DC[i], -DR[i]);
-        if (n > best) best = n;
-    }
-    return best > 4 ? 4 : best;
-}
-
 // The cells of the winning line through (c,r), written into out[] (up to 6).
 // Returns 0 when there is no win.
 static int win_cells(const four_state_t *s, int c, int r, uint8_t p, uint8_t *out) {
@@ -614,117 +677,6 @@ static int win_cells(const four_state_t *s, int c, int r, uint8_t p, uint8_t *ou
         return n;
     }
     return 0;
-}
-
-// xorshift32. Seeded from the wall clock at enter() and re-stirred with the
-// timing of every one of her drops, so a real session never repeats even
-// though a scripted one (the emulator's tests) is perfectly deterministic.
-static uint32_t rnd(four_state_t *s) {
-    uint32_t x = s->rng;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    s->rng = x;
-    return x;
-}
-
-/* =====================================================================
- * The opponent.
- *
- * WHO PLAYS THE OTHER SIDE: the device. This is a toy for a child who
- * mostly plays alone, and two humans hunched over a 1.8 inch puck is not
- * the thing that gets used.
- *
- * HOW WEAKLY, AND WHY THIS SHAPE. The failure to avoid is not "it is too
- * strong", it is "it stops feeling like an opponent". A random dropper is
- * beatable and worthless: nothing it does is a response to anything she
- * did, so there is nobody on the other side. What makes a weak player read
- * as a player is that it ANSWERS - it plays near what just happened, it
- * builds its own little clusters, and it occasionally does something that
- * makes her stop and think. So the weakness is not put into the move
- * choice, it is put into the ATTENTION:
- *
- *   - It sees exactly one move ahead. It never asks what she does next, so
- *     it walks into double threats, gives her open threes, and stacks a
- *     piece under a square she needs. That is where most of her wins come
- *     from and it is invisible as a handicap: it looks like a player who is
- *     concentrating on their own side of the board.
- *   - It only ACTS on what it sees some of the time. It takes an
- *     immediate win on AI_TAKE_WIN_PCT of the chances it gets and blocks
- *     her three on AI_BLOCK_PCT of hers. Both numbers are deliberately
- *     under half. It must be able to do both, or winning against it means
- *     nothing and a lucky loss is inexplicable; it must not do them
- *     reliably, or a five year old never wins.
- *   - When the roll says it did not see its own win, the winning column is
- *     REMOVED from the pool it then picks from. Otherwise the ordinary
- *     line-building score would hand it the same column anyway and the
- *     handicap would quietly do nothing. Blocking columns are NOT removed:
- *     it should sometimes block by accident, exactly like a distracted
- *     player.
- *   - What is left is a one-ply score: build your own line, play near the
- *     action, mild preference for the middle, plus a coin flip to break
- *     ties so the same position does not always produce the same move.
- *
- * WHAT IT COSTS. 7 columns x 4 directions x 2 scan directions x at most 5
- * cells = under 300 array reads and no recursion, no allocation, no
- * malloc, bounded stack, once per device move. A four-ply minimax over
- * this board is on the order of 2400 leaf evaluations, which this chip
- * would also do in a millisecond - the reason for not doing it is the child,
- * not the CPU, and that is worth being explicit about so nobody
- * "optimises" this into a real engine later.
- * ================================================================== */
-#define AI_TAKE_WIN_PCT 55
-#define AI_BLOCK_PCT    35
-
-static int ai_choose(four_state_t *s) {
-    int winCols[COLS], nWin = 0;
-    int blockCols[COLS], nBlock = 0;
-    int pool[COLS], nPool = 0;
-    int poolScore[COLS];
-    int bestScore = -1000;
-
-    for (int c = 0; c < COLS; c++) {
-        int r = landing_row(s, c);
-        if (r < 0) continue;
-
-        bool isWin = line_len(s, c, r, P_DEV) >= 4;
-        bool isBlock = line_len(s, c, r, P_CHILD) >= 4;
-        if (isWin) winCols[nWin++] = c;
-        if (isBlock) blockCols[nBlock++] = c;
-
-        // A column that wins is excluded from the ordinary pool: see this
-        // function's header comment on why the handicap has to be enforced
-        // here rather than left to the score.
-        if (isWin) continue;
-
-        int own = line_len(s, c, r, P_DEV);
-        int score = (own >= 3) ? 5 : (own == 2 ? 3 : 0);
-        int near = 3 - (c > s->lastPlayCol ? c - s->lastPlayCol : s->lastPlayCol - c);
-        if (near > 0) score += near;
-        if (c == COLS / 2) score += 1;
-        score += (int)(rnd(s) & 1u);
-
-        pool[nPool] = c;
-        poolScore[nPool] = score;
-        nPool++;
-        if (score > bestScore) bestScore = score;
-    }
-
-    if (nWin > 0 && (int)(rnd(s) % 100u) < AI_TAKE_WIN_PCT) return winCols[rnd(s) % (uint32_t)nWin];
-    if (nBlock > 0 && (int)(rnd(s) % 100u) < AI_BLOCK_PCT) return blockCols[rnd(s) % (uint32_t)nBlock];
-
-    if (nPool == 0) {
-        // Every legal column is a winning one: it has to play somewhere, and
-        // "the roll said it did not notice" cannot mean "it does not move".
-        if (nWin > 0) return winCols[rnd(s) % (uint32_t)nWin];
-        return -1;
-    }
-
-    int best[COLS], nBest = 0;
-    for (int i = 0; i < nPool; i++) {
-        if (poolScore[i] == bestScore) best[nBest++] = pool[i];
-    }
-    return best[rnd(s) % (uint32_t)nBest];
 }
 
 /* =====================================================================
@@ -898,16 +850,45 @@ static void fill_rrect(float cx, float cy, float halfW, float halfH, float corne
  * dirty rectangles, is the design.
  * ================================================================== */
 
-// Which column is currently highlighted, and in whose colour. During
-// PH_THINK the device highlights its own chosen column, which is how its
-// move is a thing she watches happen rather than a piece that appears.
+// Overshoot-then-settle easing ("back out"): grows past 1.0 before returning
+// to exactly 1.0 at t=1, which is what makes a scale-up read as a pop rather
+// than a plain grow. The standard closed-form cubic, computed with plain
+// multiplication rather than powf - the same function, for the same reason,
+// as sketch.c's palette pop-in, which is where this device's "little
+// balloon" idiom comes from. It peaks near 1.10x, so the waiting piece
+// touches 23px against a span that reaches 33 from the column centre.
+static float ease_out_back(float t) {
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    const float c1 = 1.70158f;
+    const float c3 = c1 + 1.0f;
+    float u = t - 1.0f;
+    return 1.0f + c3 * u * u * u + c1 * u * u;
+}
+
+// How far into the hand-off this turn is, 0 at the instant the turn changed
+// and 1 once it is over; negative when there is no hand-off running. See
+// section 6: this drives the announcement (a chute washing in and fading
+// out, a waiting piece popping in) AND the lock-out that keeps the hand
+// which just played from playing the other player's move too.
+static float handoff_u(const four_state_t *s, uint32_t nowMs) {
+    if (s->phase != PH_PLAY) return -1.0f;
+    uint32_t dt = nowMs - s->turnStartMs;
+    if (dt >= (uint32_t)HANDOFF_MS) return -1.0f;
+    return (float)dt / (float)HANDOFF_MS;
+}
+
+static bool gesture_live(const four_state_t *s, uint32_t nowMs) {
+    return s->phase == PH_PLAY && handoff_u(s, nowMs) < 0.0f;
+}
+
+// Which column is currently highlighted, and in whose colour.
 static int hilite_col(const four_state_t *s) {
-    if (s->phase == PH_PLAY && s->turn == P_CHILD && s->armed) return s->hoverCol;
-    if (s->phase == PH_THINK) return s->aiCol;
+    if (s->phase == PH_PLAY && s->armed) return s->hoverCol;
     // The chute and its landing ring STAY UP while the piece falls, rather
-    // than blinking out the instant she lets go. The fall is the answer to
-    // the promise the ring was making, and watching the piece slide down its
-    // own lit channel into the exact ring that was already drawn is what
+    // than blinking out the instant the thumb lets go. The fall is the answer
+    // to the promise the ring was making, and watching the piece slide down
+    // its own lit channel into the exact ring that was already drawn is what
     // makes the promise legible; clearing the highlight first would leave the
     // piece falling through a board that no longer says where it is going.
     if (s->phase == PH_FALL) return s->fallCol;
@@ -915,7 +896,17 @@ static int hilite_col(const four_state_t *s) {
 }
 
 static uint8_t hilite_player(const four_state_t *s) {
-    if (s->phase == PH_THINK) return P_DEV;
+    if (s->phase == PH_FALL) return s->fallPlayer;
+    return s->turn;
+}
+
+// The colour the whole slab wears, which is the peripheral-vision third of
+// section 6's turn cue. PH_WIN wears the WINNER's, so the board itself also
+// says who won; the drain and the nobody-won beat wear neutral, because no
+// side owns those moments.
+static uint8_t slab_player(const four_state_t *s) {
+    if (s->phase == PH_WIN) return s->winner;
+    if (s->phase == PH_DRAWPAUSE || s->phase == PH_DRAIN) return P_NONE;
     if (s->phase == PH_FALL) return s->fallPlayer;
     return s->turn;
 }
@@ -924,9 +915,7 @@ static uint8_t hilite_player(const four_state_t *s) {
 // waiting during a fall, a celebration or a drain, and the ABSENCE of the
 // waiting piece is what says that a touch now means something else).
 static int waiting_col(const four_state_t *s) {
-    if (s->phase == PH_THINK) return s->aiCol;
     if (s->phase != PH_PLAY) return -1;
-    if (s->turn != P_CHILD) return -1;
     return s->armed ? s->hoverCol : s->parkCol;
 }
 
@@ -946,13 +935,15 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     // 1. paper.
     gfx_fill_rect_land(lx0, 0, lx1 - lx0, LAND_H, PX_WHITE);
 
-    // 2. the slab.
-    fill_rrect(SLAB_CX, SLAB_CY, SLAB_HW, SLAB_HH, SLAB_R, col_slab(), lx0, lx1, 256);
+    // 2. the slab, wearing whose turn it is (section 6).
+    fill_rrect(SLAB_CX, SLAB_CY, SLAB_HW, SLAB_HH, SLAB_R, col_slab(slab_player(s)), lx0, lx1, 256);
 
-    // 3. the chute: either the highlight (a pale wash of whoever is about to
-    //    play, or grey when that column cannot take a piece) or, during the
-    //    drain, a white channel the pieces slide out through.
+    // 3. the chute: the highlight (a pale wash of whoever is about to play,
+    //    or grey when that column cannot take a piece); or, at a turn change,
+    //    the hand-off's own announcement washing out; or, during the drain, a
+    //    white channel the pieces slide out through.
     int hc = hilite_col(s);
+    float ho = handoff_u(s, nowMs);
     if (s->phase == PH_DRAIN) {
         for (int c = 0; c < COLS; c++) {
             if (drain_offset(s, nowMs, c) < 0.0f) continue;
@@ -962,6 +953,19 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
         bool full = landing_row(s, hc) < 0;
         uint16_t wash = full ? col_wash_full() : col_wash(hilite_player(s));
         fill_rrect(col_x(hc), CHUTE_CY, CHUTE_HW, CHUTE_HH, CHUTE_HW, wash, lx0, lx1, 256);
+    } else if (ho >= 0.0f) {
+        // Full strength at the instant the turn changes, then linearly out to
+        // exactly nothing by the end. It was squared at first, which faded it
+        // so fast that it had almost gone by the time the waiting piece
+        // finished popping in: the two halves of the announcement barely
+        // overlapped, and a capture of the moment showed a blue stripe and no
+        // piece. They are one statement and have to be legible together.
+        //
+        // NO LANDING RING goes with it: this says "your turn, this colour",
+        // not "your piece will land here", and a chute still lit once the
+        // hand-off is over would be claiming a column nobody has chosen.
+        fill_rrect(col_x(s->parkCol), CHUTE_CY, CHUTE_HW, CHUTE_HH, CHUTE_HW,
+                   col_wash(s->turn), lx0, lx1, (int)(256.0f * (1.0f - ho)));
     }
 
     // 4. the holes, and the pieces sitting in them. A hole is a white disc
@@ -1038,15 +1042,42 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     int wc = waiting_col(s);
     if (wc >= 0) {
         float wy = HOPPER_CY;
-        if (s->phase == PH_PLAY && s->turn == P_CHILD && !s->armed) {
-            // The idle invitation: it is your turn.
-            wy += BOB_AMP * sinf(fmodf((float)nowMs, BOB_MS) / BOB_MS * 6.2831853f);
+        float scale = 1.0f;
+        if (ho >= 0.0f) {
+            // The hand-off's pop: it does not appear, it ARRIVES. ease_out_back
+            // overshoots past full size before settling, which is the whole
+            // reason this reads as a pop rather than a grow - the same balloon
+            // sketch.c's palette uses, and the same argument for it.
+            //
+            // Compressed into the first HANDOFF_POP_FRAC of the hand-off so
+            // that it finishes while the chute behind it is still clearly lit
+            // (see that chute's own comment): the piece arriving and the
+            // colour sweep are one statement, and a pop that used the whole
+            // window would spend its last third arriving over nothing.
+            float u = ho / HANDOFF_POP_FRAC;
+            scale = ease_out_back(u > 1.0f ? 1.0f : u);
+        } else if (!s->armed) {
+            // The idle invitation, afterwards: it is your turn, and you are
+            // the one this colour.
+            //
+            // It floats UP from its resting place and settles back, never
+            // below it. Two reasons, and the second is the load-bearing one:
+            // a piece that rises reads as offering itself, where one that
+            // sinks reads as falling; and the resting position already sits
+            // HOLE_R above the slab's top edge, so a downward bob would push
+            // the waiting piece's lower rim onto the board's rim at the
+            // bottom of every breath, which is untidy AND would make "nothing
+            // below the hopper moves while nobody is touching the glass"
+            // (feature-four.ts) an assertion about a hairline rather than
+            // about a comfortable margin.
+            float phase = fmodf((float)nowMs, BOB_MS) / BOB_MS * 6.2831853f;
+            wy -= BOB_AMP * 0.5f * (1.0f - cosf(phase));
         }
         uint8_t wp = hilite_player(s);
         if (landing_row(s, wc) < 0) {
-            fill_ring(col_x(wc), wy, HOLE_R, HOLE_R - GHOST_STROKE, col_piece(wp), lx0, lx1, 256);
+            fill_ring(col_x(wc), wy, HOLE_R * scale, (HOLE_R - GHOST_STROKE) * scale, col_piece(wp), lx0, lx1, 256);
         } else {
-            fill_disc(col_x(wc), wy, HOLE_R, col_piece(wp), lx0, lx1, 256);
+            fill_disc(col_x(wc), wy, HOLE_R * scale, col_piece(wp), lx0, lx1, 256);
         }
     }
 
@@ -1117,37 +1148,37 @@ static void start_fall(four_state_t *s, uint32_t nowMs, int col, uint8_t player)
     printf("four: drop col=%d row=%d player=%d\r\n", col, s->fallRow, (int)player);
 }
 
-static void begin_think(four_state_t *s, uint32_t nowMs) {
-    s->aiCol = ai_choose(s);
-    if (s->aiCol < 0) {                 // no legal move: a full board, handled
-        s->phase = PH_DRAWPAUSE;        // as a draw by the caller's own check,
-        s->phaseStartMs = nowMs;        // but belt and braces
-        mark_all(s);
-        return;
-    }
-    s->phase = PH_THINK;
+// Hands the board to `player`: starts their hand-off (the announcement plus
+// the lock-out, section 6), parks the waiting piece back at the centre, and
+// abandons whatever gesture was in progress. The centre rather than where
+// the last piece went, which is what this did when only one human played: it
+// is the same neutral starting point for both of them, and it makes the
+// hand-off's pop happen at a place the eye already knows to look, every
+// single turn, rather than wherever the previous player happened to finish.
+static void hand_over_to(four_state_t *s, uint32_t nowMs, uint8_t player) {
+    s->turn = player;
+    s->turnStartMs = nowMs;
+    s->phase = PH_PLAY;
     s->phaseStartMs = nowMs;
-    mark(s, s->aiCol);
-    printf("four: ai col=%d\r\n", s->aiCol);
+    s->parkCol = COLS / 2;
+    s->hoverCol = -1;
+    s->contactSeen = false;
+    s->armed = false;
+    s->contactCount = 0;
+    mark_all(s);
 }
 
 static void reset_game(four_state_t *s, uint32_t nowMs) {
     for (int i = 0; i < ROWS * COLS; i++) s->board[i] = P_NONE;
     for (int c = 0; c < COLS; c++) s->height[c] = 0;
-    // She always starts. Going first is an advantage in Connect Four, and
-    // she is the reason this app exists; alternating would hand the device
-    // the advantage in half the games it is already meant to lose.
-    s->turn = P_CHILD;
-    s->phase = PH_PLAY;
-    s->phaseStartMs = nowMs;
     s->winCount = 0;
     s->winner = P_NONE;
-    s->lastPlayCol = COLS / 2;
-    s->parkCol = COLS / 2;
-    s->hoverCol = -1;
-    s->contactSeen = false;
-    s->armed = false;
-    mark_all(s);
+    // Red starts every game rather than the loser or the alternate side.
+    // Both players are hands now, so there is no fairness argument either
+    // way, and a fixed starter is one less thing on a screen that may not
+    // use words to explain itself: the board comes up red, and it always
+    // comes up red.
+    hand_over_to(s, nowMs, P_RED);
     printf("four: new game\r\n");
 }
 
@@ -1158,7 +1189,6 @@ static void land_piece(four_state_t *s, uint32_t nowMs) {
                    // in the same tick, whatever the branches below then do
     s->board[r * COLS + c] = s->fallPlayer;
     s->height[c]++;
-    s->lastPlayCol = c;
 
     s->winCount = win_cells(s, c, r, s->fallPlayer, s->winCells);
     if (s->winCount > 0) {
@@ -1180,32 +1210,29 @@ static void land_piece(four_state_t *s, uint32_t nowMs) {
         return;
     }
 
-    if (s->fallPlayer == P_CHILD) {
-        s->turn = P_DEV;
-        begin_think(s, nowMs);
-    } else {
-        s->turn = P_CHILD;
-        s->phase = PH_PLAY;
-        s->phaseStartMs = nowMs;
-        s->parkCol = c;   // the waiting piece reappears where the action was,
-                           // not at a fixed home, so her eye does not have to
-                           // travel back to the middle every turn
-        mark_all(s);
-    }
+    // Nobody has won and there is room left: the puck goes to the other
+    // player. This is the ONLY place a turn changes, and it is the only thing
+    // that happens after a piece lands - there is no reply to compute and
+    // nothing to schedule.
+    hand_over_to(s, nowMs, other_player(s->fallPlayer));
 }
 
 /* ---------------------------------------------------------------------
- * Her gesture. See section 2 of this file's header comment for why none of
- * this trusts f->touchReleased.
+ * The gesture, whoever's it is. Identical for both players - one idiom,
+ * learned once, and neither side gets a different one. See section 2 of this
+ * file's header comment for why none of this trusts f->touchReleased.
  * ------------------------------------------------------------------- */
 static void gesture_tick(four_state_t *s, const app_frame_t *f) {
-    bool live = (s->phase == PH_PLAY && s->turn == P_CHILD);
+    bool live = gesture_live(s, f->nowMs);
 
     if (!live) {
         // Any gesture in progress is abandoned rather than carried across a
-        // phase boundary: a finger still down when her turn comes back starts
-        // a fresh gesture, arms in ARM_MS, and highlights - which is what she
-        // would expect, and it costs nothing to be strict here.
+        // phase boundary or a hand-off: a finger still down when the next
+        // turn opens starts a FRESH gesture and has to arm again. That is
+        // most of what stops the hand that just played from playing the other
+        // player's move too - the hand-off's lock-out buys the beat, and this
+        // makes sure the beat is not spent quietly accumulating contact
+        // samples toward an arm the instant it ends.
         if (s->contactSeen || s->armed) {
             s->contactSeen = false;
             s->armed = false;
@@ -1267,20 +1294,16 @@ static void gesture_tick(four_state_t *s, const app_frame_t *f) {
 
     if (!wasArmed || col < 0) { mark(s, col); return; }
 
-    // Re-stir the generator with the timing of her release: a real session
-    // never repeats, a scripted one (the tests) still does.
-    s->rng ^= f->nowMs * 2654435761u;
-
     s->parkCol = col;
     if (landing_row(s, col) < 0) {
         // A full column: the release does nothing at all, which is what the
         // grey wash and the hollow waiting piece have been saying the whole
-        // time she was over it. Her turn does not end.
+        // time the thumb was over it. The turn does not change.
         mark(s, col);
         printf("four: release over a full column c=%d, ignored\r\n", col);
         return;
     }
-    start_fall(s, f->nowMs, col, P_CHILD);
+    start_fall(s, f->nowMs, col, s->turn);
 }
 
 /* =====================================================================
@@ -1290,12 +1313,10 @@ static void four_enter(void) {
     s_state = APP_STATE(four_state_t);
     four_state_t *s = s_state;
 
-    // Seeded from the wall clock, which on the board is however long it took
-    // her to get here and is therefore genuinely unpredictable; in the
-    // emulator it is whatever the harness ticked, so a scripted game is
-    // reproducible. Re-stirred on every one of her drops (gesture_tick).
-    s->rng = 0x9E3779B9u;
-
+    // No generator to seed any more: with both sides played by a hand there
+    // is nothing in this app that has to decide anything, so nothing that has
+    // to be unpredictable. That is also what makes a scripted game in the
+    // emulator exactly reproducible, which the tests lean on.
     reset_game(s, 0);
     s->dirtyAll = false;         // enter() must not push: the runtime pushes
     s->dirty = 0;                // the whole panel once after it returns
@@ -1324,18 +1345,25 @@ static void four_tick(const app_frame_t *f) {
 
     switch (s->phase) {
     case PH_PLAY:
-        // The idle bob, on its own slower clock. A 4px travel over 1.6s moves
-        // about a quarter of a pixel per 60fps frame, so repainting a strip at
-        // the animation rate would push sixty near-identical frames a second
-        // for a change nobody can see; BOB_STEP_MS is the rate at which the
-        // bob actually moves about a pixel.
-        if (s->turn == P_CHILD && !s->armed && (now - s->lastRenderMs) >= BOB_STEP_MS) {
+        if (handoff_u(s, now) >= 0.0f) {
+            // The hand-off's own animation: the chute fading out and the
+            // waiting piece popping in, both inside the centre column, at the
+            // full animation rate because this one is short and is the moment
+            // that has to be seen.
+            // Nothing catches the exact frame the hand-off ENDS on, and
+            // nothing needs to: both animated quantities converge on their
+            // settled values (scale 1, alpha 0), so a last frame at u=0.97 is
+            // already indistinguishable from the settled one, and the bob
+            // below repaints this same column within BOB_STEP_MS regardless.
+            if ((now - s->lastRenderMs) >= RENDER_MIN_MS) mark(s, s->parkCol);
+        } else if (!s->armed && (now - s->lastRenderMs) >= BOB_STEP_MS) {
+            // The idle bob, on its own slower clock. A 5px travel over 1.3s
+            // moves under half a pixel per 60fps frame, so repainting at the
+            // animation rate would push sixty near-identical frames a second
+            // for a change nobody can see; BOB_STEP_MS is the rate at which
+            // the bob actually moves about a pixel.
             mark(s, s->parkCol);
         }
-        break;
-
-    case PH_THINK:
-        if ((now - s->phaseStartMs) >= THINK_MS) start_fall(s, now, s->aiCol, P_DEV);
         break;
 
     case PH_FALL: {

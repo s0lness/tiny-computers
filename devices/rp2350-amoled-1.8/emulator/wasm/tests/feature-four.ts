@@ -9,22 +9,45 @@
 //   bun run emulator/wasm/tests/feature-four.ts
 //
 // WHAT THIS FILE PROVES, IN ORDER:
-//   1. the board renders as a grey slab with white holes and a red waiting
-//      piece, and the app's arena footprint is REPORTED rather than assumed;
+//   1. the board renders as a slab with white holes and a red waiting piece,
+//      and the app's arena footprint is REPORTED rather than assumed;
 //   2. a thumb on the glass highlights its column unmistakably - the chute
 //      washes pale red the whole height of the screen, and the lowest empty
 //      hole of that column wears a landing ring - and moving the thumb moves
-//      both, leaving the column it left back at its resting grey;
+//      both, leaving the column it left back at its resting slab;
 //   3. releasing drops the piece, it falls THROUGH the column (caught
 //      mid-air, not just at rest) and lands in the column the thumb was over;
-//   4. the device answers on its own, in blue, having visibly aimed first;
-//   5. a game is won, the four in a row breathe, a touch moves it along, the
-//      board drains and a fresh game begins - with no text anywhere in any of
-//      it;
-//   6. EVERY tick of all of the above - the fall, the celebration's pulse and
-//      the drain included, not only the frames at rest - obeys decision
-//      0001's 8px rule and the "no pixel changes outside the pushed
-//      rectangle" invariant.
+//   4. THE BOARD NEVER MOVES ON ITS OWN. Two people play this, one puck
+//      between them, and nothing in the app takes a turn: over five seconds
+//      of nobody touching the glass, not one pixel below the hopper changes
+//      and no piece is placed. This is the property the owner actually asked
+//      for ("il faudrait que ce soit chacun son tour avec deux joueurs"), so
+//      it is asserted directly rather than inferred from the absence of an
+//      opponent in the source;
+//   5. WHOSE TURN IT IS, which with two humans is the only thing the screen
+//      has to say and has no words to say it with. All three cues are
+//      checked at the moment they matter, the instant the turn changes: the
+//      whole slab changes temperature (warm for red, cool for blue), the new
+//      player's chute washes in at the centre and fades, and the new waiting
+//      piece pops in in their colour;
+//   6. the second player then plays, with the identical gesture, and their
+//      piece is blue;
+//   7. a game is won, the four in a row breathe, the board wears the
+//      winner's colour, a touch moves it along, the board drains and a fresh
+//      game begins - with no text anywhere in any of it; and a board that
+//      fills with nobody winning ends too;
+//   8. EVERY tick of all of the above - the fall, the hand-off, the
+//      celebration's pulse and the drain included, not only the frames at
+//      rest - obeys decision 0001's 8px rule and the "no pixel changes
+//      outside the pushed rectangle" invariant.
+//
+// REWRITTEN when the opponent was removed. The owner played the version
+// where the device took the other side and said "ouais c'est pas mal du tout
+// le jeu !", then: "Il faudrait que ce soit chacun son tour avec deux
+// joueurs. Et quand je place un rouge ca place direct un bleu." So the
+// scenarios that drove the opponent had nothing left to drive, and the ones
+// asserting that a reply arrives were asserting something that must now
+// never happen. See four.c's section 6 for the full account.
 //
 // The gesture's behaviour under a REALISTIC touch stream (contact dropping
 // out ~34 times a second) is a separate file, deliberately:
@@ -59,22 +82,35 @@ const BOARD_X0 = 49;
 const BOARD_Y0 = 56;
 const HOLE_R = 21;
 const RELEASE_GRACE_MS = 260;
-const THINK_MS = 620;
+const HANDOFF_MS = 420;
 const CELEBRATE_SKIP_MS = 1200;
+const CENTRE_COL = 3; // four.c parks the waiting piece at COLS/2 every turn
 
 const colX = (c: number) => BOARD_X0 + CELL / 2 + c * CELL;
 const rowY = (r: number) => BOARD_Y0 + CELL / 2 + r * CELL;
+
+const P_RED = 1;
+const P_BLUE = 2;
 
 // The colours four.c paints, as the LOGICAL rgb565 byte pair the
 // framebuffer holds (the fb stores px_swap(v) as a uint16, which on this
 // little-endian target puts the logical high byte first - see
 // feature-sketch-palette.ts's PALETTE_COLORS_BE for the same convention).
 const C_WHITE: [number, number] = [0xff, 0xff];
-const C_SLAB: [number, number] = [0xde, 0xfb];
 const C_RED: [number, number] = [0xf8, 0x00];
 const C_BLUE: [number, number] = [0x00, 0x1f];
 const C_WASH_RED: [number, number] = [0xfd, 0x55];
 const C_WASH_BLUE: [number, number] = [0xad, 0xff];
+// The slab wears whose turn it is: warm grey for red, cool for blue, neutral
+// when no side owns the moment (the drain, the nobody-won beat). Three
+// separate constants and not one, because "the whole board changed
+// temperature" is a turn cue in its own right (four.c section 6) and a test
+// that treated them as interchangeable would be blind to it.
+const C_SLAB_RED: [number, number] = [0xe6, 0xda];
+const C_SLAB_BLUE: [number, number] = [0xd6, 0xdc];
+const C_SLAB_NEUTRAL: [number, number] = [0xde, 0xfb];
+const slabFor = (player: number) =>
+    player === P_RED ? C_SLAB_RED : player === P_BLUE ? C_SLAB_BLUE : C_SLAB_NEUTRAL;
 
 let passCount = 0;
 let failCount = 0;
@@ -266,6 +302,16 @@ function describe(p: [number, number]): string {
 function isRedish(p: [number, number]): boolean { return p[0] >= 0xe0 && p[1] <= 0x20; }
 function isBluish(p: [number, number]): boolean { return p[0] <= 0x20 && p[1] >= 0x10 && p[1] <= 0x3f; }
 
+// How far toward blue a pixel leans, in rgb565 steps: the 5-bit blue channel
+// minus the 5-bit red one. Used to ask "is this bluer than that" rather than
+// "is this exactly this colour", which is the right question for anything
+// this app FADES - a wash on its way out passes through every blend between
+// itself and the slab, and none of them match its own byte pair.
+function blueness(p: [number, number]): number {
+    const v = (p[0] << 8) | p[1];
+    return (v & 0x1f) - ((v >> 11) & 0x1f);
+}
+
 // ---- driving ---------------------------------------------------------
 function settle(dev: Device, t0: number, durationMs: number, stepMs = 15): number {
     let t = t0;
@@ -285,13 +331,34 @@ function holdLand(dev: Device, lx: number, ly: number, t0: number, durationMs: n
     return t;
 }
 
+// A whole move: press, hold long enough to arm, release, then wait out the
+// fall, the bounces and the hand-off, so the app is back at rest and the
+// next player may play. Returns the new clock.
+function playMove(dev: Device, col: number, t0: number, ly = 200): number {
+    let t = holdLand(dev, colX(col), ly, t0, 140);
+    return settle(dev, t, RELEASE_GRACE_MS + 1300);
+}
+
+// Do the two framebuffers agree everywhere BELOW the hopper, i.e. over the
+// board itself? The waiting piece bobs at the top forever and that is
+// supposed to move; nothing else is. Returns the first disagreeing landscape
+// pixel, or null.
+function boardUnchanged(a: Uint8Array, b: Uint8Array): { lx: number; ly: number } | null {
+    for (let ly = BOARD_Y0; ly < LAND_H; ly++) {
+        for (let lx = 0; lx < LAND_W; lx++) {
+            const p = landPx(a, lx, ly), q = landPx(b, lx, ly);
+            if (p[0] !== q[0] || p[1] !== q[1]) return { lx, ly };
+        }
+    }
+    return null;
+}
+
 // ---------------------------------------------------------------------
 // A mirror of the board, maintained purely from the firmware's own "four:
 // drop col=.. row=.. player=.." log lines - never from any state this test
-// keeps in parallel with the app. It exists so the test can play WELL
-// enough to reach a win in a handful of moves (the app's opponent blocks
-// only about a third of the time, by design, so a competent partner beats
-// it quickly) rather than dropping pieces at random and hoping.
+// keeps in parallel with the app. Both sides are the test's to play now, so
+// this is what lets it play a real game rather than dropping pieces at
+// random: it picks a move for whoever's turn the firmware just said it is.
 // ---------------------------------------------------------------------
 type Mirror = { cells: number[] };
 function newMirror(): Mirror { return { cells: new Array(ROWS * COLS).fill(0) }; }
@@ -315,37 +382,42 @@ function mirrorLine(m: Mirror, col: number, row: number, p: number): number {
     }
     return best;
 }
-// The stalemate-seeking partner: block the device's fours, build threes so it
-// has to keep answering, and NEVER complete a four. See the endurance section
-// for why a draw needs a player like this rather than a good one.
-function chooseStalemateMove(m: Mirror): number {
-    for (let c = 0; c < COLS; c++) { const r = mirrorLanding(m, c); if (r >= 0 && mirrorLine(m, c, r, 2) >= 4) return c; }
-    let best = -1, bestScore = -99;
-    for (let c = 0; c < COLS; c++) {
-        const r = mirrorLanding(m, c);
-        if (r < 0) continue;
-        const own = mirrorLine(m, c, r, 1);
-        if (own >= 4) continue;
-        const score = own * 10 - Math.abs(c - 3);
-        if (score > bestScore) { bestScore = score; best = c; }
-    }
-    // Every legal column would complete a four: it still has to move.
-    if (best < 0) for (let c = 0; c < COLS; c++) if (mirrorLanding(m, c) >= 0) best = c;
-    return best;
-}
-
-// Take a win, else block, else build the longest line available, preferring
-// the middle. Ordinary competent play, nothing clever.
-function chooseChildMove(m: Mirror): number {
-    for (let c = 0; c < COLS; c++) { const r = mirrorLanding(m, c); if (r >= 0 && mirrorLine(m, c, r, 1) >= 4) return c; }
-    for (let c = 0; c < COLS; c++) { const r = mirrorLanding(m, c); if (r >= 0 && mirrorLine(m, c, r, 2) >= 4) return c; }
+// Play FOR whoever's turn it is: take the win if there is one, else block the
+// other side, else build the longest line available, preferring the middle.
+// Ordinary competent play from both hands, which is what reaches a win in a
+// handful of moves instead of wandering.
+function chooseMove(m: Mirror, p: number): number {
+    const other = p === P_RED ? P_BLUE : P_RED;
+    for (let c = 0; c < COLS; c++) { const r = mirrorLanding(m, c); if (r >= 0 && mirrorLine(m, c, r, p) >= 4) return c; }
+    for (let c = 0; c < COLS; c++) { const r = mirrorLanding(m, c); if (r >= 0 && mirrorLine(m, c, r, other) >= 4) return c; }
     let best = -1, bestScore = -1;
     for (let c = 0; c < COLS; c++) {
         const r = mirrorLanding(m, c);
         if (r < 0) continue;
-        const score = mirrorLine(m, c, r, 1) * 10 + (3 - Math.abs(c - 3));
+        const score = mirrorLine(m, c, r, p) * 10 + (3 - Math.abs(c - CENTRE_COL));
         if (score > bestScore) { bestScore = score; best = c; }
     }
+    return best;
+}
+
+// Play for whoever's turn it is, but NEVER complete a four for them. Both
+// hands doing this cannot produce a winner, so the board fills and the game
+// ends the other way - which is how the full-board-no-winner path gets
+// exercised at all. With the opponent gone this is fully in the test's
+// control and reaches a draw in the FIRST game, where the old version had to
+// hunt across fifteen of them and hope.
+function chooseStalemateMove(m: Mirror, p: number): number {
+    let best = -1, bestScore = -99;
+    for (let c = 0; c < COLS; c++) {
+        const r = mirrorLanding(m, c);
+        if (r < 0) continue;
+        if (mirrorLine(m, c, r, p) >= 4) continue; // never finish a four
+        const score = -Math.abs(c - CENTRE_COL);
+        if (score > bestScore) { bestScore = score; best = c; }
+    }
+    // Every legal column would complete a four: forced, so somebody wins and
+    // this game is simply not the one that draws.
+    if (best < 0) for (let c = 0; c < COLS; c++) if (mirrorLanding(m, c) >= 0) best = c;
     return best;
 }
 
@@ -438,7 +510,7 @@ async function writeScreenshot(name: string, fb: Uint8Array, what: string) {
 
 // ---------------------------------------------------------------------
 async function main() {
-    console.log("=== feature: Connect Four (firmware/apps/four.c) ===\n");
+    console.log("=== feature: Connect Four, two players (firmware/apps/four.c) ===\n");
     const dev = await loadDevice();
     dev.tickChecked(0);
     dev.appSwitch(APP_FOUR);
@@ -457,14 +529,14 @@ async function main() {
     }
 
     let t = 1000;
-    t = settle(dev, t, 200);
+    t = settle(dev, t, HANDOFF_MS + 200); // the opening hand-off, announcing red
     let fb = dev.fbSnapshot();
 
-    // The slab is grey between two holes; every hole is paper white; there is
+    // The slab is flat between two holes; every hole is paper white; there is
     // no line, no border and no right angle anywhere, so the ONLY thing that
     // makes a grid is the arrangement of the white circles.
     const gutter = landPx(fb, colX(3), (rowY(0) + rowY(1)) / 2);
-    check("the board's face is a flat grey slab between its holes", near(gutter, C_SLAB), describe(gutter));
+    check("the board's face is one flat slab between its holes", near(gutter, C_SLAB_RED), describe(gutter));
     let allHolesWhite = true;
     const holeMiss: string[] = [];
     for (let c = 0; c < COLS; c++) for (let r = 0; r < ROWS; r++) {
@@ -480,11 +552,10 @@ async function main() {
     check("the slab's bounding-box corner is still paper - a lozenge, not a rectangle (decision 0009)",
         near(slabCorner, C_WHITE), describe(slabCorner));
 
-    // Whose turn it is, said only by colour: the waiting piece at the top is
-    // red, which is hers.
-    const waiting = landPx(fb, colX(3), 26);
-    check("a red waiting piece sits at the top - the only thing that says whose turn it is",
-        isRedish(waiting), describe(waiting));
+    // Red starts, and the screen says so twice over: the waiting piece at the
+    // top is red, and the whole board is wearing red's warm grey.
+    const waiting = landPx(fb, colX(CENTRE_COL), 26);
+    check("red starts: a red waiting piece at the top of the centre column", isRedish(waiting), describe(waiting));
 
     // ---- 2. the highlight ----------------------------------------------
     console.log("\n-- a thumb goes down on column 2 --");
@@ -497,9 +568,9 @@ async function main() {
     // The chute: pale red, the WHOLE height of the screen. Sampled at four
     // heights - above the board entirely, and in three different gutters
     // between holes - because the point of a full-height highlight is that
-    // most of it is outside the ~75px her thumb is covering.
+    // most of it is outside the ~75px a thumb is covering.
     const chuteProbes: { ly: number; where: string }[] = [
-        { ly: 48, where: "above the board" },
+        { ly: 52, where: "above the board" },
         { ly: (rowY(0) + rowY(1)) / 2, where: "between rows 0 and 1" },
         { ly: (rowY(2) + rowY(3)) / 2, where: "between rows 2 and 3" },
         { ly: (rowY(4) + rowY(5)) / 2, where: "between rows 4 and 5" },
@@ -513,11 +584,10 @@ async function main() {
     }
     check("the highlighted column washes pale red over the WHOLE height of the screen", chuteOk, chuteDetail.join("; "));
 
-    // ...and its neighbours do not.
     const neigh1 = landPx(fb, colX(1), (rowY(2) + rowY(3)) / 2);
     const neigh3 = landPx(fb, colX(3), (rowY(2) + rowY(3)) / 2);
-    check("the columns either side of it are untouched grey slab",
-        near(neigh1, C_SLAB) && near(neigh3, C_SLAB), `left ${describe(neigh1)}, right ${describe(neigh3)}`);
+    check("the columns either side of it are untouched slab",
+        near(neigh1, C_SLAB_RED) && near(neigh3, C_SLAB_RED), `left ${describe(neigh1)}, right ${describe(neigh3)}`);
 
     // The landing ring: the outline of the piece that is about to be there,
     // in the lowest empty hole. Its ink is on the ring, its middle is paper.
@@ -526,16 +596,10 @@ async function main() {
     check("the lowest empty hole of that column wears a red landing ring, hollow in the middle",
         isRedish(ringInk) && near(ringHole, C_WHITE), `ring ${describe(ringInk)}, middle ${describe(ringHole)}`);
 
-    // The waiting piece has moved onto the column under the thumb.
     const waitOnCol2 = landPx(fb, colX(2), 26);
-    const waitOffCol3 = landPx(fb, colX(3), 26);
+    const waitOffCentre = landPx(fb, colX(CENTRE_COL), 26);
     check("the waiting piece rides the highlighted column",
-        isRedish(waitOnCol2) && near(waitOffCol3, C_WHITE), `on ${describe(waitOnCol2)}, off ${describe(waitOffCol3)}`);
-
-    // (the screenshot of this is taken later, once the board has pieces on
-    // it: an empty board cannot show the interesting half of the promise,
-    // which is a landing ring sitting ON TOP of a stack rather than at the
-    // bottom of an empty column.)
+        isRedish(waitOnCol2) && near(waitOffCentre, C_WHITE), `on ${describe(waitOnCol2)}, off ${describe(waitOffCentre)}`);
 
     // ---- the thumb slides ------------------------------------------------
     console.log("\n-- the thumb slides across to column 5 --");
@@ -544,7 +608,7 @@ async function main() {
     const oldCol = landPx(fb, colX(2), (rowY(2) + rowY(3)) / 2);
     const newCol = landPx(fb, colX(5), (rowY(2) + rowY(3)) / 2);
     check("the highlight followed the thumb, and the column it left is back to plain slab",
-        near(newCol, C_WASH_RED) && near(oldCol, C_SLAB), `new ${describe(newCol)}, old ${describe(oldCol)}`);
+        near(newCol, C_WASH_RED) && near(oldCol, C_SLAB_RED), `new ${describe(newCol)}, old ${describe(oldCol)}`);
 
     // ---- 3. release drops the piece -------------------------------------
     console.log("\n-- the thumb lifts --");
@@ -555,7 +619,7 @@ async function main() {
         dev.touchLand(false, 0, 0, t);
         dropLine = dev.fwLogLines().findLast((l) => l.includes("four: drop"));
     }
-    check("releasing drops a piece, in the column the thumb was over",
+    check("releasing drops a piece, in the column the thumb was over, for the player whose turn it is",
         !!dropLine && dropLine.includes("col=5") && dropLine.includes("player=1"), dropLine ?? "(no drop line)");
 
     // Catch it in the air. The piece has to be genuinely mid-column at some
@@ -571,40 +635,102 @@ async function main() {
         if (isRedish(mid) && near(bottom, C_WHITE)) {
             caught = true;
             await writeScreenshot("four-falling.png", now,
-                "a piece caught mid-fall: it is passing row 2 and the hole it is heading for is still empty");
+                "a piece caught mid-fall: passing row 2, down its own lit chute, toward the ring already drawn in the hole it is heading for");
         }
     }
     check("the piece is genuinely in flight partway down the column at some point", caught);
 
-    // ---- it lands, and 4. the device answers ----------------------------
-    t = settle(dev, t, 600);
-    fb = dev.fbSnapshot();
-    const landed = landPx(fb, colX(5), rowY(5));
-    check("it comes to rest in the bottom hole of that column", isRedish(landed), describe(landed));
-
-    const aiLine = dev.fwLogLines().findLast((l) => l.includes("four: ai col="));
-    check("the device takes the other side and chooses a column of its own", !!aiLine, aiLine ?? "(no ai line)");
-    const aiCol = aiLine ? Number(aiLine.match(/col=(\d+)/)?.[1] ?? -1) : -1;
-
-    // It aims first, visibly, in its own colour: the same gesture she just
-    // performed, played back at her. This is the only "whose turn" signal
-    // there is and it has to be legible before its piece moves.
-    fb = dev.fbSnapshot();
-    const aiWash = landPx(fb, colX(aiCol), (rowY(0) + rowY(1)) / 2);
-    const aiWaiting = landPx(fb, colX(aiCol), 26);
-    check("while the device aims, ITS column washes pale blue and a blue piece waits above it",
-        near(aiWash, C_WASH_BLUE) && isBluish(aiWaiting), `wash ${describe(aiWash)}, waiting ${describe(aiWaiting)}`);
-
-    t = settle(dev, t, THINK_MS + 900);
-    fb = dev.fbSnapshot();
-    let sawBluePiece = false;
-    for (let c = 0; c < COLS && !sawBluePiece; c++) for (let r = 0; r < ROWS; r++) {
-        if (isBluish(landPx(fb, colX(c), rowY(r)))) { sawBluePiece = true; break; }
+    // ---- 5. THE TURN CHANGES, which is the moment the whole design now
+    // turns on. Sampled frame by frame rather than once at rest: the
+    // announcement is HANDOFF_MS long and the point of it is what it does
+    // while it is happening. -------------------------------------------
+    console.log("\n-- the piece lands, and the puck changes hands --");
+    let handoffShot: Uint8Array | null = null;
+    let sawBlueWashAtCentre = false;
+    let bluePieceRadius = 0;
+    let landed = false;
+    for (let i = 0; i < 90; i++) {
+        t += 15;
+        dev.touchLand(false, 0, 0, t);
+        const now = dev.fbSnapshot();
+        if (!landed && isRedish(landPx(now, colX(5), rowY(5)))) landed = true;
+        if (!landed) continue;
+        // The announcement: the centre column washed in the NEW player's
+        // colour, full height, with no landing ring in it. Sampled with a
+        // loose tolerance because it is fading the whole time it is up.
+        // "Is the centre column visibly bluer than the board around it",
+        // rather than "does it match the pure wash byte for byte". The wash
+        // fades from full to nothing across the hand-off, so an exact match
+        // only holds for the first frames of it - which is both a weaker
+        // assertion than the real requirement (the column has to STAND OUT
+        // from the slab) and, when used to choose the screenshot, picked a
+        // frame where the waiting piece had barely started arriving.
+        const washRow = (rowY(2) + rowY(3)) / 2;
+        const washUp = blueness(landPx(now, colX(CENTRE_COL), washRow)) -
+                       blueness(landPx(now, colX(CENTRE_COL - 2), washRow)) >= 3;
+        if (washUp) sawBlueWashAtCentre = true;
+        let radius = 0;
+        while (radius < 30 && isBluish(landPx(now, colX(CENTRE_COL) + radius, 26))) radius++;
+        // The frame worth photographing is the one where BOTH halves of the
+        // announcement are at their most legible: the wash still up, and the
+        // piece as far through its pop as it gets while it is. Taking the
+        // first frame that had a wash (which is what this did at first) caught
+        // the piece at a radius of about two pixels, so the screenshot showed
+        // a blue stripe and no piece at all.
+        if (washUp && radius > bluePieceRadius) handoffShot = now;
+        if (radius > bluePieceRadius) bluePieceRadius = radius;
     }
-    check("the device's piece is on the board, in blue", sawBluePiece);
+    check("nothing is placed in reply - the only piece on the board is the one a hand dropped",
+        !dev.fwLogLines().some((l) => l.includes("four: drop") && l.includes("player=2")),
+        "no blue piece appeared by itself");
+    check("at the turn change the centre column washes in the NEW player's colour, full height", sawBlueWashAtCentre);
+    check("and the new waiting piece arrives in blue", bluePieceRadius > 0, `blue waiting piece reached ${bluePieceRadius}px of radius`);
+    if (handoffShot) {
+        await writeScreenshot("four-turn.png", handoffShot,
+            "the instant the turn changes: the board has gone cool, the centre column is washed blue, blue's waiting piece is arriving");
+    }
+
+    fb = dev.fbSnapshot();
+    const slabNow = landPx(fb, colX(1), (rowY(0) + rowY(1)) / 2);
+    check("THE WHOLE BOARD has changed temperature - it wears blue's grey now, not red's",
+        near(slabNow, C_SLAB_BLUE) && !near(slabNow, C_SLAB_RED), `${describe(slabNow)} (red would be ${describe(C_SLAB_RED)})`);
+    const settledWaiting = landPx(fb, colX(CENTRE_COL), 26);
+    check("and the waiting piece has settled at the centre, in blue", isBluish(settledWaiting), describe(settledWaiting));
+
+    // ---- 4. THE BOARD NEVER MOVES ON ITS OWN ----------------------------
+    // The property the owner actually asked for, asserted directly. Five
+    // seconds of nobody touching the glass: the only thing allowed to move is
+    // the waiting piece bobbing in the hopper, which lives entirely above the
+    // board (four.c's bob floats UPWARD from its rest position for exactly
+    // this reason, so this is a comfortable margin rather than a hairline).
+    console.log("\n-- five seconds of nobody touching it --");
+    dev.drainLog();
+    const beforeIdle = dev.fbSnapshot();
+    t = settle(dev, t, 5000);
+    const afterIdle = dev.fbSnapshot();
+    const idleLog = dev.drainLog();
+    check("nothing is placed, nothing is won, no new game is dealt, while nobody is playing",
+        !idleLog.some((l) => l.includes("four: drop") || l.includes("four: win") || l.includes("four: new game")),
+        idleLog.length ? `firmware said: ${idleLog.map((l) => l.trim()).join(" | ")}` : "the firmware said nothing at all");
+    const moved = boardUnchanged(beforeIdle, afterIdle);
+    check("not one pixel of the BOARD changes over five idle seconds - only the waiting piece breathes",
+        moved === null, moved ? `landscape pixel (${moved.lx},${moved.ly}) changed` : "0 pixels changed below the hopper");
+
+    // ---- 6. the second player plays, same gesture ----------------------
+    console.log("\n-- the other player takes the puck --");
+    dev.drainLog();
+    t = playMove(dev, 1, t);
+    const blueDrop = dev.fwLogLines().findLast((l) => l.includes("four: drop"));
+    check("the second player plays with the identical gesture, and it is their colour that lands",
+        !!blueDrop && blueDrop.includes("player=2"), blueDrop ?? "(no drop line)");
+    fb = dev.fbSnapshot();
+    const bluePiece = landPx(fb, colX(1), rowY(5));
+    check("their piece is blue, and it is in the column their thumb was over", isBluish(bluePiece), describe(bluePiece));
+    const slabBack = landPx(fb, colX(4), (rowY(0) + rowY(1)) / 2);
+    check("and the board has gone warm again - back to red", near(slabBack, C_SLAB_RED), describe(slabBack));
 
     // ---- a real mid-game board, and the highlight ON it -----------------
-    console.log("\n-- four more moves, then the same gesture over a column that already has a stack in it --");
+    console.log("\n-- a few more moves, then the same gesture over a column that already has a stack in it --");
     const mirror = newMirror();
     for (const line of dev.fwLogLines()) {
         const m = line.match(/four: drop col=(\d+) row=(\d+) player=(\d+)/);
@@ -612,87 +738,72 @@ async function main() {
     }
     dev.drainLog();
 
-    // Deliberately NOT chooseChildMove() here: that plays to win, and a win
+    // Deliberately NOT chooseMove() here: that plays to win, and a win
     // mid-way would deal a fresh empty board out from under the screenshot
     // this block exists to take. Two pieces each into two separate columns
-    // cannot make her four in a row, and it builds the stack the landing
-    // ring needs to be resting on.
+    // cannot make a four, and it builds the stack the landing ring needs to
+    // be resting on.
     const STACK_COL = 2;
-    function playOneMove(col: number) {
-        t = holdLand(dev, colX(col), THUMB_LY, t, 120);
-        t = settle(dev, t, RELEASE_GRACE_MS + 2200);
+    for (const col of [STACK_COL, 4, STACK_COL, 4]) {
+        t = playMove(dev, col, t);
         for (const line of dev.drainLog()) {
             const m = line.match(/four: drop col=(\d+) row=(\d+) player=(\d+)/);
             if (m) mirrorApply(mirror, Number(m[1]), Number(m[2]), Number(m[3]));
-            if (line.includes("four: new game")) for (let k = 0; k < ROWS * COLS; k++) mirror.cells[k] = 0;
         }
     }
-    for (const col of [STACK_COL, 4, STACK_COL, 4]) playOneMove(col);
-    // If a game happened to end in there (the device does sometimes win),
-    // the board was dealt again: rebuild enough of a stack to be worth
-    // photographing before taking the picture.
-    for (let guard = 0; guard < 6 && mirrorLanding(mirror, STACK_COL) > ROWS - 3; guard++) playOneMove(STACK_COL);
 
-    const stackCol = STACK_COL;
-    const stackRow = mirrorLanding(mirror, stackCol);
-    console.log(`    column ${stackCol} now holds ${ROWS - 1 - stackRow} piece(s); the landing ring should be at row ${stackRow}`);
-    t = holdLand(dev, colX(stackCol), THUMB_LY, t, 150);
+    const stackRow = mirrorLanding(mirror, STACK_COL);
+    console.log(`    column ${STACK_COL} now holds ${ROWS - 1 - stackRow} piece(s); the landing ring should be at row ${stackRow}`);
+    t = holdLand(dev, colX(STACK_COL), THUMB_LY, t, 150);
     fb = dev.fbSnapshot();
-    const stackRingInk = landPx(fb, colX(stackCol) + HOLE_R - 3, rowY(stackRow));
-    const belowRing = stackRow + 1 < ROWS ? landPx(fb, colX(stackCol), rowY(stackRow + 1)) : C_RED;
+    const stackRingInk = landPx(fb, colX(STACK_COL) + HOLE_R - 3, rowY(stackRow));
+    const belowRing = landPx(fb, colX(STACK_COL), rowY(stackRow + 1));
     check("mid-game, the landing ring sits on TOP of the stack already in that column",
-        isRedish(stackRingInk) && !near(belowRing, C_WHITE),
-        `column ${stackCol}, ring at row ${stackRow} ${describe(stackRingInk)}, hole below it ${describe(belowRing)}`);
+        (isRedish(stackRingInk) || isBluish(stackRingInk)) && !near(belowRing, C_WHITE),
+        `ring at row ${stackRow} ${describe(stackRingInk)}, hole below it ${describe(belowRing)}`);
     await writeScreenshot("four-highlight.png", fb,
-        `mid-game highlight: column ${stackCol} washed head to foot, landing ring resting on the stack in it`);
+        `mid-game: column ${STACK_COL} washed head to foot, landing ring resting on the stack in it, and the board's own tint saying whose turn it is`);
 
-    // Let go of that one without dropping anything: sliding off the board is
-    // not a thing this app offers, so the piece goes in - which is fine, it
-    // is her move either way, and the win loop below just carries on.
-    t = settle(dev, t, RELEASE_GRACE_MS + 2200);
+    t = settle(dev, t, RELEASE_GRACE_MS + 1300);
     for (const line of dev.drainLog()) {
         const m = line.match(/four: drop col=(\d+) row=(\d+) player=(\d+)/);
         if (m) mirrorApply(mirror, Number(m[1]), Number(m[2]), Number(m[3]));
-        if (line.includes("four: new game")) for (let k = 0; k < ROWS * COLS; k++) mirror.cells[k] = 0;
     }
 
-    // ---- 5. play the game out to a win ----------------------------------
-    console.log("\n-- playing on until somebody wins --");
+    // ---- 7. play the game out to a win, both hands ----------------------
+    console.log("\n-- playing both sides on until somebody wins --");
+    let turn = P_RED;
+    for (const line of dev.fwLogLines()) {
+        const m = line.match(/four: drop col=\d+ row=\d+ player=(\d+)/);
+        if (m) turn = Number(m[1]) === P_RED ? P_BLUE : P_RED;
+    }
+    dev.drainLog();
+
     let winLine: string | undefined;
     let moves = 0;
     while (!winLine && moves < 30) {
-        const col = chooseChildMove(mirror);
+        const col = chooseMove(mirror, turn);
         if (col < 0) break;
         moves++;
-        t = holdLand(dev, colX(col), THUMB_LY, t, 120);
-        t = settle(dev, t, RELEASE_GRACE_MS + 2200); // her fall, the device's think, its fall
+        t = playMove(dev, col, t);
         for (const line of dev.drainLog()) {
             const m = line.match(/four: drop col=(\d+) row=(\d+) player=(\d+)/);
-            if (m) mirrorApply(mirror, Number(m[1]), Number(m[2]), Number(m[3]));
+            if (m) { mirrorApply(mirror, Number(m[1]), Number(m[2]), Number(m[3])); turn = Number(m[3]) === P_RED ? P_BLUE : P_RED; }
             if (line.includes("four: win")) winLine = line;
-            if (line.includes("four: new game")) { for (let i = 0; i < ROWS * COLS; i++) mirror.cells[i] = 0; }
+            if (line.includes("four: new game")) { for (let i = 0; i < ROWS * COLS; i++) mirror.cells[i] = 0; turn = P_RED; }
         }
-        if (winLine) break;
     }
-    check("a game reaches a win", !!winLine, winLine ?? `(no win after ${moves} of her moves)`);
+    check("a game reaches a win", !!winLine, winLine ?? `(no win after ${moves} moves)`);
+    const winner = winLine ? Number(winLine.match(/player=(\d+)/)?.[1] ?? 0) : 0;
 
-    // The four in a row breathe: the winning pieces change size frame to
-    // frame while the rest of the board holds perfectly still. That is the
-    // whole "who won" announcement, and there is no text in it.
-    // Sampled across one whole breath (PULSE_MS): how far ink reaches out of
-    // the widest hole on the board, frame by frame. A still board gives the
-    // same number every time and a piece that never exceeds HOLE_R is not
-    // swelling at all; both are what this has to rule out. The frame where
-    // that reach is greatest is also the one worth photographing, so the
-    // screenshot is chosen by measurement rather than by whenever the test
-    // happened to stop ticking.
-    // The metric is the radius of SOLID PIECE COLOUR out of a hole's centre,
-    // walked outward until the colour stops - the disc itself, not "any ink
-    // out here somewhere". Two earlier versions of this measured the latter
-    // and were useless in different ways: probing to HOLE_R+13 kept hitting
-    // the NEIGHBOURING piece and reported a constant 34, and probing to the
-    // neighbour's edge kept hitting the halo and reported a near-constant 28
-    // whose maximum frame was the one where the piece was at its SMALLEST.
+    // The four in a row breathe. Measured as the radius of SOLID PIECE COLOUR
+    // out of a hole's centre, walked outward until the colour stops - the
+    // disc itself, not "any ink out here somewhere". Two earlier versions
+    // measured the latter and were useless in different ways: probing to
+    // HOLE_R+13 kept hitting the NEIGHBOURING piece and reported a constant
+    // 34, and probing to the neighbour's edge kept hitting the halo and
+    // reported a near-constant 28 whose maximum frame was the one where the
+    // piece was at its SMALLEST.
     function discRadius(snap: Uint8Array, c: number, r: number): number {
         const centre = landPx(snap, colX(c), rowY(r));
         const isColour = isRedish(centre) ? isRedish : isBluish(centre) ? isBluish : null;
@@ -718,8 +829,15 @@ async function main() {
     }
     check("the winning line BREATHES - some piece grows past its own hole, and by a different amount frame to frame",
         Math.max(...winSizes) > HOLE_R && new Set(winSizes).size > 1, `piece radius per sample: ${winSizes.join(", ")}`);
+    // Probed in a gutter BETWEEN two holes, not at the slab's bounding-box
+    // corner: that corner is paper, which is the whole point of the lozenge
+    // this file asserts about twenty lines up.
+    const winSlab = landPx(bestShot, colX(0), (rowY(0) + rowY(1)) / 2);
+    check("and the whole board wears the WINNER's colour while it does",
+        near(winSlab, slabFor(winner), 12), `${describe(winSlab)}, winner was player ${winner}`);
 
-    await writeScreenshot("four-won.png", bestShot, "a won game: the four in a row swollen and blooming, no text anywhere");
+    await writeScreenshot("four-won.png", bestShot,
+        "a won game: the four in a row swollen and blooming, the board itself in the winner's colour, no text anywhere");
     fb = dev.fbSnapshot();
 
     // No waiting piece during the celebration: the absence of "something to
@@ -738,86 +856,61 @@ async function main() {
     const newGame = dev.fwLogLines().findLast((l) => l.includes("four: new game"));
     check("the board empties itself and a fresh game starts, with no menu and no text", !!newGame, newGame ?? "(no new game line)");
 
+    t = settle(dev, t, HANDOFF_MS + 200);
     fb = dev.fbSnapshot();
     let cleared = true;
     for (let c = 0; c < COLS; c++) for (let r = 0; r < ROWS; r++) {
         if (!near(landPx(fb, colX(c), rowY(r)), C_WHITE)) cleared = false;
     }
     check("the fresh board really is empty - all 42 holes back to paper", cleared);
+    const freshSlab = landPx(fb, colX(1), (rowY(0) + rowY(1)) / 2);
+    check("and red starts again, said by the board's own colour", near(freshSlab, C_SLAB_RED), describe(freshSlab));
 
-    // ---- endurance, and the one ending the scripted game above cannot
-    // reach: A FULL BOARD WITH NO WINNER.
+    // ---- a full board that nobody won ----------------------------------
+    // Run on a SECOND device with the framebuffer invariant check switched
+    // off: that check diffs 165k pixels per tick and a whole 42-move game is
+    // tens of thousands of them, while the invariant it proves is a property
+    // of render_span()/flush() that the game above already exercises across
+    // every kind of frame this app has.
     //
-    // Run on a SECOND device, with the framebuffer invariant check switched
-    // off. That check diffs 165k pixels per tick and this section drives
-    // hundreds of thousands of them; the invariant it proves is a property
-    // of render_span()/flush(), which the scripted game above already
-    // exercises across every kind of frame this app has (highlight, fall,
-    // pulse, drain). Paying for it again here would buy nothing and cost
-    // minutes.
-    //
-    // HOW THE DRAW IS REACHED, AND WHY THIS IS NOT FLAKY. Everything in this
-    // module is deterministic: four.c seeds its generator from a fixed
-    // constant and stirs it only with the timings of her drops, which this
-    // test scripts exactly, so the same moves produce the same games every
-    // run. A draw needs neither side to complete a four, which does not
-    // happen against a partner playing to win (the loop above wins in a
-    // handful of moves) - so this player is deliberately different: it
-    // blocks the device's fours, builds threes to keep it busy answering,
-    // and never completes a four of its own. Against that, the boards run
-    // long and one of them fills.
-    //
-    // If this ever fails, read it as "no draw was reached inside the game
-    // budget" rather than as "the draw path is broken": a change to
-    // ai_choose() or to this app's timings moves which game draws, and the
-    // budget below (which is comfortably past where the draw lands today)
-    // may simply need raising.
-    console.log("\n-- endurance: games back to back, hunting the full-board-no-winner ending --");
+    // Deterministic now, and in the FIRST game: with both hands under this
+    // test's control and both refusing to complete a four, nobody CAN win, so
+    // the board simply fills. The version of this written against the old
+    // opponent had to hunt a draw across fifteen games and hope.
+    console.log("\n-- a board that fills up with nobody winning --");
     const raw = await loadRawDevice();
     const mirror2 = newMirror();
     let rawT = 1000;
-    let games = 0, wins = 0, draws = 0, resetAfterDraw = false;
-    let sawDraw = false;
-    const GAME_BUDGET = 20;
-    for (let step = 0; step < 2000 && games < GAME_BUDGET && !resetAfterDraw; step++) {
-        const col = chooseStalemateMove(mirror2);
-        // col < 0 means the mirror says the board is full, i.e. the game just
-        // ended in the draw this loop is hunting for: there is nothing left to
-        // play, so this step is spent waiting out DRAW_PAUSE_MS plus the drain
-        // rather than ticking 15ms at a time and running out of budget before
-        // the fresh board arrives. (It did exactly that on the first run.)
-        if (col < 0) {
-            for (let i = 0; i < 170; i++) { rawT += 15; raw.touchLand(false, 0, 0, rawT); }
-        } else {
-            for (let i = 0; i < 9; i++) { rawT += 15; raw.touchLand(true, colX(col), THUMB_LY, rawT); }
-            for (let i = 0; i < 170; i++) { rawT += 15; raw.touchLand(false, 0, 0, rawT); }
-        }
+    let turn2 = P_RED;
+    let sawDraw = false, resetAfterDraw = false, sawWin = false;
+    for (let move = 0; move < 60 && !resetAfterDraw; move++) {
+        const col = chooseStalemateMove(mirror2, turn2);
+        if (col >= 0) for (let i = 0; i < 9; i++) { rawT += 15; raw.touchLand(true, colX(col), THUMB_LY, rawT); }
+        for (let i = 0; i < 120; i++) { rawT += 15; raw.touchLand(false, 0, 0, rawT); }
         for (const line of raw.drainLog()) {
             const m = line.match(/four: drop col=(\d+) row=(\d+) player=(\d+)/);
-            if (m) mirrorApply(mirror2, Number(m[1]), Number(m[2]), Number(m[3]));
-            if (line.includes("four: win")) wins++;
-            if (line.includes("four: draw")) { draws++; sawDraw = true; }
+            if (m) { mirrorApply(mirror2, Number(m[1]), Number(m[2]), Number(m[3])); turn2 = Number(m[3]) === P_RED ? P_BLUE : P_RED; }
+            if (line.includes("four: win")) sawWin = true;
+            if (line.includes("four: draw")) sawDraw = true;
             if (line.includes("four: new game")) {
-                games++;
                 if (sawDraw) resetAfterDraw = true;
                 for (let i = 0; i < ROWS * COLS; i++) mirror2.cells[i] = 0;
+                turn2 = P_RED;
             }
         }
     }
-    check("games run back to back, each ending and dealing a fresh board on its own",
-        games >= 3, `${games} games completed (${wins} won, ${draws} drawn)`);
     check("a board that fills up with nobody winning ends the game too - no pulse, and it deals again",
-        draws >= 1 && resetAfterDraw,
-        draws >= 1 ? `drawn game followed by a fresh board: ${resetAfterDraw}` : `no draw inside ${GAME_BUDGET} games`);
+        sawDraw && resetAfterDraw && !sawWin,
+        `draw=${sawDraw}, dealt again=${resetAfterDraw}, nobody won on the way=${!sawWin}`);
 
-    // ---- 6. the invariants, across every tick above ---------------------
+    // ---- 8. the invariants, across every tick above ---------------------
     console.log("\n=== invariants across this whole run (EVERY tick, animation frames included) ===");
     console.log(`    ${ticksChecked} ticks checked in total`);
     const byKind = new Map<string, number>();
     for (const v of violations) byKind.set(v.kind, (byKind.get(v.kind) ?? 0) + 1);
     check("every pushed window's row length was a multiple of 8 (decision 0001)",
         (byKind.get("8px-rule") ?? 0) === 0, `${byKind.get("8px-rule") ?? 0} violation(s)`);
-    check("no framebuffer pixel ever changed outside that tick's own pushed rectangles (the fall, the pulse and the drain included)",
+    check("no framebuffer pixel ever changed outside that tick's own pushed rectangles (the fall, the hand-off, the pulse and the drain included)",
         (byKind.get("outside-push") ?? 0) === 0, `${byKind.get("outside-push") ?? 0} violation(s)`);
     if (violations.length > 0) {
         console.log("first few violations:");

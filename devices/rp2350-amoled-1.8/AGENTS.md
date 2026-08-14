@@ -162,8 +162,9 @@ firmware/runtime/    the runtime: runtime.c (board entry point, startup,
                       emu.wasm unmodified)
 firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
-                      four.c (Connect Four against the device, slide a thumb
-                      and release to drop), menu.c (the app picker), digits.c
+                      four.c (Connect Four for two people passing the puck,
+                      slide a thumb and release to drop; nothing plays by
+                      itself), menu.c (the app picker), digits.c
                       (shared seven-segment numerals), shapes.c (round
                       silhouettes built from rectangles, used by menu.c's
                       icons)
@@ -407,6 +408,22 @@ The build retries `zig cc`, because this toolchain's linker crashes at random
 `emulator/wasm/build.ts`). A failure that survives all the attempts is real. A
 one-shot build that is not checked will leave the PREVIOUS `emu.wasm` in
 place, and the tests will then pass or fail about code nobody is looking at.
+
+It also links to a temp file and **renames onto `dist/emu.wasm` only on
+success**, which matters because more than one agent works in this repo at
+once. A half-written module still *compiles* (the code section is intact and
+the data section is short), so what you get is not a load error but this, on
+the first tick after an app switch:
+
+```
+RuntimeError: call_indirect to a signature that does not match
+```
+
+with the firmware's own switch line printing an EMPTY app name just before
+it. That is a zeroed `app_t` in `g_apps[]`, i.e. a truncated file - not a bug
+in whatever app you happen to be working on, which is exactly what it looks
+like. If you see it, rebuild and re-run before believing anything. It cost an
+afternoon twice before the rename went in.
 
 ## Gotchas that bite
 

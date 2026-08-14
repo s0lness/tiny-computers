@@ -37,7 +37,7 @@
 // the eight math functions, exactly emu_abi.h's documented list. Everything
 // this file works around (malloc, printf, the three extra math functions)
 // is compiled INTO the module by emu_shim.c or shim/math.h, never imported.
-import { existsSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const WASM_DIR = import.meta.dir; // emulator/wasm
@@ -45,6 +45,22 @@ const DEVICE_ROOT = resolve(WASM_DIR, "..", ".."); // devices/rp2350-amoled-1.8
 const FIRMWARE = join(DEVICE_ROOT, "firmware");
 const DIST = join(WASM_DIR, "dist");
 const OUT = join(DIST, "emu.wasm");
+
+// The linker writes HERE, and the result is renamed onto OUT only once it has
+// succeeded. Two reasons, and the second one cost an afternoon twice.
+//
+// A failed or crashed link leaves a truncated file behind, which the next
+// test run happily loads as if it were a module.
+//
+// And more importantly, this repo is worked on by more than one agent at a
+// time, so a second `zig cc` writing dist/emu.wasm while a test is reading it
+// is entirely normal. A torn read compiles (the wasm prefix is valid) and
+// then fails at the first call with "call_indirect to a signature that does
+// not match", which reads exactly like a firmware bug in whatever app you
+// happen to be working on and is nothing of the sort. A rename is atomic, so
+// a reader sees either the whole old module or the whole new one, never half
+// of one. The pid keeps two concurrent builders off each other's temp file.
+const OUT_TMP = `${OUT}.tmp-${process.pid}`;
 
 const ZIG = process.env.ZIG_EXE ?? "C:\\Users\\sylve\\tools\\zig\\zig.exe";
 
@@ -139,7 +155,7 @@ const args = [
   ...EMU_EXPORTS.map((name) => `-Wl,--export=${name}`),
   ...INCLUDES.flatMap((dir) => ["-I", dir]),
   ...SOURCES,
-  "-o", OUT,
+  "-o", OUT_TMP,
 ];
 
 console.log(`${ZIG} ${args.join(" ")}`);
@@ -175,9 +191,15 @@ for (let attempt = 2; !result.success && attempt <= MAX_ATTEMPTS; attempt++) {
 }
 
 if (!result.success) {
+  // Whatever half-written module the crashed linker left behind goes with it,
+  // rather than sitting in dist/ as a *.tmp-1234 nobody will ever look at.
+  // The previous emu.wasm is untouched and still valid, which is the other
+  // half of what the temp file buys.
+  rmSync(OUT_TMP, { force: true });
   console.error(`zig cc exited ${result.exitCode} on all ${MAX_ATTEMPTS} attempts - this one is real`);
   process.exit(result.exitCode ?? 1);
 }
 
+renameSync(OUT_TMP, OUT); // atomic: see OUT_TMP's own comment
 const size = statSync(OUT).size;
 console.log(`built ${OUT} (${size} bytes)`);
