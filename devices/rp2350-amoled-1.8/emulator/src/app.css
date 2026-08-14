@@ -116,10 +116,13 @@
 }
 
 .device-wrap {
-  /* Centred over the stage on first load by main.ts (centerDeviceOnce),
-     once actual layout sizes are known; these are just a reasonable
-     fallback for the instant before that runs. Dragging (device.ts,
-     makeDraggable) overwrites left/top directly from then on. */
+  /* left/top are recomputed by main.ts's positionDevice() on every load,
+     reload, resize and drag, as the stage's own centre plus a stored
+     displacement-from-centre (0,0 until the puck is dragged) - so a resize
+     keeps the puck centred when it was never moved, and keeps a dragged
+     puck's chosen displacement instead of it drifting. These values are
+     just a reasonable fallback for the instant before the first layout
+     measurement lands. */
   position: absolute;
   left: 120px;
   top: 60px;

@@ -234,6 +234,197 @@ try {
   }
   console.log("PASS: the chord's hold clears on both BOOT and PWR, on both the bezel and the toolbox, once it finishes");
 
+  // ---- 7. resizing the browser window keeps the puck centred ------------
+  // Owner report, verbatim: "si je resize l'emulateur il faut que le device
+  // rendered reste centre, comme tu le fais avec la toolbar de 90 degres."
+  // main.ts's positionDevice() stores the puck's position as a displacement
+  // from the STAGE's own centre (0,0 until dragged), not an absolute pixel,
+  // and recomputes it on every resize - this is what proves that actually
+  // holds, at a size well below the first one, not just a fresh reload at
+  // whatever size the page happened to load at.
+  async function stageBezelOffset(): Promise<{ dx: number; dy: number }> {
+    return page.evaluate(() => {
+      const stage = document.querySelector("#stage")!.getBoundingClientRect();
+      const bezel = document.querySelector("#bezel")!.getBoundingClientRect();
+      return {
+        dx: bezel.left + bezel.width / 2 - (stage.left + stage.width / 2),
+        dy: bezel.top + bezel.height / 2 - (stage.top + stage.height / 2),
+      };
+    });
+  }
+  const CENTER_TOLERANCE_PX = 2; // positionDevice rounds to the nearest px
+
+  const centeredAt1400 = await stageBezelOffset();
+  console.log(`puck displacement from stage centre at 1400x1000: (${centeredAt1400.dx.toFixed(1)}, ${centeredAt1400.dy.toFixed(1)})`);
+  if (Math.abs(centeredAt1400.dx) > CENTER_TOLERANCE_PX || Math.abs(centeredAt1400.dy) > CENTER_TOLERANCE_PX) {
+    fail(`puck is not centred at 1400x1000 (offset ${centeredAt1400.dx.toFixed(1)},${centeredAt1400.dy.toFixed(1)})`);
+  }
+
+  await page.setViewport({ width: 950, height: 760 }); // materially smaller in both dimensions
+  await page.evaluate(() => window.dispatchEvent(new Event("resize"))); // belt-and-braces: force the listener even if the CDP-driven viewport change does not itself dispatch one
+  await new Promise((r) => setTimeout(r, 200));
+
+  const centeredAt950 = await stageBezelOffset();
+  console.log(`puck displacement from stage centre at 950x760: (${centeredAt950.dx.toFixed(1)}, ${centeredAt950.dy.toFixed(1)})`);
+  if (Math.abs(centeredAt950.dx) > CENTER_TOLERANCE_PX || Math.abs(centeredAt950.dy) > CENTER_TOLERANCE_PX) {
+    fail(`puck drifted off centre after resizing to 950x760 (offset ${centeredAt950.dx.toFixed(1)},${centeredAt950.dy.toFixed(1)})`);
+  }
+  console.log("PASS: the puck stays centred across a materially different window size");
+
+  // ---- 8. a dragged puck keeps ITS displacement from centre across a
+  // resize, rather than snapping back or drifting ---------------------------
+  // The deliberate half of the fix (see positionDevice()'s own comment for
+  // the reasoning): dragging is still allowed to place the puck wherever the
+  // owner wants, and a resize must not silently undo that.
+  const grabPoint = await page.evaluate(() => {
+    // The panel canvas (and the buttons) cover almost all of the bezel's own
+    // area; only its padding border is bare plastic and actually starts a
+    // drag (see device.ts's makeDraggable, e.target !== bezel guard). Probe
+    // a handful of points in that border, skipping any device's own button
+    // layout, rather than assuming a fixed corner is always clear.
+    const bezel = document.querySelector("#bezel")!;
+    const r = bezel.getBoundingClientRect();
+    const fracs = [0.03, 0.06, 0.1, 0.5, 0.9, 0.94, 0.97];
+    for (const fx of fracs) {
+      for (const fy of fracs) {
+        for (const [x, y] of [
+          [r.left + r.width * fx, r.top + r.height * fy],
+          [r.right - r.width * fx, r.top + r.height * fy],
+        ]) {
+          if (document.elementFromPoint(x, y) === bezel) return { x, y };
+        }
+      }
+    }
+    return null;
+  });
+  if (!grabPoint) fail("could not find a point on the bezel itself (bare plastic, not the panel or a button) to start a drag from");
+
+  const DRAG_DX = 60;
+  const DRAG_DY = -40;
+  await page.mouse.move(grabPoint!.x, grabPoint!.y);
+  await page.mouse.down();
+  await page.mouse.move(grabPoint!.x + DRAG_DX, grabPoint!.y + DRAG_DY, { steps: 8 });
+  await page.mouse.up();
+
+  const draggedOffset = await stageBezelOffset();
+  console.log(`puck displacement from stage centre after a (${DRAG_DX},${DRAG_DY}) drag: (${draggedOffset.dx.toFixed(1)}, ${draggedOffset.dy.toFixed(1)})`);
+  if (Math.abs(draggedOffset.dx - DRAG_DX) > CENTER_TOLERANCE_PX || Math.abs(draggedOffset.dy - DRAG_DY) > CENTER_TOLERANCE_PX) {
+    fail(`drag did not land where dragged (expected ~(${DRAG_DX},${DRAG_DY}), got (${draggedOffset.dx.toFixed(1)},${draggedOffset.dy.toFixed(1)}))`);
+  }
+
+  await page.setViewport({ width: 1300, height: 950 });
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await new Promise((r) => setTimeout(r, 200));
+
+  const draggedOffsetAfterResize = await stageBezelOffset();
+  console.log(
+    `puck displacement from stage centre after resizing to 1300x950: (${draggedOffsetAfterResize.dx.toFixed(1)}, ${draggedOffsetAfterResize.dy.toFixed(1)})`
+  );
+  if (Math.abs(draggedOffsetAfterResize.dx - DRAG_DX) > CENTER_TOLERANCE_PX || Math.abs(draggedOffsetAfterResize.dy - DRAG_DY) > CENTER_TOLERANCE_PX) {
+    fail(
+      `dragged puck's displacement from centre did not survive the resize (expected ~(${DRAG_DX},${DRAG_DY}), got (${draggedOffsetAfterResize.dx.toFixed(1)},${draggedOffsetAfterResize.dy.toFixed(1)}))`
+    );
+  }
+  console.log("PASS: a dragged puck keeps its chosen displacement from centre across a resize, instead of snapping back or drifting");
+
+  // ---- 9. touch input still lands where the user aimed --------------------
+  // A centring fix that silently offsets touch input would be a much worse
+  // bug than the one being fixed, and it would be invisible until someone
+  // tried to draw. mapClientPoint (rotate.ts) always reads the panel's LIVE
+  // getBoundingClientRect(), so this is really checking that the panel
+  // itself actually sits where positionDevice put it - not a property of
+  // rotate.ts, which this task did not touch.
+  const deviceInfo = await page.evaluate(() => {
+    const dbg = (window as unknown as { __debug: { getDevice(): { panel: { w: number; h: number } } | null } }).__debug;
+    const d = dbg.getDevice();
+    return d ? { w: d.panel.w, h: d.panel.h } : null;
+  });
+  if (!deviceInfo) fail("no device descriptor loaded; cannot test touch mapping");
+  const { w: fbW, h: fbH } = deviceInfo!;
+  console.log(`panel framebuffer: ${fbW}x${fbH}`);
+
+  function clampRound(v: number, max: number): number {
+    return Math.max(0, Math.min(max - 1, Math.round(v)));
+  }
+
+  async function clickAndReadMapped(clientX: number, clientY: number): Promise<{ x: number; y: number }> {
+    await page.mouse.move(clientX, clientY);
+    await page.mouse.down();
+    await page.mouse.up();
+    const mapped = await page.evaluate(() => {
+      const dbg = (window as unknown as { __debug: { getLastTouchMapped(): { panel: { x: number; y: number } } | null } }).__debug;
+      return dbg.getLastTouchMapped();
+    });
+    if (!mapped) fail("no touch was recorded (getLastTouchMapped() returned null after a click on the panel)");
+    return mapped!.panel;
+  }
+
+  const TOUCH_TOLERANCE_PX = 2;
+  function assertNear(label: string, got: { x: number; y: number }, want: { x: number; y: number }): void {
+    console.log(`${label}: got (${got.x},${got.y}), want ~(${want.x},${want.y})`);
+    if (Math.abs(got.x - want.x) > TOUCH_TOLERANCE_PX || Math.abs(got.y - want.y) > TOUCH_TOLERANCE_PX) {
+      fail(`${label}: touch mapped to (${got.x},${got.y}), expected ~(${want.x},${want.y})`);
+    }
+  }
+
+  async function panelRect(): Promise<{ left: number; top: number; width: number; height: number }> {
+    return page.$eval("#panel", (el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top, width: r.width, height: r.height };
+    });
+  }
+
+  // (a) a known off-centre panel fraction, at quickDeg=0/tilt=0 so
+  // client->panel is a plain unrotated scale, checked again after a further
+  // resize (the puck is currently dragged off-centre too, from check 8 -
+  // deliberately not undone here, since a dragged puck is a real state the
+  // owner draws in just as often as a centred one).
+  await page.click('#rotQuick button[data-deg="0"]');
+  await page.$eval("#tilt", (el) => {
+    (el as HTMLInputElement).value = "0";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const FRAC_X = 0.25;
+  const FRAC_Y = 0.75;
+  async function checkFractionalPoint(label: string): Promise<void> {
+    const rect = await panelRect();
+    const got = await clickAndReadMapped(rect.left + rect.width * FRAC_X, rect.top + rect.height * FRAC_Y);
+    const want = { x: clampRound(fbW * FRAC_X, fbW), y: clampRound(fbH * FRAC_Y, fbH) };
+    assertNear(label, got, want);
+  }
+  await checkFractionalPoint("touch at panel (25%,75%) at 1300x950");
+
+  await page.setViewport({ width: 1150, height: 880 });
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await new Promise((r) => setTimeout(r, 200));
+  await checkFractionalPoint("touch at panel (25%,75%) after resizing to 1150x880");
+  console.log("PASS: a click at a known panel fraction still maps to the expected framebuffer coordinate after a resize");
+
+  // (b) the exact rendered centre always maps to the framebuffer's centre,
+  // regardless of rotation: dx=dy=0 from the rendered bounding box's own
+  // centre is a fixed point of mapClientPoint's rotation matrix at ANY
+  // angle, so this holds at each quick rotation and with a nonzero tilt on
+  // top - the two axes (quick rotation, tilt) most likely to reveal a
+  // stale/mismeasured panel rect if positionDevice ever got that wrong.
+  async function checkCenterPoint(label: string): Promise<void> {
+    const rect = await panelRect();
+    const got = await clickAndReadMapped(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    const want = { x: Math.round(fbW / 2), y: Math.round(fbH / 2) };
+    assertNear(label, got, want);
+  }
+  for (const deg of ["0", "90", "-90", "180"]) {
+    await page.click(`#rotQuick button[data-deg="${deg}"]`);
+    await checkCenterPoint(`touch at panel centre, quickDeg=${deg} tilt=0`);
+  }
+  await page.click('#rotQuick button[data-deg="0"]');
+  await page.$eval("#tilt", (el) => {
+    (el as HTMLInputElement).value = "15";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await checkCenterPoint("touch at panel centre, quickDeg=0 tilt=15");
+  console.log("PASS: a click at the puck's rendered centre always lands on the framebuffer's centre, at every quick rotation and with a nonzero tilt");
+
   console.log("\nALL PASS");
 } finally {
   if (browser) await browser.close();

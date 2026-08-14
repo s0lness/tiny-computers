@@ -97,7 +97,14 @@ const puckDragShake = new WindowShakeDetector();
 const puckMotion = new PuckMotion();
 const soundPlayer = new SoundPlayer();
 let shakeSensorIndex = -1;
-let centeredOnce = false;
+
+// The puck's position, stored as a displacement from the STAGE'S OWN
+// CENTRE (0,0 = dead centre) rather than an absolute left/top pixel - see
+// positionDevice() for why. Only a drag (device.ts's makeDraggable) ever
+// changes these; a resize or a firmware reload re-reads them but never
+// writes them.
+let deviceOffsetX = 0;
+let deviceOffsetY = 0;
 
 // The overlay toggle (disc, trail and coordinate readout together, one
 // switch). Default OFF per owner feedback: it was on by default and that
@@ -377,7 +384,7 @@ function buildChrome(d: DeviceDescriptor): void {
   touchOverlay.pxPerMm = derivePxPerMm(d);
   refreshContactInfo();
   updateChordButton(d);
-  centerDeviceOnce();
+  positionDevice();
 }
 
 function sleep(ms: number): Promise<void> {
@@ -451,16 +458,47 @@ function updateChordButton(d: DeviceDescriptor): void {
   btn.title = has ? "BOOT+PWR chord: opens/closes the app menu" : "this build does not declare both a \"boot\" and a \"pwr\" button";
 }
 
-// ---- centre the puck over the stage, once, on first load ----------------
-function centerDeviceOnce(): void {
-  if (centeredOnce) return;
+// ---- position the puck relative to the stage's own centre ---------------
+// Owner report: resizing the browser window left the rendered device off
+// centre. The earlier code centred the puck once, on first load, by writing
+// an absolute left/top pixel - correct for the window size at that moment,
+// and never revisited, so any later resize left it pointing at whatever
+// that stale pixel now landed on.
+//
+// The fix is what's stored, not just when this runs: deviceOffsetX/Y (see
+// their declaration above) is a displacement FROM THE STAGE'S CENTRE, not
+// an absolute position, and this function is the only thing that turns
+// that displacement into an actual left/top. Both cases the owner cares
+// about fall out of that for free:
+//   - never dragged (0,0): every call recomputes "0 away from centre" for
+//     whatever the stage's size is right now, i.e. still exactly centred -
+//     the same behaviour already used for the bottom bar, which owner
+//     pointed at as the model, just expressed per-element instead of via
+//     position:fixed (the puck cannot use position:fixed, it has to stay
+//     draggable within the stage).
+//   - dragged (non-zero): a resize keeps that SAME displacement from the
+//     new centre rather than snapping back to it. Deliberately NOT
+//     recentring on resize: the puck is a physical object being carried
+//     around on the page (see puckmotion.ts's own framing for the same
+//     idea), and moving the desk does not teleport an object on it back to
+//     the middle, it moves with the desk. Recentring on every resize would
+//     also discard a placement the owner chose on purpose (e.g. dragged
+//     clear of the sidebar) any time the window so much as changes size,
+//     which would be a worse surprise than the bug this fixes.
+//
+// Called after every buildChrome() (initial load, live reload, and a
+// firmware swap that changes the panel's own size) and on every window
+// resize (see wireStaticUI); makeDraggable's onOffsetChange (below) is the
+// only thing that ever changes what displacement gets applied.
+function positionDevice(): void {
   const stageRect = stageEl.getBoundingClientRect();
   const bw = bezelEl.offsetWidth;
   const bh = bezelEl.offsetHeight;
   if (bw === 0 || bh === 0 || stageRect.width === 0) return; // not laid out yet
-  deviceWrapEl.style.left = `${Math.max(20, Math.round((stageRect.width - bw) / 2))}px`;
-  deviceWrapEl.style.top = `${Math.max(20, Math.round((stageRect.height - bh) / 2))}px`;
-  centeredOnce = true;
+  const left = stageRect.width / 2 - bw / 2 + deviceOffsetX;
+  const top = stageRect.height / 2 - bh / 2 + deviceOffsetY;
+  deviceWrapEl.style.left = `${Math.round(left)}px`;
+  deviceWrapEl.style.top = `${Math.round(top)}px`;
 }
 
 // ---- load / reload ----
@@ -882,11 +920,29 @@ function buildTouchControls(): void {
 function wireStaticUI(): void {
   wireContactSize();
 
-  makeDraggable(bezelEl, deviceWrapEl, onPuckDrag);
+  makeDraggable(
+    bezelEl,
+    {
+      get: () => ({ x: deviceOffsetX, y: deviceOffsetY }),
+      set: (x, y) => {
+        deviceOffsetX = x;
+        deviceOffsetY = y;
+        positionDevice();
+      },
+    },
+    onPuckDrag
+  );
   bezelEl.title = "drag to move; shake it back and forth to trigger the shake sensor";
   wirePanelInput();
   connectLiveReload();
   wireTraceFile();
+
+  // Owner report: resizing the browser window left the puck off centre.
+  // See positionDevice()'s own comment for the fix; this is what makes a
+  // resize actually re-run it (positionDevice reads deviceOffsetX/Y and the
+  // stage's CURRENT size on every call, so it is safe and cheap to call on
+  // every resize event, not just once).
+  window.addEventListener("resize", () => positionDevice());
 
   // AudioContext creation (and resuming a suspended one) must happen
   // inside a real user gesture, per the browser's autoplay policy. Every
@@ -1003,6 +1059,12 @@ async function boot(): Promise<void> {
   // check can assert the bezel actually moves when the toolbox is clicked
   // (and vice versa) instead of trusting that the two stayed in sync.
   getButtonElements: (id: string) => buttonElById.get(id) || [],
+  // The most recent client point mapped through mapClientPoint (rotate.ts),
+  // set on every pointerdown/pointermove over the panel - lets a headless
+  // check confirm a synthetic click lands at the panel coordinate it aimed
+  // for, including after a resize/reposition of the puck (see
+  // scripts/verify-ui-feedback.ts).
+  getLastTouchMapped: () => lastTouchMapped,
 };
 
 void boot();

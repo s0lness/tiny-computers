@@ -9,16 +9,30 @@
 // markup's own pointer handling when the page is served through
 // markup/serve.ts (see README, "Serving through markup").
 
+// This does not decide what "position" means or write to the DOM itself:
+// it only turns a drag into position.get()/set() calls, so the caller owns
+// the actual placement policy. main.ts stores the puck's position as a
+// displacement from the STAGE'S OWN CENTRE rather than a raw pixel offset,
+// precisely so a window resize can recompute where that displacement lands
+// without the drag ever going through here again - see main.ts's
+// positionDevice for why. The drag math itself is unchanged from a plain
+// "add the pointer's delta to wherever it started" and does not care which
+// meaning `x`/`y` are given.
+export interface PuckPosition {
+  get(): { x: number; y: number };
+  set(x: number, y: number): void;
+}
+
 // onDrag (optional): every pointermove while actively dragging, with the
-// raw client coordinates, in ADDITION to repositioning the wrapper. This
+// raw client coordinates, in ADDITION to repositioning the puck. This
 // is what lets main.ts feed the same jolt detector the window-shake path
 // uses (see puckDragShake there) from an in-page drag instead: dragging
 // the puck is ordinary DOM pointer input, which always gets delivered and
 // always gets animation frames, unlike a real OS titlebar drag (see
 // windowshake.ts's header comment on why that path cannot be trusted).
-export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement, onDrag?: (clientX: number, clientY: number) => void): void {
+export function makeDraggable(bezel: HTMLElement, position: PuckPosition, onDrag?: (clientX: number, clientY: number) => void): void {
   let dragging = false;
-  let startX = 0, startY = 0, origLeft = 0, origTop = 0;
+  let startX = 0, startY = 0, origX = 0, origY = 0;
 
   bezel.addEventListener("pointerdown", (e) => {
     // Only start a drag when the plastic itself was grabbed, not the
@@ -29,18 +43,15 @@ export function makeDraggable(bezel: HTMLElement, wrapper: HTMLElement, onDrag?:
     dragging = true;
     startX = e.clientX;
     startY = e.clientY;
-    const rect = wrapper.getBoundingClientRect();
-    origLeft = rect.left;
-    origTop = rect.top;
+    const cur = position.get();
+    origX = cur.x;
+    origY = cur.y;
     bezel.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
   bezel.addEventListener("pointermove", (e) => {
     if (!dragging) return;
-    const dx = e.clientX - startX;
-    const dy = e.clientY - startY;
-    wrapper.style.left = `${origLeft + dx}px`;
-    wrapper.style.top = `${origTop + dy}px`;
+    position.set(origX + (e.clientX - startX), origY + (e.clientY - startY));
     onDrag?.(e.clientX, e.clientY);
   });
   const stop = () => { dragging = false; };
