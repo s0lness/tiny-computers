@@ -417,7 +417,25 @@ static int g_menuReturnApp = 0;
  * "checked every tick regardless of what the rest of the state machine
  * believes" is deliberate, not an optimisation left for later.
  */
-#define PWR_HOLD_DIM_START_MS       1500u
+// 800, down from 1500 on 2026-08-15: the owner asked for the panel to start
+// going dark sooner ("je veux que ca commence a s'assombrir plus rapidement").
+//
+// I had told him 1500 was a floor because it is where the AXP2101's long-press
+// verdict lands. That was wrong, and worth correcting here rather than quietly:
+// the hold is counted from KEY_PRESS, the RAW press edge, not from the verdict,
+// so nothing forces the dim to wait for the PMIC to agree.
+//
+// What it does cost: a deliberate-but-slow press, a child leaning on PWR to
+// start the stopwatch, now pales the panel briefly before she lets go. It
+// restores itself on release. 800 is chosen to sit clear of an ordinary tap
+// (a few hundred ms) while still reading as immediate.
+//
+// The BOOT+PWR chord is unaffected: the moment BOOT is seen the hold is marked
+// tainted and brightness returns to baseline, so a real chord never dims.
+//
+// Welcome side effect: with PWR_HOLD_POWEROFF_MS at 2000 the fade was 500ms,
+// which read as a blink. It is 1200ms again.
+#define PWR_HOLD_DIM_START_MS       800u
 // 3500, down from 5000 on 2026-08-14: the owner asked for the whole gesture
 // to take 1.5s less. The dim START deliberately does not move, because 1500
 // is not a taste number: it is where the PMIC's own long-press verdict lands,

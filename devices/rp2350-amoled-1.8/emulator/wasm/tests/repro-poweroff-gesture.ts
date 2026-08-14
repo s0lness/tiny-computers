@@ -46,7 +46,7 @@ const BTN_PWR = 1;
 // 5100 silently changed meaning ("just before" became "well after"), and a
 // test whose intent depends on arithmetic the reader has to redo is a test
 // that will lie again on the next change.
-const DIM_START_MS = 1500; // PWR_HOLD_DIM_START_MS, runtime_core.c
+const DIM_START_MS = 800; // PWR_HOLD_DIM_START_MS, runtime_core.c
 const POWEROFF_MS = 2000; // PWR_HOLD_POWEROFF_MS, runtime_core.c
 const RECOVER_MS = 1500; // PWR_HOLD_RECOVER_MS, runtime_core.c
 const HARD_CEILING_MS = POWEROFF_MS + RECOVER_MS; // PWR_HOLD_HARD_CEILING_MS
