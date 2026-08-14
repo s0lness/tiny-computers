@@ -385,10 +385,133 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 #define TOUCH_STALL_MS 5000
 
 /* ---------------------------------------------------------------------
+ * EXPERIMENTAL: a colour palette, opened by holding the pen still.
+ *
+ * The owner's ask, verbatim: "long touch in the same place should open up
+ * colored squares, upon touching one it will draw in this colour" - tested
+ * in the emulator only, judged before it goes anywhere near real glass or
+ * this file's normally hardware-proven tuning. Everything below this
+ * comment and the matching block further down (near wipe_erase) is that
+ * feature; nothing above this line changed to make room for it.
+ *
+ * TIMING: has to coexist with CONFIRM_MS (40ms) and LIFT_DEBOUNCE_MS
+ * (220ms) above, both of which already govern what "a stroke started"
+ * means. A long press must fire well after a stroke would already have
+ * been confirmed and drawing (otherwise it cannot tell a deliberate hold
+ * apart from a child who paused for a beat before starting a line), and
+ * well before someone would give up looking for it. LONG_PRESS_MS=550
+ * lands in the same neighbourhood as the "long press" convention on every
+ * touch platform a parent or this owner has ever used (historically
+ * 500-600ms), which matters because there is no way to teach a child what
+ * this gesture is other than the gesture itself: it has to fall inside
+ * the duration people already discover by fidgeting. It is timed from
+ * PENDING_START's own arming (pendStartMs - when the finger first touched
+ * the glass), not from CONFIRM_MS's later stroke-start, so "long touch"
+ * measures what a finger on the glass would actually call a long touch,
+ * not an internal bookkeeping instant 40ms later.
+ *
+ * STILLNESS: HOLD_STILL_RADIUS_PX bounds how far the touch may wander and
+ * still count as "the same place". Set well above ordinary resting jitter
+ * (DEDUPE_PX=0.7px) so a finger that is merely trying to hold still is not
+ * punished for it, and well below the 50-61px this file's own measurements
+ * say a real stroke moves between consecutive raw reports - so a real
+ * stroke breaks candidacy on its very first or second sample, while a
+ * genuine hold survives comfortably inside it.
+ *
+ * UNDO: whatever the hold itself draws before it is recognised as a long
+ * press (the initial dot stroke_begin always draws, plus any sub-radius
+ * wobble) has to vanish once the palette opens - see this file's header
+ * comment on decision 0002 4b and the owner's own requirement that opening
+ * the palette must never mark the page. Decision: a saved pixel patch, not
+ * a repaint from history, because there IS no history to repaint from -
+ * decision 0002 section 2 is explicit that ink is MIN-composited
+ * destructively and "re-rasterising history is impossible by design" on
+ * this app. HOLD_UNDO_PATCH_PX is sized to comfortably cover anything the
+ * hold could have drawn while still a candidate: HOLD_STILL_RADIUS_PX (12)
+ * plus the pen's own maximum radius (8, pressure_to_radius's ceiling) plus
+ * a few pixels of slack for antialiasing bleed, doubled for both sides.
+ * ------------------------------------------------------------------- */
+#define HOLD_STILL_RADIUS_PX 12.0f
+#define LONG_PRESS_MS        550.0f
+#define HOLD_UNDO_PATCH_PX   48
+
+/* ---------------------------------------------------------------------
+ * EXPERIMENTAL: the palette panel itself.
+ *
+ * FEW COLOURS, ONE ROW. Four: the device's own black ink (the default,
+ * always present) plus red, blue and yellow - the classic small set a
+ * child recognises before she can read a word, and "few" per the owner's
+ * own requirement. A single row, not a grid, because a row's bounding box
+ * is short and wide (SQUARE tall, not much more) rather than tall and
+ * wide, and this feature has to slide vertically clear of the touch point
+ * - see palette placement further down. A short block always fits in
+ * whichever half of the 448px-tall panel has more room; a squarer block
+ * would not.
+ *
+ * SIZE: a fingertip on this panel is roughly 75px across (the owner's own
+ * figure). PALETTE_SQUARE_PX=82 is comfortably past that, and the same
+ * number set any smaller starts to threaten the 64KB arena budget this
+ * feature draws its undo/restore patch out of (see patch_save/patch_
+ * restore further down) - the memory cost of "comfortably bigger than a
+ * fingertip" IS the patch's own W*H*2 bytes, and it is the dominant term
+ * in this app's whole arena footprint. At 82px this feature's saved patch
+ * is ~57KB against a 64KB budget: measured, not assumed - see this file's
+ * own build/test notes for the arena-fits check.
+ *
+ * PLACEMENT: PALETTE_TOUCH_GAP_PX is how far the block's near edge sits
+ * from the touch point, on whichever side (above or below) has more room -
+ * see open_palette(). Needs to clear the fingertip's own footprint (roughly
+ * half of ~75px = ~38px in either direction from the touch centre) with a
+ * little margin, hence 50, not exactly 38.
+ * ------------------------------------------------------------------- */
+#define PALETTE_SQUARE_PX    82
+#define PALETTE_GAP_PX        6
+#define PALETTE_COUNT          4
+#define PALETTE_W  (PALETTE_COUNT * PALETTE_SQUARE_PX + (PALETTE_COUNT - 1) * PALETTE_GAP_PX)
+#define PALETTE_H  PALETTE_SQUARE_PX
+#define PALETTE_TOUCH_GAP_PX  50
+
+// How long a lift may look like a dropout before the palette believes the
+// finger genuinely left the glass and resolves the pick (or the cancel).
+// Nothing is being drawn during this wait - a wrong guess here costs at
+// worst a slightly late close, never a stray mark - so this does not need
+// LIFT_DEBOUNCE_MS's own careful tuning; PENDING_GRACE_MS_DEFAULT's value
+// (80ms) is reused as a reasonable, already-justified default for "how
+// long this controller can drop out without meaning anything."
+#define PALETTE_LIFT_GRACE_MS 80.0f
+
+// The saved-patch buffer both patch_save() call sites below share (the
+// tiny hold-undo capture, then later the much larger palette backdrop) -
+// see patch_save's own comment for why one buffer safely serves both.
+#define PALETTE_PATCH_CAP (PALETTE_W * PALETTE_H)
+
+/* ---------------------------------------------------------------------
  * Anti-aliased capsule rasterizer. Pixel format helpers (px_to_gray,
  * gray_to_px) now live in gfx.h; see its header comment for why the green
  * channel doubles as an 8-bit ink value on this monochrome-in-practice panel.
  * ------------------------------------------------------------------- */
+
+// EXPERIMENTAL, for the colour palette feature (see this file's header
+// section above wipe_erase). Every existing call below still passes
+// PX_BLACK, which makes this branch in draw_capsule's own inner loop a
+// no-op that reproduces gray_to_px(ink) exactly - see that call site's own
+// comment. This function is what runs instead once a colour is actually
+// selected: it interpolates each RGB565 channel from the target colour
+// (at ink==0, full coverage) toward white (at ink==255, no coverage),
+// the same "coverage fades to background" idea gray_to_px already encodes
+// for black, generalised off the green-channel-as-luminance trick that
+// only works for a strictly monochrome pixel.
+static uint16_t tint_to_px(uint8_t ink, uint16_t colorPxSwapped) {
+    uint16_t c = px_swap(colorPxSwapped); // back to logical (unswapped) RGB565
+    uint16_t r = (c >> 11) & 0x1F;
+    uint16_t g = (c >> 5) & 0x3F;
+    uint16_t b = c & 0x1F;
+    uint16_t rr = (uint16_t)(r + ((31u - r) * (uint32_t)ink) / 255u);
+    uint16_t gg = (uint16_t)(g + ((63u - g) * (uint32_t)ink) / 255u);
+    uint16_t bb = (uint16_t)(b + ((31u - b) * (uint32_t)ink) / 255u);
+    uint16_t v = (uint16_t)((rr << 11) | (gg << 5) | bb);
+    return px_swap(v);
+}
 
 // Draws a round-capped capsule from a (radius r0) to b (radius r1) as a
 // signed-distance-to-segment field, converted to per-pixel coverage.
@@ -396,9 +519,16 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 // stroke segments overlap heavily along their shared edge, and blending
 // would re-darken that overlap on every segment, turning a smooth line
 // into a visibly banded, pixelated one. MIN just unions the ink shapes.
+//
+// inkColor: EXPERIMENTAL (see this file's header section on the colour
+// palette). PX_BLACK reproduces this function's original, hardware-proven
+// behaviour exactly, unconditionally - see the branch inside the loop
+// below. Every call site not touched by that feature still passes
+// PX_BLACK.
 static void draw_capsule(uint16_t *fb, float ax, float ay, float r0,
                           float bx, float by, float r1,
-                          int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+                          int *dMinX, int *dMinY, int *dMaxX, int *dMaxY,
+                          uint16_t inkColor) {
     float maxR = (r0 > r1 ? r0 : r1) + 1.0f;
     int minX = (int)floorf((ax < bx ? ax : bx) - maxR);
     int maxX = (int)ceilf((ax > bx ? ax : bx) + maxR);
@@ -434,7 +564,7 @@ static void draw_capsule(uint16_t *fb, float ax, float ay, float r0,
 
             int idx = iy * PANEL_W + ix;
             uint8_t cur = px_to_gray(fb[idx]);
-            if (ink < cur) fb[idx] = gray_to_px(ink);
+            if (ink < cur) fb[idx] = (inkColor == PX_BLACK) ? gray_to_px(ink) : tint_to_px(ink, inkColor);
         }
     }
 
@@ -463,7 +593,8 @@ static void draw_quad_midpoint(uint16_t *fb,
                                 float p0x, float p0y, float p0r,
                                 float p1x, float p1y, float p1r,
                                 float p2x, float p2y, float p2r,
-                                int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+                                int *dMinX, int *dMinY, int *dMaxX, int *dMaxY,
+                                uint16_t inkColor) {
     float ax = (p0x + p1x) * 0.5f, ay = (p0y + p1y) * 0.5f, ar = (p0r + p1r) * 0.5f;
     float dx = (p1x + p2x) * 0.5f, dy = (p1y + p2y) * 0.5f, dr = (p1r + p2r) * 0.5f;
 
@@ -486,7 +617,7 @@ static void draw_quad_midpoint(uint16_t *fb,
         float bx = omt * omt * ax + 2.0f * omt * t * p1x + t * t * dx;
         float by = omt * omt * ay + 2.0f * omt * t * p1y + t * t * dy;
         float br = ar + (dr - ar) * t;
-        draw_capsule(fb, prevX, prevY, prevR, bx, by, br, dMinX, dMinY, dMaxX, dMaxY);
+        draw_capsule(fb, prevX, prevY, prevR, bx, by, br, dMinX, dMinY, dMaxX, dMaxY, inkColor);
         prevX = bx; prevY = by; prevR = br;
     }
 }
@@ -551,6 +682,30 @@ typedef struct {
     // "the counters" the porting brief named, and they cost 16 bytes.
     uint32_t glitches, dropouts, strays, splits;
 
+    // EXPERIMENTAL: the colour palette (see this file's header section
+    // above wipe_erase for the full design). PX_BLACK is 0, so a freshly
+    // entered app (arena zeroed, app.h) starts inking black - the device's
+    // own default - with no explicit init needed.
+    uint16_t inkColor;
+
+    // Hold-candidacy: armed the instant a stroke is confirmed, cleared the
+    // moment the touch moves past HOLD_STILL_RADIUS_PX or genuinely lifts.
+    bool     holdCandidate;
+    int      holdAnchorX, holdAnchorY; // the confirmed stroke's own start point
+    uint32_t holdStartMs;              // pendStartMs at confirmation - see LONG_PRESS_MS's comment
+
+    // The palette panel, while showing.
+    bool     paletteOpen;
+    int      paletteX0, paletteY0;     // panel-space top-left of the row
+    bool     paletteHasTouch;          // the continuing touch is down right now
+    int      paletteTouchX, paletteTouchY; // its last-seen raw position
+    uint32_t paletteTouchSeenMs;           // wall-clock of that last sample
+
+    // The one saved-pixel patch this feature needs, reused for two
+    // different, never-simultaneous jobs - see patch_save()'s own comment.
+    int      patchX0, patchY0, patchW, patchH; // patchW==0: nothing currently saved
+    uint16_t patchBuf[PALETTE_PATCH_CAP];
+
 #if TOUCH_POLL_SELFTEST
     // TEMPORARY: the app-side stage of the touch pipeline diagnostic (see
     // sensors.h's sketch_touch_diag_t). Every sample this app's drain loop
@@ -578,7 +733,7 @@ static void stroke_begin(sketch_state_t *st, uint16_t *fb, int x, int y,
     st->dirY = 0.0f;
     st->radius = pressure_to_radius(st->pressure) * 0.35f; // start-taper factor at arc==0
     st->haveH0 = false; // not enough history yet for a curve
-    draw_capsule(fb, st->sx, st->sy, st->radius, st->sx, st->sy, st->radius, dMinX, dMinY, dMaxX, dMaxY);
+    draw_capsule(fb, st->sx, st->sy, st->radius, st->sx, st->sy, st->radius, dMinX, dMinY, dMaxX, dMaxY, st->inkColor);
 }
 
 // `bridge` marks the first sample after the controller lost and regained
@@ -616,16 +771,16 @@ static void stroke_sample(sketch_state_t *st, uint16_t *fb, int x, int y, bool b
         // A curve here would bow toward whatever was drawn before the
         // dropout, which is stale by definition; fill the reconnection
         // straight, same as before curve-fitting existed.
-        draw_capsule(fb, prevX, prevY, prevR, st->sx, st->sy, r, dMinX, dMinY, dMaxX, dMaxY);
+        draw_capsule(fb, prevX, prevY, prevR, st->sx, st->sy, r, dMinX, dMinY, dMaxX, dMaxY, st->inkColor);
         st->haveH0 = false; // don't curve the *next* segment across this gap either
     } else if (st->haveH0) {
         draw_quad_midpoint(fb, st->h0x, st->h0y, st->h0r, prevX, prevY, prevR, st->sx, st->sy, r,
-                            dMinX, dMinY, dMaxX, dMaxY);
+                            dMinX, dMinY, dMaxX, dMaxY, st->inkColor);
     } else {
         // First real sample of the stroke (or the one right after a bridge):
         // not enough history for a curve yet, so draw the plain straight
         // span, same as the pre-curve code always did.
-        draw_capsule(fb, prevX, prevY, prevR, st->sx, st->sy, r, dMinX, dMinY, dMaxX, dMaxY);
+        draw_capsule(fb, prevX, prevY, prevR, st->sx, st->sy, r, dMinX, dMinY, dMaxX, dMaxY, st->inkColor);
     }
     st->h0x = prevX; st->h0y = prevY; st->h0r = prevR;
     st->haveH0 = true;
@@ -645,7 +800,7 @@ static void stroke_end(sketch_state_t *st, uint16_t *fb,
         // falls short of where the finger actually lifted.
         float mx = (st->h0x + st->sx) * 0.5f, my = (st->h0y + st->sy) * 0.5f;
         float mr = (st->h0r + st->radius) * 0.5f;
-        draw_capsule(fb, mx, my, mr, st->sx, st->sy, st->radius, dMinX, dMinY, dMaxX, dMaxY);
+        draw_capsule(fb, mx, my, mr, st->sx, st->sy, st->radius, dMinX, dMinY, dMaxX, dMaxY, st->inkColor);
     }
 
     // A compile-time constant, not per-stroke state: it lives in .rodata
@@ -657,7 +812,7 @@ static void stroke_end(sketch_state_t *st, uint16_t *fb,
         float nx = curX + st->dirX * 1.2f;
         float ny = curY + st->dirY * 1.2f;
         float nr = st->radius * scales[i];
-        draw_capsule(fb, curX, curY, curR, nx, ny, nr, dMinX, dMinY, dMaxX, dMaxY);
+        draw_capsule(fb, curX, curY, curR, nx, ny, nr, dMinX, dMinY, dMaxX, dMaxY, st->inkColor);
         curX = nx; curY = ny; curR = nr;
     }
 }
@@ -697,6 +852,196 @@ static void wipe_erase(uint16_t *fb) {
 }
 
 /* ---------------------------------------------------------------------
+ * EXPERIMENTAL: the colour palette. See this file's header section above
+ * wipe_erase for the design (timing, stillness radius, why a saved patch
+ * rather than a repaint from history, palette sizing and placement).
+ * ------------------------------------------------------------------- */
+
+// Copies a panel-space rectangle out of the framebuffer into st->patchBuf,
+// clipped to the panel. ONE buffer, sized for the larger of this feature's
+// two jobs (the palette backdrop, PALETTE_W*PALETTE_H - see PALETTE_PATCH_
+// CAP), reused for the smaller one (HOLD_UNDO_PATCH_PX square) too: the two
+// never overlap in time. The hold-undo patch is captured, and either
+// restored (long press fires) or simply abandoned (the touch moved or
+// lifted first - a real stroke's ink stays exactly as drawn, nothing to
+// undo), before the palette's own patch_save ever runs; there is never a
+// point where both are needed live at once, so a second buffer would only
+// ever sit idle.
+static void patch_save(sketch_state_t *st, uint16_t *fb, int x0, int y0, int w, int h) {
+    if (x0 < 0) { w += x0; x0 = 0; }
+    if (y0 < 0) { h += y0; y0 = 0; }
+    if (x0 + w > PANEL_W) w = PANEL_W - x0;
+    if (y0 + h > PANEL_H) h = PANEL_H - y0;
+    if (w <= 0 || h <= 0) { st->patchW = 0; st->patchH = 0; return; }
+
+    st->patchX0 = x0; st->patchY0 = y0; st->patchW = w; st->patchH = h;
+    for (int j = 0; j < h; j++) {
+        const uint16_t *src = fb + (size_t)(y0 + j) * PANEL_W + x0;
+        uint16_t *dst = st->patchBuf + (size_t)j * w;
+        for (int i = 0; i < w; i++) dst[i] = src[i];
+    }
+}
+
+// Writes the saved patch back and folds its rectangle into the tick's own
+// dirty-rect accumulator, so the caller's own gfx_push (sketch_tick's, at
+// the end of its drain loop) covers the restore along with everything
+// else that tick touched - the same accumulator draw_capsule already
+// widens on every call, nothing new here. Marks the patch consumed
+// (patchW=0) as a defensive guard against restoring it twice.
+static void patch_restore(sketch_state_t *st, uint16_t *fb,
+                           int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    int x0 = st->patchX0, y0 = st->patchY0, w = st->patchW, h = st->patchH;
+    if (w <= 0 || h <= 0) return;
+    for (int j = 0; j < h; j++) {
+        uint16_t *dst = fb + (size_t)(y0 + j) * PANEL_W + x0;
+        const uint16_t *src = st->patchBuf + (size_t)j * w;
+        for (int i = 0; i < w; i++) dst[i] = src[i];
+    }
+    if (x0 < *dMinX) *dMinX = x0;
+    if (y0 < *dMinY) *dMinY = y0;
+    if (x0 + w - 1 > *dMaxX) *dMaxX = x0 + w - 1;
+    if (y0 + h - 1 > *dMaxY) *dMaxY = y0 + h - 1;
+    st->patchW = 0;
+}
+
+// The palette's four colours, swapped for the panel's byte order the same
+// way gfx.h's own PX_BLACK/PX_WHITE and arena_overflow_trap's alarm colour
+// are - via px_swap(), a real function call, which is why these are not a
+// static const array: a static initializer needs a compile-time constant
+// expression and px_swap() is not guaranteed to fold into one, so this is
+// computed fresh (cheap: four branches) wherever a colour is needed instead
+// of risking hand-computed swapped hex constants going stale or wrong.
+static uint16_t palette_color(int index) {
+    switch (index) {
+        case 0:  return PX_BLACK;         // the device's own ink, always first
+        case 1:  return px_swap(0xF800);  // red
+        case 2:  return px_swap(0x001F);  // blue
+        default: return px_swap(0xFFE0);  // yellow
+    }
+}
+
+// Fires once the hold-candidacy check in sketch_tick's drain loop decides
+// LONG_PRESS_MS has genuinely elapsed within HOLD_STILL_RADIUS_PX. touchX/
+// touchY is the confirmed stroke's own current position (the hold's
+// anchor, or very close to it by construction - candidacy would have been
+// cancelled otherwise).
+static void open_palette(sketch_state_t *st, uint16_t *fb, int touchX, int touchY, uint32_t nowMs,
+                          int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    // Undo whatever the hold itself drew (see HOLD_UNDO_PATCH_PX's own
+    // comment) before anything else happens - the palette opening must
+    // never leave a mark of its own.
+    patch_restore(st, fb, dMinX, dMinY, dMaxX, dMaxY);
+
+    // The "stroke" this hold belonged to never happened, as far as the
+    // canvas or the stroke state machine are concerned. haveCand/
+    // pendingStart are already false here (holdCandidate only ever arms
+    // once fingerDown is true), cleared anyway so nothing downstream has to
+    // reason about why.
+    st->fingerDown = false;
+    st->pendingStart = false;
+    st->haveCand = false;
+    st->holdCandidate = false;
+    st->haveH0 = false;
+
+    // Placement: horizontally centred always (the row is nearly the panel's
+    // full width, so a touch anywhere along X still sits well inside it -
+    // see PALETTE_W's own comment on why a row, not a grid). Vertically,
+    // PALETTE_TOUCH_GAP_PX clear of the touch point, on whichever side
+    // (above/below) has more room; a tie goes below.
+    int x0 = (PANEL_W - PALETTE_W) / 2;
+    int spaceAbove = touchY;
+    int spaceBelow = (PANEL_H - 1) - touchY;
+    int y0;
+    if (spaceBelow >= spaceAbove) {
+        y0 = touchY + PALETTE_TOUCH_GAP_PX;
+        if (y0 + PALETTE_H - 1 > PANEL_H - 1) y0 = PANEL_H - PALETTE_H;
+    } else {
+        y0 = touchY - PALETTE_TOUCH_GAP_PX - PALETTE_H;
+        if (y0 < 0) y0 = 0;
+    }
+
+    patch_save(st, fb, x0, y0, PALETTE_W, PALETTE_H);
+
+    // A white backdrop first, so the row reads as one clean panel rather
+    // than showing whatever artwork used to be under it through the gaps
+    // between squares; then the four flat colour fills - "aplats de
+    // couleur", the same flat-fill idiom the rest of this device's UI
+    // (chrono's digits, the timer's track) already uses for anything that
+    // is not the pen's own anti-aliased ink.
+    gfx_fill_rect(x0, y0, PALETTE_W, PALETTE_H, PX_WHITE);
+    for (int col = 0; col < PALETTE_COUNT; col++) {
+        int px = x0 + col * (PALETTE_SQUARE_PX + PALETTE_GAP_PX);
+        gfx_fill_rect(px, y0, PALETTE_SQUARE_PX, PALETTE_SQUARE_PX, palette_color(col));
+    }
+
+    if (x0 < *dMinX) *dMinX = x0;
+    if (y0 < *dMinY) *dMinY = y0;
+    if (x0 + PALETTE_W - 1 > *dMaxX) *dMaxX = x0 + PALETTE_W - 1;
+    if (y0 + PALETTE_H - 1 > *dMaxY) *dMaxY = y0 + PALETTE_H - 1;
+
+    st->paletteOpen = true;
+    st->paletteX0 = x0;
+    st->paletteY0 = y0;
+    st->paletteHasTouch = true; // the finger that triggered this is still on the glass right now
+    st->paletteTouchX = touchX;
+    st->paletteTouchY = touchY;
+    st->paletteTouchSeenMs = nowMs;
+
+    printf("palette: open at (%d,%d)\r\n", x0, y0);
+}
+
+// Every drained sample while st->paletteOpen is true goes here instead of
+// the ordinary stroke state machine - the touch that opened the palette is
+// still down, and its only remaining job is to say which square, if any,
+// it lifts over. Nothing is drawn to the canvas by this function; it only
+// tracks a position and, on a genuine lift, resolves the pick and closes
+// the panel.
+static void palette_drain_sample(sketch_state_t *st, uint16_t *fb, bool haveTouch, int x, int y, uint32_t nowMs,
+                                  int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    if (haveTouch) {
+        st->paletteHasTouch = true;
+        st->paletteTouchX = x;
+        st->paletteTouchY = y;
+        st->paletteTouchSeenMs = nowMs;
+        return;
+    }
+
+    if (!st->paletteHasTouch) return; // no contact seen yet since the palette opened
+    if (nowMs - st->paletteTouchSeenMs < PALETTE_LIFT_GRACE_MS) return; // could still be a dropout
+
+    // Genuine lift: which square (if any) is the last-seen position over?
+    int chosen = -1;
+    for (int col = 0; col < PALETTE_COUNT; col++) {
+        int px = st->paletteX0 + col * (PALETTE_SQUARE_PX + PALETTE_GAP_PX);
+        int py = st->paletteY0;
+        if (st->paletteTouchX >= px && st->paletteTouchX < px + PALETTE_SQUARE_PX &&
+            st->paletteTouchY >= py && st->paletteTouchY < py + PALETTE_SQUARE_PX) {
+            chosen = col;
+            break;
+        }
+    }
+    if (chosen >= 0) st->inkColor = palette_color(chosen);
+
+    // Undo the panel itself, whether or not a square was chosen - lifting
+    // outside every square is the cancel gesture, and picking one closes
+    // the palette exactly the same way, just with inkColor already changed
+    // above.
+    patch_restore(st, fb, dMinX, dMinY, dMaxX, dMaxY);
+
+    st->paletteOpen = false;
+    st->paletteHasTouch = false;
+    // Let a fresh touch afterwards start a genuinely clean stroke/hold
+    // candidacy, exactly as if this whole gesture had never happened.
+    st->fingerDown = false;
+    st->pendingStart = false;
+    st->haveCand = false;
+    st->holdCandidate = false;
+    st->lastReportX = -1; st->lastReportY = -1;
+
+    printf("palette: %s\r\n", chosen >= 0 ? "picked" : "cancelled");
+}
+
+/* ---------------------------------------------------------------------
  * app_t callbacks.
  * ------------------------------------------------------------------- */
 
@@ -731,6 +1076,14 @@ static void sketch_tick(const app_frame_t *f) {
 #if TOUCH_POLL_SELFTEST
             st->diagHaveTouch++;
 #endif
+        }
+
+        // EXPERIMENTAL: while the colour palette is showing, every sample
+        // belongs to it instead of the ordinary stroke machine below - see
+        // palette_drain_sample's own comment.
+        if (st->paletteOpen) {
+            palette_drain_sample(st, gfx_fb, haveTouch, x, y, smp.tMs, &dMinX, &dMinY, &dMaxX, &dMaxY);
+            continue;
         }
 
         if (haveTouch) {
@@ -777,6 +1130,20 @@ static void sketch_tick(const app_frame_t *f) {
                         st->fingerDown = true;
                         st->haveCand = false;
                         st->lastSampleMs = nowMs;
+
+                        // EXPERIMENTAL: arm hold-candidacy for the colour
+                        // palette right here, before anything is drawn - see
+                        // this file's header section above wipe_erase.
+                        // Captures the small undo patch first (stroke_begin,
+                        // called next, is the first thing that could mark
+                        // it), anchored and timed from this confirmed start.
+                        patch_save(st, gfx_fb, st->pendX - HOLD_UNDO_PATCH_PX / 2, st->pendY - HOLD_UNDO_PATCH_PX / 2,
+                                   HOLD_UNDO_PATCH_PX, HOLD_UNDO_PATCH_PX);
+                        st->holdCandidate = true;
+                        st->holdAnchorX = st->pendX;
+                        st->holdAnchorY = st->pendY;
+                        st->holdStartMs = st->pendStartMs;
+
                         // Begin at the first report and immediately extend to
                         // this one, so no travel is lost to the confirmation.
                         stroke_begin(st, gfx_fb, st->pendX, st->pendY, &dMinX, &dMinY, &dMaxX, &dMaxY);
@@ -830,6 +1197,26 @@ static void sketch_tick(const app_frame_t *f) {
                     st->glitches++;
                 }
             }
+
+            // EXPERIMENTAL: hold-candidacy for the colour palette. Runs on
+            // EVERY haveTouch sample, not only newReport ones - same reason
+            // CONFIRM_MS's own persisted check above does: this controller
+            // keeps repeating the same coordinate far more often than it
+            // reports a new one, and a wall-clock hold has to keep being
+            // measured through that repetition, not just at the rare moment
+            // the position actually changes.
+            if (st->fingerDown && st->holdCandidate) {
+                float ddx = (float)(x - st->holdAnchorX);
+                float ddy = (float)(y - st->holdAnchorY);
+                if (ddx * ddx + ddy * ddy > HOLD_STILL_RADIUS_PX * HOLD_STILL_RADIUS_PX) {
+                    // Moved: this is becoming a real stroke, not a long
+                    // press. Whatever it has drawn so far stands - it is a
+                    // legitimate stroke start, not something to undo.
+                    st->holdCandidate = false;
+                } else if (nowMs - st->holdStartMs >= LONG_PRESS_MS) {
+                    open_palette(st, gfx_fb, x, y, nowMs, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                }
+            }
         } else if (!st->fingerDown) {
             if (st->pendingStart) {
                 // Contact dropped while still confirming. The FT3168 does
@@ -870,6 +1257,9 @@ static void sketch_tick(const app_frame_t *f) {
                 // Forget the last coordinates, so touching down again on the
                 // exact same pixel still counts as a new report.
                 st->lastReportX = -1; st->lastReportY = -1;
+                // EXPERIMENTAL: a genuine lift ends this stroke normally -
+                // whatever it drew stands, there is no long press to open.
+                st->holdCandidate = false;
                 stroke_end(st, gfx_fb, &dMinX, &dMinY, &dMaxX, &dMaxY);
 #if TOUCH_POLL_SELFTEST
                 st->diagStrokeEnded++;
@@ -890,11 +1280,23 @@ static void sketch_tick(const app_frame_t *f) {
     // drain loop's job. Publish our own answer now that it is known, so
     // core1's shake suppression (see wipe_erase's header comment) sees this
     // tick's state and not a stale or synthetic one.
-    sensors_set_finger_down(st->fingerDown);
+    // EXPERIMENTAL: || st->paletteOpen so a finger still resting on the
+    // glass while choosing a colour keeps suppressing shake, same as an
+    // ordinary in-progress stroke does - see palette_drain_sample's own
+    // comment on why st->fingerDown alone reads false during that window.
+    sensors_set_finger_down(st->fingerDown || (st->paletteOpen && st->paletteHasTouch));
 
     // Shake-to-erase: the runtime only delivers f->shaken (true for exactly
     // the tick an accepted shake lands on) because wantsShake is set below.
-    if (f->shaken) {
+    //
+    // EXPERIMENTAL: && !st->paletteOpen. wipe_erase() repaints the whole
+    // panel unconditionally, which would blow away the palette this tick
+    // just drew while patchBuf still holds ITS OWN pre-open backdrop save -
+    // closing the palette afterwards would then restore stale, pre-erase
+    // pixels on top of the freshly wiped page. Simplest safe answer for a
+    // rare, transient overlap: a shake while the palette is showing does
+    // nothing, rather than risk that residue.
+    if (f->shaken && !st->paletteOpen) {
         wipe_erase(gfx_fb);
         st->pressure = 0.5f;
         st->arcLen = 0.0f;
@@ -902,6 +1304,11 @@ static void sketch_tick(const app_frame_t *f) {
         st->dirX = 0.0f;
         st->dirY = 0.0f;
         st->haveH0 = false;
+        // EXPERIMENTAL: any in-progress hold-candidacy's saved undo patch
+        // is now stale (the erase just repainted that whole area white) -
+        // forget the candidacy rather than risk reapplying pre-erase pixels
+        // if it later fires.
+        st->holdCandidate = false;
         printf("erase (shake)\r\n");
         dMinX = PANEL_W; dMinY = PANEL_H; dMaxX = -1; dMaxY = -1;
     }
