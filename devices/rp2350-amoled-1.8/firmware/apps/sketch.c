@@ -2054,6 +2054,33 @@ static void open_palette(sketch_state_t *st, uint16_t *fb, int touchX, int touch
     // shake-to-erase's own deliberate animation, not what opening a menu
     // should look like.
     for (int i = 0; i < PANEL_W * PANEL_H; i++) fb[i] = 0xFFFF;
+    // THE PUSH HAS TO KNOW ABOUT ALL OF IT, not just whatever the palette's
+    // own cells go on to whiten/draw below. This direct loop writes every
+    // pixel in the framebuffer but, being a raw loop and not gfx_fill_rect,
+    // touches none of dMinX/dMinY/dMaxX/dMaxY itself - left alone, the only
+    // dirty rect this tick would end up with is palette_render_animating()'s
+    // own (the nine cells' own whiten+draw boxes, INSET from every edge by
+    // PALETTE_GRID_INSET_PX and PALETTE_CANDIDATE_GROW_PX/PALETTE_POP_PEAK_
+    // SCALE's own margin - nowhere near the panel's outermost columns and
+    // rows). Whatever was drawn out there - a stroke run right up to the
+    // edge before this hold ever started - would be erased IN THE
+    // FRAMEBUFFER by the loop above and then never reach the panel at all,
+    // since gfx_push() at the end of sketch_tick() only ever sends this
+    // tick's own accumulated dMinX..dMaxY. The old ink would stay lit on
+    // the glass, under a palette that (in the framebuffer, and in every
+    // test that only ever compares framebuffers - decision 0003, this
+    // device's own emulator has no panel to diverge from) looks correct.
+    // Found 2026-08-15 by tools/gate/'s own pushed-or-invisible rule, its
+    // first run - see that rule's own KNOWN entry (tools/gate/known.ts) for
+    // the exact reproduction (draw near the left edge, then long-press) and
+    // measurement (x=0..5 and x=366..367 whitened, never pushed). The close
+    // path already gets this right (sketch_repaint_from_history()'s own
+    // caller, a few dozen lines down this same file) - this is that same
+    // four-line expansion, just missing here until now.
+    if (0 < *dMinX) *dMinX = 0;
+    if (0 < *dMinY) *dMinY = 0;
+    if (*dMaxX < PANEL_W - 1) *dMaxX = PANEL_W - 1;
+    if (*dMaxY < PANEL_H - 1) *dMaxY = PANEL_H - 1;
 
     st->paletteOpen = true;
     st->paletteHasTouch = true; // the finger that triggered this is still on the glass right now

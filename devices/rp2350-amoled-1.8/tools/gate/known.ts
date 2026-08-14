@@ -49,24 +49,6 @@ export const KNOWN: KnownFinding[] = [
       "gutter residue this app has already been fixed for once.",
     decides: "whoever owns sketch.c next",
   },
-  {
-    rule: "bezel",
-    match: /^four\//,
-    found: "2026-08-15, by this gate, on its first run",
-    what:
-      "Connect Four's waiting piece crosses into the hidden band. Its resting centre is " +
-      "HOPPER_CY = SAFE_Y0 + HOLE_R (four.c), which puts the top of the disc exactly ON the " +
-      "bezel line, and then two things push it past: the idle bob moves it UP by BOB_AMP (5px), " +
-      "and the hand-off pop's ease_out_back overshoots to about 1.10 of full size (another 2px " +
-      "of radius). Up to 5px of the top of the piece is under the case.",
-    why:
-      "every fix costs layout. Moving HOPPER_CY down by 5px pushes the piece's bottom to 56, " +
-      "into the slab that starts at 52, so the piece would overlap the board. Shrinking or " +
-      "inverting the bob contradicts four.c's own comment (\"a cue that rises reads as offering " +
-      "itself\"), which was a decision, not an accident. This is a taste call about a game the " +
-      "owner has already iterated on twice.",
-    decides: "the owner",
-  },
 ];
 
 export interface Partition {
