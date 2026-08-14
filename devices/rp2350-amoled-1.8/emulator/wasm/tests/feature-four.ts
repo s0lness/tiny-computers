@@ -109,18 +109,25 @@ const BEZEL = 10;                       // gfx.h PANEL_BEZEL_MARGIN_PX
 const SAFE_X0 = BEZEL, SAFE_X1 = LAND_W - BEZEL;
 const SAFE_Y0 = BEZEL, SAFE_Y1 = LAND_H - BEZEL;
 const SAFE_W = SAFE_X1 - SAFE_X0, SAFE_H = SAFE_Y1 - SAFE_Y0;
-// Square cells: six rows plus a hopper tall enough for a whole waiting piece
-// pin CELL at 49 inside the visible canvas. Derived the way four.c derives
-// it rather than written down, so one edit to the bezel moves both.
-const CELL = 49;
+// Square cells: six rows, plus a hopper tall enough for everywhere the
+// waiting piece ever GOES (its bob and its hand-off overshoot, not just
+// where it rests), pin CELL at 48 inside the visible canvas. Derived the way
+// four.c derives it rather than written down, so one edit to the bezel moves
+// both - and four.c now carries a _Static_assert on the same constraint, so
+// a change that breaks it is a build error rather than something this file
+// discovers.
+const CELL = 48;
 const SLAB_PAD = 6;
 const BOARD_W = COLS * CELL;
 const BOARD_X0 = SAFE_X0 + Math.floor((SAFE_W - BOARD_W) / 2);
 const BOARD_Y0 = SAFE_Y1 - SLAB_PAD - ROWS * CELL;
 const HOLE_R = CELL / 2 - 4;
 const GHOST_STROKE = HOLE_R / 3;
-// The waiting piece, back above the board after a round as an arrow.
-const HOPPER_CY = SAFE_Y0 + HOLE_R;
+// The waiting piece's resting centre. Sized so its HIGHEST ink - 5px of bob
+// above the resting top - lands exactly on the visible boundary, which is
+// what tools/gate/run.ts caught it not doing.
+const BOB_RISE_PX = 5;
+const HOPPER_CY = SAFE_Y0 + HOLE_R + BOB_RISE_PX;
 const RELEASE_GRACE_MS = 300;
 const HANDOFF_MS = 420;
 const CELEBRATE_SKIP_MS = 1200;

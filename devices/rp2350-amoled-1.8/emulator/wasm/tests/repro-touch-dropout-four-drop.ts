@@ -42,17 +42,25 @@ const APP_FOUR = 3; // g_apps[] = { chrono, sketch("draw"), timer, four }
 
 // Mirrors of four.c's own constants.
 const COLS = 7;
-// The column partition, derived exactly the way four.c derives it: seven
-// columns over the VISIBLE canvas (gfx.h PANEL_BEZEL_MARGIN_PX - the case
-// hides a band along every edge). This file only ever needs a point inside a
-// given column, so nothing here depends on the board layout variant.
+// The column partition, derived exactly the way four.c derives it: square
+// cells, centred in the VISIBLE canvas (gfx.h PANEL_BEZEL_MARGIN_PX - the
+// case hides a band along every edge).
+//
+// This drifted once and the drift is worth recording, because it failed in
+// the most misleading way available: when four.c went from a full-width
+// 61px pitch to a square 48px one, this file kept the old derivation, so
+// every touch it aimed at "column c" landed in a different column and the
+// test reported 76% of slides "landing elsewhere" - which reads exactly
+// like a gesture bug in the firmware and was a stale constant in the test.
+// Deriving it the same way the app does, rather than copying the numbers
+// out, is what stops that: a change to CELL or to the bezel moves both.
 const BEZEL = 10;
 const LAND_W = PANEL_H;
 const SAFE_X0 = BEZEL;
 const SAFE_W = LAND_W - 2 * BEZEL;
-const CELL = Math.floor(SAFE_W / COLS);
+const CELL = 48;
 const BOARD_X0 = SAFE_X0 + Math.floor((SAFE_W - COLS * CELL) / 2);
-const RELEASE_GRACE_MS = 300;
+const RELEASE_GRACE_MS = 300;  // four.c's own, see its header section 2
 const colX = (c: number) => BOARD_X0 + Math.floor(CELL / 2) + c * CELL;
 
 let passCount = 0;

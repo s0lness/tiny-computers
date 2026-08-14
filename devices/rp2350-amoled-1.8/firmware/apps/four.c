@@ -360,56 +360,97 @@
 #define SAFE_W  (SAFE_X1 - SAFE_X0)
 #define SAFE_H  (SAFE_Y1 - SAFE_Y0)
 
-/* THE CELL IS SQUARE, AND 49 IS THE LARGEST ONE THAT FITS.
+/* THE CELL IS SQUARE, AND 48 IS THE LARGEST ONE THAT FITS.
  *
  * Solved rather than chosen. Six rows of CELL, plus a hopper tall enough to
- * hold a whole waiting piece above the slab, has to fit inside SAFE_H:
+ * hold the waiting piece above the slab, has to fit inside SAFE_H.
  *
- *   piece bottom  = SAFE_Y0 + 2*HOLE_R  = SAFE_Y0 + CELL - 8
- *   slab top      = SAFE_Y1 - SLAB_PAD - ROWS*CELL - SLAB_PAD
+ * AND "THE WAITING PIECE" MEANS EVERYWHERE IT EVER GOES, NOT WHERE IT SITS.
+ * That distinction is the whole correction in this pass and it was worth a
+ * bug: the constraint used to be written against the piece's RESTING extent,
+ * which put the top of the disc exactly on the bezel line - and then the
+ * idle bob lifted it 5px further and the hand-off's ease_out_back overshot
+ * another 2, so up to 5px of the cue that carries whose turn it is spent its
+ * life under the plastic. Found by tools/gate/run.ts on its first run; the
+ * same shape as the palette's own two bugs today, a box sized for where a
+ * thing is rather than for where it goes.
  *
- * and the first must clear the second. At a 10px bezel that solves to
- * CELL <= 49.1, so CELL is 49: holes of r=20.5, an 8px gutter in BOTH
- * directions, a 343x294 board, and 42px of paper either side.
+ *   piece top    = SAFE_Y0                       (by construction, below)
+ *   piece bottom = SAFE_Y0 + 2*HOLE_R + MAX_RISE
+ *   slab top     = SAFE_Y1 - 2*SLAB_PAD - ROWS*CELL
+ *
+ * and the second must clear the third. At a 10px bezel that solves to
+ * CELL <= 48.4, so CELL is 48: holes of r=20, an 8px gutter in BOTH
+ * directions, a 336x288 board, 46px of paper either side.
+ *
+ * WHAT THIS COST, and it is deliberately the cheapest of the four things it
+ * could have cost. The three obvious fixes each spend something that was
+ * decided on purpose: moving the piece down alone puts it into the slab;
+ * shrinking the bob weakens the only moving thing on a still screen;
+ * dropping the overshoot takes the balloon out of the hand-off, which is
+ * what marks the instant the turn changes. Re-solving the cell instead
+ * spends half a pixel of hole radius and seven pixels of board width, and
+ * keeps all three. The bob still rises 5px, the pop still overshoots to
+ * 1.10, and nothing goes under the case.
+ *
+ * The _Static_assert below is the durable half of the fix: the constraint is
+ * now checked by the compiler, so changing CELL, the bob, or the bezel
+ * without re-solving is a build error rather than a thing a photograph
+ * catches three days later.
  *
  * WHY NOT FULL WIDTH, WHICH IS WHAT WAS ASKED FOR. Because with a hopper it
  * buys nothing. Seven columns across the visible width is a 61px pitch, but
  * the hole's radius is capped by the SHORTER pitch - the vertical one, which
- * six rows plus a hopper pin at 49 - so the holes come out at r=20.5 either
- * way. Identical holes. All the extra 12px per column does is push them
- * apart: the gutter goes from 8/8 to 20/8, which is the stretched-grid look
- * the owner would be seeing instead of a board. Full width was his phrasing
- * for "use the screen", and this uses the screen without distorting the one
- * thing on it that has to look regular.
+ * six rows plus a hopper pin here - so the holes come out the same size
+ * either way. Identical holes. All the extra width per column does is push
+ * them apart, 8/8 gutters becoming 20/8, which is a stretched grid rather
+ * than a board. Full width was the owner's phrasing for "use the screen",
+ * and this uses the screen without distorting the one thing on it that has
+ * to look regular.
  *
- * WHAT IT COST, said plainly: 42px of paper down each side, and it is the
- * price of the waiting piece coming back. "la fleche est mega moche. Je
- * pense que tu peux l'enlever et remets la balle au-dessus, quitte a reduire
- * la hauteur." A ball above the board needs a band to sit in; a band costs
- * height; square cells then cost width. He accepted the height explicitly
- * and the width follows from it arithmetically.
- *
- * THE SLAB HUGS THE HOLE GRID, with a 6px rim, and that was the last open
- * question. It was briefly a build variant so that the alternative - the
- * slab stretched to the visible edges with the same holes inside it - could
- * be rendered beside it (preview/four-*-ballwide.png in this file's git
- * history). The narrow one won on the same argument that decided the cell
- * size: the holes are identical either way, so the wide slab spends 12px a
- * column on grey and leaves the holes floating in a field instead of
- * reading as a board. The variant is deleted rather than left behind a
- * define nobody builds, which is how a second code path rots; this
- * paragraph is the part worth keeping.
+ * THE SLAB HUGS THE HOLE GRID, with a 6px rim. That was briefly a build
+ * variant so the alternative could be rendered beside it
+ * (preview/four-*-ballwide.png, in this file's git history); the narrow one
+ * won on the same argument that decided the cell size, and the variant was
+ * deleted rather than left behind a define nobody builds.
  */
-#define CELL      49
+#define CELL      48
 #define SLAB_PAD  6
 #define BOARD_W   (COLS * CELL)
 #define BOARD_X0  (SAFE_X0 + (SAFE_W - BOARD_W) / 2)
 #define BOARD_Y0  (SAFE_Y1 - SLAB_PAD - ROWS * CELL)
 #define HOLE_R    ((float)CELL / 2.0f - 4.0f)
 
-// The waiting piece's resting centre, tucked as high in the hopper as the
-// visible area allows so the band below it is as short as it can be.
-#define HOPPER_CY ((float)SAFE_Y0 + HOLE_R)
+/* How far above its resting TOP the waiting piece ever reaches. Two things
+ * lift it and they never overlap (render_span picks one or the other), so
+ * this is the larger of the two rather than their sum:
+ *
+ *   the idle bob, which floats it up BOB_AMP and back;
+ *   the hand-off pop, whose ease_out_back peaks at ~1.1013 of full size,
+ *   i.e. 0.1013 of the radius of extra ink above the centre.
+ *
+ * At every cell size this board can take, the bob is the larger. The
+ * _Static_assert below says so out loud, so that a future change which makes
+ * the pop the binding one fails the build instead of quietly poking the
+ * piece under the case again. */
+#define POP_PEAK_SCALE 1.1013f
+#define BOB_RISE_PX    5                 /* integer twin of BOB_AMP, for the assert */
+#define POP_RISE       ((POP_PEAK_SCALE - 1.0f) * HOLE_R)
+#define PIECE_MAX_RISE (((float)BOB_RISE_PX > POP_RISE) ? (float)BOB_RISE_PX : POP_RISE)
+
+// The waiting piece's resting centre: low enough that its HIGHEST ink, not
+// its resting top, sits exactly on the visible boundary.
+#define HOPPER_CY ((float)SAFE_Y0 + HOLE_R + PIECE_MAX_RISE)
+
+// The two halves of the geometry above, checked by the compiler.
+_Static_assert(BOB_RISE_PX * 20 >= (CELL - 8), // 0.1013 * HOLE_R < BOB_RISE_PX,
+                                                // i.e. 20*BOB >= 2*0.1013*HOLE_R*10
+               "the hand-off pop now overshoots further than the bob rises, so "
+               "PIECE_MAX_RISE's integer twin below is no longer the binding one");
+_Static_assert(SAFE_Y0 + (CELL - 8) + BOB_RISE_PX <= SAFE_Y1 - 2 * SLAB_PAD - ROWS * CELL,
+               "the waiting piece would overlap the slab, or cross the bezel line: "
+               "re-solve CELL against the piece's MAXIMUM extent, not its resting one "
+               "(see the geometry block above)");
 
 #define SLAB_X0   (BOARD_X0 - SLAB_PAD)
 #define SLAB_X1   (BOARD_X0 + BOARD_W + SLAB_PAD)
@@ -538,7 +579,7 @@
 // otherwise perfectly still screen, so it should read as breathing rather
 // than as drift.
 #define BOB_MS 1300.0f
-#define BOB_AMP 5.0f
+#define BOB_AMP ((float)BOB_RISE_PX)
 #define BOB_STEP_MS 60
 
 // Repaint throttle for animations. Physics is integrated on every tick from

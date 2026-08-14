@@ -34,21 +34,6 @@ export interface KnownFinding {
 }
 
 export const KNOWN: KnownFinding[] = [
-  {
-    rule: "pushed-or-invisible",
-    match: /^draw\/hold .*: \d+ pixels changed outside/,
-    found: "2026-08-15, by this gate, on its first run",
-    what:
-      "opening the sketchpad's palette whitens the framebuffer's outermost columns (x=0..5, and " +
-      "x=366..367) and then pushes only (6,4) 360x438. Anything already drawn in those six columns " +
-      "is erased in memory and never erased on the panel, so on hardware the old ink stays under " +
-      "the palette. Reproduce: draw anywhere near the left edge, then long-press to open the palette.",
-    why:
-      "the fix is in firmware/apps/sketch.c, which another agent is editing right now; a second " +
-      "hand in that file today would cost more than the bug does. It is the same shape as the " +
-      "gutter residue this app has already been fixed for once.",
-    decides: "whoever owns sketch.c next",
-  },
 ];
 
 export interface Partition {
