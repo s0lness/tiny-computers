@@ -215,6 +215,125 @@
 // and PAUSED both qualify as "edit mode" but RUNNING deliberately does
 // not, and why this can never double-fire with the alarm's own,
 // pre-existing shake dismissal).
+//
+// =========================================================================
+// CORRECTED 2026-08-14 (AFTER REAL-HARDWARE USE): 15 MINUTES A LAP, A
+// SECOND WRAP-TO-ZERO FIX, AND A CAP-DRAWING FIX.
+// =========================================================================
+//
+// The owner tested the 30-minute-lap coil above on real hardware, with a
+// real finger, and reported three things. Two were bugs; one was a new
+// geometry instruction. All three are addressed by this section and the
+// code below it.
+//
+// BUG 1: "je n'arrive pas à enrouler l'anneau, ça recommence à zéro quand
+// je passe 30min" - winding past the end of a lap restarted at zero
+// instead of adding a lap. THE TESTS ABOVE (repro-timer-coil.ts's branch-
+// cut round trip) already proved the unwrap-and-accumulate MATH is correct
+// for a clean, mouse-driven drag, and it still is - that was never the
+// broken part. The broken part is what decides, frame to frame, whether a
+// touch sample continues that accumulator (drag_touch()) or resets it from
+// a fresh snapshot (point_touch()): every f->touchPressed used to be
+// trusted as a genuine new touch-down. The real touch controller this
+// device carries does not report a clean, continuous stream of contact
+// while a finger sits on the glass - firmware/apps/sketch.c's own CONFIRM_MS
+// comment cites a measured session with 798 dropouts in about 23 seconds of
+// continuous contact, roughly one every 30ms, far inside a single drag
+// gesture - and runtime_core.c's edge detector (app.h's touchPressed/
+// touchReleased) cannot tell a dropout-induced blip apart from a genuine
+// lift-and-retouch; it resolves a dropout as exactly that: a real release
+// followed by a real press. Every one of those spurious presses called
+// point_touch(), which reads the CURRENT raw angle and the CURRENT lap and
+// reseeds dragAccumTicks and the sub-lap position from that snapshot -
+// correct for an actual new gesture, catastrophic mid-drag, because it
+// throws away however much of the current lap the drag had already wound
+// in. A dropout landing right as a drag crosses twelve o'clock is exactly
+// the reported symptom: the snapshot reads a small angle just past the top
+// and a lap count that has not advanced yet, so the coil visibly restarts
+// near zero - not perceived, actually thrown away.
+//
+// Reproduced in the emulator per this task's own instruction, and it did
+// NOT reproduce with a clean mouse drag (confirming the branch-cut math
+// itself was never the problem) - it took simulating the dropout-heavy
+// sample stream (emulator/src/touchsim.ts's TouchSim, already built for
+// sketch.c's identical problem) driving a drag across a lap boundary: a
+// clamped-at-720-tick drag from 20 to 380 degrees, expected to land near
+// 31:40, instead logged "timer: start, 00:55" - the wrap-to-zero,
+// reproduced headlessly. THE FIX, entirely in this file (out of scope to
+// touch runtime_core.c or sensors.c/h - see this task's own constraints,
+// and sketch.c already owns the one app that reads the raw sample stream
+// directly, for exactly this same reason): re-derive the same "a lift is
+// only believed after a short grace period with no contact" rule sketch.c's
+// own LIFT_DEBOUNCE_MS (80ms) applies to the raw stream, but at the
+// resolved-edge level this file actually has access to - see
+// TOUCH_DROPOUT_GRACE_MS, is_genuine_new_press() and timer_tick()'s TS_
+// SETTING branch below, and timer_state_t's touchContextLive/
+// lastTouchDownMs fields. A touchPressed within that grace window of the
+// last seen touchDown is folded into drag_touch() instead of point_touch()
+// - exactly correct for a bridged dropout too, since drag_touch()'s own
+// branch-cut unwrap does not care how many frames the gap it is unwrapping
+// across spans. Verified against the SAME dropout stream: 30/30 trials land
+// correctly at the realistic measured dropout rate (2/s, this device's own
+// measured FT3168 rate while drawing); 25/30 at 17x that rate (34/s,
+// sketch.c's own worst-case stress-test rate) - the same order of
+// improvement sketch.c's own CONFIRM_MS fix achieved on the identical
+// hardware, not a 100% guarantee at an intentionally extreme rate, and not
+// claimed as one.
+//
+// BUG 2: "sur le minuteur j'ai des pixels qui stray autour de l'anneau" -
+// stray pixels around the coil. THIS ONE REPRODUCED WITH A CLEAN MOUSE
+// DRAG, no dropouts involved at all - a different mechanism from bug 1,
+// found by scanning the framebuffer for black pixels in the WHITE GAP
+// between the two bands (which paint_ring_row's own comment says should
+// "stay correct forever" because nothing ever repaints it - true only if
+// nothing else ever writes there). A handful of pixels did: a cap drawn
+// near 117 degrees left one permanently black at radius 165.9, inside what
+// should be the 163-167 gap between band 1's outer edge and band 0's inner
+// edge. Root cause: shapes_fill_half_width_table() rounds each row's half-
+// width to the nearest pixel, which approximates a circle at the ROW level
+// but not at the pixel-CORNER level - the cap's own CAP_TABLE_ROWS=6 table
+// rounds sqrt(9-1.5^2)=2.598 UP to 3 at its dy=+-1.5 rows, so their
+// outermost pixel sits at local distance sqrt(3^2+1.5^2)=3.354 from the
+// cap's own centre, not the nominal BAND_HALF_THICK_PX=3 it was built from
+// - a known, inherent property of table-based circle rasterisation, not a
+// bug in isolation. Stacked with cap_center()'s own lroundf() snapping the
+// cap's true (float) centre to the nearest integer pixel (up to ~0.7px more
+// slack on the diagonal), the two roundings combined can push a cap pixel's
+// true distance from the RING's own centre - not the cap's centre - about
+// 1px past the band's declared inner or outer radius: precisely the
+// measured 165.9 against a declared 167.
+//
+// THE FIX does not try to out-guess the rounding (shrinking the cap's own
+// table radius by some fudge factor would either still leave a corner case
+// uncovered or visibly flatten the cap). Instead draw_cap() now clips every
+// row it draws against s_hwOuter[band]/s_hwInner[band] - the exact same
+// per-row bounds paint_band_row() itself reads to decide what belongs to
+// that band - so a cap pixel can never disagree with what the rest of this
+// file already calls that band's own territory, by construction, regardless
+// of either table's own independent rounding. See draw_cap_row_clipped().
+// Verified: the same clean-drag scan that found the gap residue finds zero
+// after the fix.
+//
+// NEITHER BUG WAS CAUGHT BY THE EXISTING TESTS, and each is instructive
+// about why, separately: repro-timer-coil.ts's branch-cut round trip drives
+// a clean, mouse-style touch stream, which never manufactures a spurious
+// touchPressed, so it could not see bug 1 - the accumulator math it checks
+// was never wrong. repro-ring-shrink-residue.ts's stray-pixel scan checks
+// band membership with a +-1px tolerance for exactly the kind of edge-
+// rounding noise a table-based circle produces, which is correct in general
+// but was wide enough to swallow this specific defect's own ~1px reach
+// without tripping MAX_STRAY_PER_BUCKET (the defect adds only a handful of
+// pixels per drag, not a dense cluster). Both test files gain new coverage
+// alongside this fix rather than having their existing margins loosened
+// further - see repro-timer-coil.ts's own new dropout-bridging scenario and
+// this file's own report for what changed.
+//
+// THE NEW GEOMETRY, the owner's own instruction, given after the two bugs
+// above: "let's do... 15 minutes for one round, 2 rounds max, and double
+// the width of the band again, and yes shrink the digits if needed." Three
+// numbers change (TICKS_PER_LAP, the band thickness/gap, and the digit
+// metrics); nothing about the MECHANISM does - see "Ring geometry: the
+// coil" and the digit-layout section below for the reworked derivations.
 #include <math.h>
 #include <stdio.h>
 
@@ -280,7 +399,13 @@
  * ------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------
- * Tick geometry: the coil. One flat step, everywhere.
+ * Tick geometry: the coil. One flat step, everywhere. - SUPERSEDED
+ * 2026-08-14 (real-hardware pass), kept verbatim as the record of the
+ * 30-minute-lap coil this project shipped and tested before the owner's
+ * real-finger session below. See this file's header, "CORRECTED 2026-08-14
+ * (AFTER REAL-HARDWARE USE)", for why: "15 minutes for one round, 2 rounds
+ * max" replaces "a round trip 30min... a double trip 60min", same mechanism,
+ * a further-shortened lap.
  *
  * TICK_STEP_S = 5, unconditionally - see this file's header for why the
  * three-tier table above no longer applies.
@@ -309,11 +434,41 @@
  * one requiring judgement", and drag_touch()'s own comment for what this
  * means for dragging in practice and what this file does about it.
  * ------------------------------------------------------------------- */
+
+/* ---------------------------------------------------------------------
+ * Tick geometry: the coil, CURRENT (2026-08-14, real-hardware pass). 15
+ * minutes a lap, 2 laps, a 30-minute ceiling.
+ *
+ * TICK_STEP_S = 5, unchanged - the flat step itself was never in question,
+ * only the lap length.
+ *
+ * TICKS_PER_LAP is now 15 minutes' worth of the flat step (900s / 5s = 180)
+ * - SUPERSEDED FROM 360 (30 minutes), the owner's own instruction after
+ * testing the 30-minute coil on hardware ("15 minutes for one round"), not
+ * derived from anything else.
+ *
+ * LAPS_MAX stays 2 ("2 rounds max", unchanged from the previous pass) -
+ * 2 laps * 15 minutes is a 30-minute ceiling, HALF the previous 60-minute
+ * one (MAX_TICKS = 360, TIMER_MAX_SECONDS = 1800, both exact - same
+ * "TICKS_PER_LAP*TICK_STEP_S lands on a whole number of minutes" property
+ * every earlier version of this table had).
+ *
+ * Per-step arc length: 180 steps around the SAME circumference as before
+ * (2*pi*RING_OUTER_R, RING_OUTER_R still 173 - see "Ring geometry: the
+ * coil, CURRENT" below for why the outer radius itself did not move) is
+ * 2*pi*173/180 = ~6.0px per step - DOUBLE the previous ~3.0px, since half
+ * as many ticks now share the same circumference. This is the "one welcome
+ * consequence" the owner's own brief for this pass named: a 5-second tick a
+ * fingertip could resolve even less precisely than before is now resolved
+ * MORE precisely, for free, as a side effect of the shorter lap - see
+ * DRAG_COMMIT_HYSTERESIS_TICKS below for what this buys back on the fine-
+ * drag jitter question the previous pass left open.
+ * ------------------------------------------------------------------- */
 #define TICK_STEP_S       5
-#define TICKS_PER_LAP     360                               // 30:00 / 5s
+#define TICKS_PER_LAP     180                               // 15:00 / 5s - SUPERSEDED FROM 360
 #define LAPS_MAX          2
-#define MAX_TICKS         (TICKS_PER_LAP * LAPS_MAX)        // 720, i.e. 60:00
-#define TIMER_MAX_SECONDS (MAX_TICKS * TICK_STEP_S)         // 3600, 60 minutes
+#define MAX_TICKS         (TICKS_PER_LAP * LAPS_MAX)        // 360, i.e. 30:00 - SUPERSEDED FROM 720
+#define TIMER_MAX_SECONDS (MAX_TICKS * TICK_STEP_S)         // 1800, 30 minutes - SUPERSEDED FROM 3600
 
 // Ring centre, in LANDSCAPE coordinates (448 wide x 368 tall). Centred on
 // the canvas, same as every earlier version of this file (the coil's
@@ -322,7 +477,12 @@
 #define RING_CY      184   // LAND_H / 2
 
 /* ---------------------------------------------------------------------
- * Ring geometry: the coil.
+ * Ring geometry: the coil. - SUPERSEDED 2026-08-14 (real-hardware pass),
+ * kept verbatim as the record of the 6px-band/16px-span coil this project
+ * shipped and tested before the owner's real-finger session. See this
+ * file's header, "CORRECTED 2026-08-14 (AFTER REAL-HARDWARE USE)": "double
+ * the width of the coil band again" replaces the previous pass's single
+ * doubling, same mechanism, one more doubling of the total radial span.
  *
  * Two bands, wound inward (lap 1 outermost, lap 2 innermost - see this
  * file's header for why inward, not outward: the outer diameter must never
@@ -394,13 +554,65 @@
  * per band into an array nobody re-reads more than a handful of times per
  * call.
  * ------------------------------------------------------------------- */
-#define BAND_THICK_PX      6
-#define BAND_GAP_PX        4
-#define BAND_STRIDE_PX     (BAND_THICK_PX + BAND_GAP_PX)          // 10
+
+/* ---------------------------------------------------------------------
+ * Ring geometry: the coil, CURRENT (2026-08-14, real-hardware pass).
+ * "Double the width of the coil band again", the owner's own instruction
+ * after using the 6px-band coil with a real finger - unlike the previous
+ * doubling, this one does NOT come with more room freed by fewer laps
+ * (LAPS_MAX stays 2), so the extra width has to come out of the digit
+ * budget instead, which the owner explicitly authorised: "quitte à réduire
+ * la taille du minuteur au milieu" (shrink the timer's centre digits if
+ * that is what it costs). See the digit-layout section below for what
+ * that shrink actually is and what it trades away.
+ *
+ * Same two limits as every earlier pass, re-checked against the NEW digit
+ * size instead of re-derived from scratch:
+ *
+ *   EDGE LIMIT:  RING_CY = 184, unchanged (the panel did not change size).
+ *   DIGIT LIMIT: ~127.1px - the SHRUNK digit block's own half-diagonal (see
+ *                below): sqrt(116^2 + 52^2) = sqrt(16160) = 127.12.
+ *
+ * BAND_THICK_PX = 12, BAND_GAP_PX = 8 - both DOUBLE the previous pass's own
+ * 6px/4px, the owner's literal instruction applied a second time; the gap
+ * is scaled by the same factor again, same reasoning as last time (keep the
+ * ink-to-separation proportion the previous pass already settled on rather
+ * than picking a new, unrelated gap value). Two bands plus one gap between
+ * them is now 2*12 + 1*8 = 32px of total radial span - DOUBLE the previous
+ * pass's own 16px, exactly matching "double the width... again" taken
+ * literally at the level of total span, not just the band's own thickness.
+ *
+ * RING_OUTER_R stays 173, UNCHANGED, on purpose: "the dial's outer diameter
+ * never grows" is a standing constraint, not merely a default, and there is
+ * no instruction to shrink it either - the simplest reading that satisfies
+ * "never grows" is to leave it exactly where it already was, checked once
+ * more against the (unchanged) edge limit: 184 - 173 = 11px margin, same as
+ * every earlier pass.
+ *
+ * RING_INNER_R = 141: RING_OUTER_R minus both bands' thickness and the one
+ * gap between them (173 - 2*12 - 1*8 = 173 - 24 - 8 = 141). Checked against
+ * the new digit limit: 141 - 127.12 = 13.9px margin - slightly MORE
+ * generous than the previous pass's own 12px, not because a bigger margin
+ * was targeted, but because the digit shrink below was sized to stay
+ * legible first and fit second (see that section for the actual trade);
+ * the margin is simply what was left over once a legible digit size was
+ * chosen, read off last, same order this derivation has followed every
+ * time: bands first, RING_OUTER_R against the edge limit next, the digit
+ * margin last.
+ *
+ * "keep the innermost band legible": even less of a concern than the
+ * previous pass's own note - 12px is thicker than anything else on this
+ * panel drawn as a stack of 1px rows, including the coil's own outer band
+ * at every earlier size, and the 8px gap reads as an unambiguous boundary
+ * even glanced at quickly.
+ * ------------------------------------------------------------------- */
+#define BAND_THICK_PX      12                                     // SUPERSEDED FROM 6
+#define BAND_GAP_PX        8                                      // SUPERSEDED FROM 4
+#define BAND_STRIDE_PX     (BAND_THICK_PX + BAND_GAP_PX)          // 20, SUPERSEDED FROM 10
 #define RING_OUTER_R       173
-#define RING_INNER_R       (RING_OUTER_R - LAPS_MAX * BAND_THICK_PX - (LAPS_MAX - 1) * BAND_GAP_PX) // 157
+#define RING_INNER_R       (RING_OUTER_R - LAPS_MAX * BAND_THICK_PX - (LAPS_MAX - 1) * BAND_GAP_PX) // 141, SUPERSEDED FROM 157
 #define RING_ROWS          (2 * RING_OUTER_R)                      // 346
-#define BAND_HALF_THICK_PX (BAND_THICK_PX / 2)                     // 3, exact (BAND_THICK_PX is even)
+#define BAND_HALF_THICK_PX (BAND_THICK_PX / 2)                     // 6, exact (BAND_THICK_PX is even) - SUPERSEDED FROM 3
 
 static inline float band_outer_r(int band) {
     return (float)RING_OUTER_R - (float)band * (float)BAND_STRIDE_PX;
@@ -435,37 +647,74 @@ static inline float band_centerline_r(int band) {
 #define TIMER_DEG2RAD  (TIMER_PI / 180.0f)
 
 /* ---------------------------------------------------------------------
- * Digit layout, in LANDSCAPE coordinates. Owner feedback: "use the same
- * font, same interlines and spacing as the chronometer". DIGIT_W, DIGIT_H,
- * SEG_T, SEP_W and the 12px gap below are chrono.c's own constants
- * (DIGIT_W/DIGIT_H/SEG_T/SEP_W and its X_* deltas, which are all +12),
- * copied rather than guessed at a smaller size the way the old 40/90/12
- * timer digits were. They are not shared via a header: chrono.c does not
- * expose them, and a shared layout header for two apps is a bigger call
- * than this task (see the owner's brief). If chrono.c's metrics ever
- * change, this block has to change with it by hand; that duplication is
- * accepted on purpose, not missed. Unchanged by the dots-to-ring-to-coil
- * rewrites: the digits are pixel-identical to before, every time.
+ * Digit layout, in LANDSCAPE coordinates. - SUPERSEDED 2026-08-14
+ * (real-hardware pass), kept verbatim as the record of the "same typeface
+ * as chrono" digits this project shipped and tested before the owner's
+ * real-finger session forced a trade between digit size and band width.
+ * Owner feedback: "use the same font, same interlines and spacing as the
+ * chronometer". DIGIT_W, DIGIT_H, SEG_T, SEP_W and the 12px gap below are
+ * chrono.c's own constants (DIGIT_W/DIGIT_H/SEG_T/SEP_W and its X_* deltas,
+ * which are all +12), copied rather than guessed at a smaller size the way
+ * the old 40/90/12 timer digits were. They are not shared via a header:
+ * chrono.c does not expose them, and a shared layout header for two apps is
+ * a bigger call than this task (see the owner's brief). If chrono.c's
+ * metrics ever change, this block has to change with it by hand; that
+ * duplication is accepted on purpose, not missed. Unchanged by the
+ * dots-to-ring-to-coil rewrites: the digits are pixel-identical to before,
+ * every time.
  *
  * MM:SS is 4 digits, not chrono's 6, and one colon, not two, so the block
  * is narrower than chrono's; everything else (digit size, gap, colon
  * width) is identical, which is what makes it read as the same typeface.
  * ------------------------------------------------------------------- */
-#define DIGIT_W   48   // chrono.c's DIGIT_W
-#define DIGIT_H   120  // chrono.c's DIGIT_H
-#define SEG_T     18   // chrono.c's SEG_T
-#define SEP_W     24   // chrono.c's SEP_W (colon cell width)
-#define DIGIT_GAP 12   // chrono.c's inter-element gap; every X_* delta in chrono.c is +12
+
+/* ---------------------------------------------------------------------
+ * Digit layout, in LANDSCAPE coordinates, CURRENT (2026-08-14,
+ * real-hardware pass). No longer pixel-identical to chrono's: "double the
+ * width of the coil band again" (see the ring-geometry section above)
+ * needed 16px more of radial span than the previous pass's digit budget
+ * had spare, and the owner traded it away explicitly - "quitte à réduire la
+ * taille du minuteur au milieu" (shrink the centre digits if that is what
+ * it costs) - rather than leaving the request unresolved.
+ *
+ * THE TRADE, stated plainly rather than left implicit: every digit
+ * dimension below is 7/8 of chrono's own (DIGIT_W 48->42, DIGIT_H 120->104,
+ * SEG_T 18->16 rounded up from 15.75 for a marginally bolder stroke rather
+ * than a thinner one, SEP_W 24->20 rounded down to keep DIGIT_BLOCK_W an
+ * even number - see its own comment). A 7/8 scale (87.5%) was chosen over a
+ * more aggressive shrink (e.g. the 5/6 = 83.3% this file considered and
+ * rejected) because 7/8 already clears the digit limit with a margin
+ * (13.9px) in line with every earlier pass's own margin discipline (11-12px
+ * elsewhere in this file) - there was no need to shrink further just
+ * because more margin was available, and a 5/6 digit reads smaller to a
+ * child without buying back anything the coil needed. The segments stay
+ * roughly the same PROPORTION of their own cell as chrono's (SEG_T/DIGIT_W
+ * was 0.375, is now 0.381; SEG_T/DIGIT_H was 0.150, is now 0.154), so the
+ * numerals are a scaled-down copy of the same shape, not a visually
+ * different, thinner font - the legibility that survives is "same digit,
+ * smaller", not "different, harder-to-read digit at the old size".
+ *
+ * DIGIT_GAP = 11, not an exact 7/8 of chrono's 12 (10.5) - rounded UP for
+ * the same reason SEG_T rounded up: a hair more breathing room between
+ * digits reads clearer at a smaller size than a hair less would, and the
+ * rounding direction was free to choose (10 and 11 both fit the radius
+ * budget) so it went toward legibility rather than toward the smallest
+ * possible footprint.
+ * ------------------------------------------------------------------- */
+#define DIGIT_W   42   // SUPERSEDED FROM 48 (chrono.c's own DIGIT_W) - 7/8 scale
+#define DIGIT_H   104  // SUPERSEDED FROM 120 (chrono.c's own DIGIT_H) - 7/8 scale, rounded to even
+#define SEG_T     16   // SUPERSEDED FROM 18 (chrono.c's own SEG_T) - 7/8 scale (15.75), rounded up
+#define SEP_W     20   // SUPERSEDED FROM 24 (chrono.c's own SEP_W) - 7/8 scale (21), rounded down to keep DIGIT_BLOCK_W even
+#define DIGIT_GAP 11   // SUPERSEDED FROM 12 (chrono.c's own inter-element gap) - 7/8 scale (10.5), rounded up
 
 // MM:SS block: 2 digits, colon, 2 digits, 4 gaps between the 5 elements.
-#define DIGIT_BLOCK_W (4 * DIGIT_W + SEP_W + 4 * DIGIT_GAP)  // 264
+#define DIGIT_BLOCK_W (4 * DIGIT_W + SEP_W + 4 * DIGIT_GAP)  // 232, SUPERSEDED FROM 264
 
-// Centred on the ring, both axes. DIGIT_Y0 comes out to 124, the same
-// number chrono.c uses for its own Y0, because both are centring the same
-// DIGIT_H in the same 368px landscape height; not a coincidence, a check
-// that the two derivations agree.
-#define DIGIT_Y0  (RING_CY - DIGIT_H / 2)          // 124
-#define DIGIT_X0  (RING_CX - DIGIT_BLOCK_W / 2)     // 92
+// Centred on the ring, both axes. DIGIT_Y0 no longer matches chrono.c's own
+// Y0 (chrono kept its full-size digits; only timer's shrank) - see the
+// digit-layout comment above for why the two are now allowed to diverge.
+#define DIGIT_Y0  (RING_CY - DIGIT_H / 2)          // 132, SUPERSEDED FROM 124
+#define DIGIT_X0  (RING_CX - DIGIT_BLOCK_W / 2)     // 108, SUPERSEDED FROM 92
 
 #define X_MM_TENS   (DIGIT_X0)
 #define X_MM_UNITS  (X_MM_TENS  + DIGIT_W + DIGIT_GAP)
@@ -522,7 +771,7 @@ static inline float band_centerline_r(int band) {
  *      DOES show, in every non-alarm state alike, is one continuous fact
  *      per band: how far around that band's own 360 degrees the current
  *      value has wound it (see compute_band_fill_degs - each band's own
- *      fraction of TICKS_PER_LAP, not a fraction of the whole 60-minute
+ *      fraction of TICKS_PER_LAP, not a fraction of the whole 30-minute
  *      range). RUNNING and PAUSED differ from each other only in whether
  *      those arcs are currently moving; a single snapshot cannot tell them
  *      apart either, which is again why the digit colour exists.
@@ -580,6 +829,28 @@ typedef struct {
     // as a point_touch().
     float dragAccumTicks;
     float lastTouchAngleDeg;
+
+    // CORRECTED 2026-08-14: dropout bridging for the drag itself, not just
+    // its rendering. lastTouchDownMs is the nowMs of the most recent frame
+    // this file saw f->touchDown true (set after every point_touch()/
+    // drag_touch() call in the TS_SETTING branch, and after the TS_PAUSED-
+    // touched-to-edit branch's own point_touch()); touchContextLive is false
+    // only before the very first touch a SETTING session has ever seen. Read
+    // together by the TS_SETTING branch's own dispatch to tell a genuine
+    // fresh touchPressed (a real lift, then a new touch-down elsewhere) apart
+    // from one the runtime's edge detector manufactured out of the real touch
+    // controller dropping contact mid-drag - see that branch's own comment,
+    // and this task's report, for the mechanism this exists to close: without
+    // it, EVERY dropout-induced touchPressed reached point_touch(), which
+    // reseeds dragAccumTicks and the sub-lap position from a fresh snapshot,
+    // discarding however much of the current lap the drag had already wound
+    // in. That is what "winding past the end of the first lap restarts at
+    // zero" actually was - not a wraparound in the accumulator (which the
+    // existing branch-cut tests already proved correct), but the accumulator
+    // being thrown away and re-seeded mid-gesture by a press that was never a
+    // real lift.
+    uint32_t lastTouchDownMs;
+    bool touchContextLive;
 
     // One arc angle per band (0..360 each), the coil's generalisation of
     // the single ring's lastFillDeg - see paint_ring_row()/update_ring_to().
@@ -782,12 +1053,50 @@ static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
  * between that band's inner and outer edge) at the cap's angle. Two caps
  * per band with a nonzero fillDeg: one fixed at 0 degrees (every band's arc
  * always starts at 12 o'clock) and one at that band's current fillDeg (its
- * own moving tip). Built from shapes.h's table builder plus
- * shapes_draw_annulus_row with hwInner=0, exactly a filled-disc row (see
- * shapes_draw_annulus_row's own comment), same as the single ring - one
- * table, s_capHw, shared by every band, because every band has the
- * identical BAND_HALF_THICK_PX; only the CENTRE the table is stamped
- * around differs per band and per angle (cap_center()).
+ * own moving tip). Built from shapes.h's table builder - one table,
+ * s_capHw, shared by every band, because every band has the identical
+ * BAND_HALF_THICK_PX; only the CENTRE the table is stamped around differs
+ * per band and per angle (cap_center()).
+ *
+ * CORRECTED 2026-08-14: draw_cap() no longer hands s_capHw straight to
+ * shapes_draw_annulus_row(). Owner report, verbatim: "sur le minuteur j'ai
+ * des pixels qui stray autour de l'anneau" - stray pixels around the coil.
+ * Bisected in the emulator (a clean drag, no dropouts, no touch involved at
+ * all in the mechanism): a handful of black pixels stay lit permanently in
+ * the white GAP between the two bands, each one born the instant a cap
+ * first sweeps past that angle and never erased again, because nothing
+ * else ever repaints the gap (see paint_ring_row's own comment - "the gap
+ * is never written by this function... stays correct forever" - true only
+ * if nothing else writes there either).
+ *
+ * The mechanism: shapes_fill_half_width_table() rounds each row's half-
+ * width to the nearest pixel (lroundf), which is a genuine circle at the
+ * ROW level but not at the PIXEL-corner level - CAP_TABLE_ROWS=6's own
+ * middle rows (dy=+-1.5) round sqrt(9-2.25)=2.598 UP to 3, so their
+ * outermost drawn pixel sits at local distance sqrt(3^2+1.5^2)=3.354 from
+ * the cap's centre, not the nominal BAND_HALF_THICK_PX=3 - an inherent,
+ * known property of table-based circle rasterisation, not a bug on its
+ * own (every row-stack shape in this file has some corner rounding; that
+ * is what CAP_BULGE_TOLERANCE-style margins elsewhere in this codebase
+ * already budget for). Stacked with cap_center()'s own lroundf() snapping
+ * the cap's true (float) centre to the nearest integer pixel (up to
+ * ~0.7px of further slack on the diagonal), the two roundings COMBINED can
+ * push a cap pixel's true distance from the RING's centre - not the cap's
+ * own centre - up to about 1px past the band's own declared inner or outer
+ * radius. Measured directly: a cap drawn near 117 degrees left exactly one
+ * such pixel at radius 165.9, inside RING_INNER_R-adjacent band 0's own
+ * territory begins at 167 - a permanent, one-pixel-wide fleck in the gap.
+ *
+ * THE FIX does not try to out-guess the rounding (shrinking BAND_HALF_
+ * THICK_PX's own table radius by some fudge factor would either still
+ * leave a corner case or visibly flatten the cap, trading one imprecision
+ * for another). Instead, draw_cap() clips every row it draws against
+ * s_hwOuter[band]/s_hwInner[band] - the EXACT SAME per-row bounds
+ * paint_band_row() itself uses to decide what belongs to this band. A cap
+ * pixel can then, by construction, never fall outside what the rest of
+ * this file already calls "band X's own territory" at that row, because it
+ * is being measured against the identical yardstick - see
+ * draw_cap_row_clipped() below.
  * ------------------------------------------------------------------- */
 #define CAP_TABLE_ROWS (2 * BAND_HALF_THICK_PX) // 6, exact - BAND_HALF_THICK_PX is a
                                                  // whole number this time (BAND_THICK_PX
@@ -814,13 +1123,53 @@ static void cap_center(int band, float deg, int *cx, int *cy) {
     *cy = RING_CY + (int)lroundf(r * sinf(mathAngle));
 }
 
+// Draws the portion of [dxLo, dxHi] (RING_CX-relative dx, inclusive) at
+// landscape row y that band `band` actually owns at that row, per
+// s_hwOuter[band]/s_hwInner[band] - the same tables paint_band_row() reads,
+// so a cap can never disagree with what the rest of this file considers
+// that band's own territory. Mirrors paint_band_row's own two-bars-or-solid
+// logic (see that function's comment) rather than calling it, because that
+// function paints EVERY band at a row unconditionally; this one draws only
+// the single band a single cap belongs to, clipped to an arbitrary input
+// range rather than the row's own full width.
+static void draw_cap_row_clipped(int band, int y, int rowIdx, int dxLo, int dxHi, uint16_t color) {
+    if (rowIdx < 0 || rowIdx >= RING_ROWS) return; // off the shared grid entirely - defensive, should not happen
+    int hwOuter = s_hwOuter[band][rowIdx];
+    int hwInner = s_hwInner[band][rowIdx];
+    if (hwOuter <= 0) return; // this row is outside band `band` altogether
+    if (hwInner <= 0) {
+        // Past this band's own inner radius: no hole at this row (same case
+        // paint_band_row's own `if (hwInner <= 0)` branch handles), so the
+        // whole [-hwOuter, hwOuter] strip is valid, dx=0 included.
+        int lo = dxLo < -hwOuter ? -hwOuter : dxLo;
+        int hi = dxHi > hwOuter ? hwOuter : dxHi;
+        if (lo <= hi) gfx_fill_rect_land(RING_CX + lo, y, hi - lo + 1, 1, color);
+        return;
+    }
+    // Two valid strips, [-hwOuter,-hwInner] and [hwInner,hwOuter], with a
+    // hole in between - clip the requested range against each independently
+    // so a cap that happens to straddle dx=0 (only possible right at the
+    // fixed start cap's own 12 o'clock, or a moving cap that lands exactly
+    // at 6 o'clock) still gets both its left and right halves drawn.
+    int leftLo = dxLo < -hwOuter ? -hwOuter : dxLo;
+    int leftHi = dxHi > -hwInner ? -hwInner : dxHi;
+    if (leftLo <= leftHi) gfx_fill_rect_land(RING_CX + leftLo, y, leftHi - leftLo + 1, 1, color);
+    int rightLo = dxLo < hwInner ? hwInner : dxLo;
+    int rightHi = dxHi > hwOuter ? hwOuter : dxHi;
+    if (rightLo <= rightHi) gfx_fill_rect_land(RING_CX + rightLo, y, rightHi - rightLo + 1, 1, color);
+}
+
 static void draw_cap(int band, float deg) {
     ensure_cap_table();
     int cx, cy;
     cap_center(band, deg, &cx, &cy);
+    int cxRel = cx - RING_CX;
     for (int row = 0; row < CAP_TABLE_ROWS; row++) {
+        int hw = s_capHw[row];
+        if (hw <= 0) continue;
         int y = cy - CAP_TABLE_ROWS / 2 + row;
-        shapes_draw_annulus_row(cx, y, s_capHw[row], 0, PX_BLACK);
+        int rowIdx = y - (RING_CY - RING_OUTER_R);
+        draw_cap_row_clipped(band, y, rowIdx, cxRel - hw, cxRel + hw - 1, PX_BLACK);
     }
 }
 
@@ -851,25 +1200,34 @@ static void paint_ring_full(const float fillDeg[LAPS_MAX]) {
 // repaint that does not account for that overshoot leaves a stuck sliver of
 // stale ink behind it).
 //
-// RECOMPUTED for this file's current geometry (BAND_HALF_THICK_PX=3,
-// smallest radius at the innermost band, b=1: band_centerline_r(1) =
-// 173 - 1*10 - 3 = 160). Same tangent-line bound as before, max half-angle
-// = asin(BAND_HALF_THICK_PX / radius), evaluated at the SMALLEST radius on
-// purpose (asin grows as radius shrinks for a fixed half-thickness, so the
-// innermost band is every band's worst case, and one shared conservative
-// constant for all bands is simpler and safer than one per band for a
-// quantity this cheap to over-provision): asin(3/160) = asin(0.01875) =
-// 1.074 degrees. Not computed at runtime, same reason as before - asinf is
-// not in this project's emulator ABI (see emulator/wasm/shim/math.h's
-// header comment) - so this is again one more number computed once by
-// reasoning. Rounded up to 1.5 degrees (roughly 1.4x the analytic value,
-// close to the original single ring's own 1.26x headroom now that the
-// band is a comparable thickness again). Verified sufficient by this
-// file's own regression test (repro-ring-shrink-residue.ts, extended for
-// the coil - see that file), which drives the same drag-up-then-down and
-// smooth-countdown scenarios the single ring's version did, now scanning
+// RECOMPUTED 2026-08-14 (real-hardware pass) for this file's current
+// geometry (BAND_HALF_THICK_PX=6, smallest radius at the innermost band,
+// b=1: band_centerline_r(1) = 173 - 1*20 - 6 = 147 - SUPERSEDED FROM 160).
+// Same tangent-line bound as before, max half-angle = asin(BAND_HALF_
+// THICK_PX / radius), evaluated at the SMALLEST radius on purpose (asin
+// grows as radius shrinks for a fixed half-thickness, so the innermost band
+// is every band's worst case, and one shared conservative constant for all
+// bands is simpler and safer than one per band for a quantity this cheap to
+// over-provision): asin(6/147) = asin(0.04082) = 2.339 degrees - SUPERSEDED
+// FROM 1.074, roughly double, tracking BAND_HALF_THICK_PX's own doubling.
+// Not computed at runtime, same reason as before - asinf is not in this
+// project's emulator ABI (see emulator/wasm/shim/math.h's header comment) -
+// so this is again one more number computed once by reasoning. Rounded up
+// to 3.5 degrees (roughly 1.5x the analytic value, the same headroom
+// discipline every earlier pass of this constant used). Also worth noting:
+// this margin's OWN job shrank with this pass's cap-clipping fix
+// (draw_cap_row_clipped(), see this file's header) - a cap can no longer
+// paint outside its own band's radius regardless of this margin, so
+// CAP_SWEEP_MARGIN_DEG now only has to be wide enough to sweep the rows a
+// cap's TANGENTIAL reach touches, not to prevent a radial leak; kept
+// generously sized anyway rather than trimmed to the new, narrower job, on
+// the same "cheap to over-provision" reasoning as always. Verified
+// sufficient by this file's own regression test (repro-ring-shrink-
+// residue.ts, extended for the coil and again for this pass's own gap-
+// residue defect - see that file), which drives the same drag-up-then-down
+// and smooth-countdown scenarios the single ring's version did, now scanning
 // both bands.
-#define CAP_SWEEP_MARGIN_DEG 1.5f
+#define CAP_SWEEP_MARGIN_DEG 3.5f
 
 // Bounding landscape row range [*yLo, *yHi] that could contain any pixel,
 // AT THE GIVEN BAND'S OWN RADII, whose angle lies in [fromDeg, toDeg]
@@ -1044,14 +1402,15 @@ static float raw_touch_angle_deg(int touchPanelX, int touchPanelY) {
 // constraint to preserve here; see this file's header, "TRUE ZERO IS NOW
 // REACHABLE BY TOUCH", for why that old constraint does not carry over).
 //
-// AT TICKS_PER_LAP=360, THIS IS A ONE-DEGREE-PER-TICK MAPPING: a tap can
-// select any of 360 slots, but two adjacent slots are only ~3px of arc
-// apart at this file's RING_OUTER_R (see this file's header, "Second, and
-// this is the one requiring judgement") - a real fingertip cannot reliably
-// choose one 3px slot over its neighbour. That is expected, not a bug: a
-// point is described as landing "in the right neighbourhood", and it is
-// drag_touch(), immediately below, that actually resolves the exact 5-
-// second step from there.
+// AT TICKS_PER_LAP=180 (SUPERSEDED FROM 360, see this file's header,
+// "CORRECTED 2026-08-14 (AFTER REAL-HARDWARE USE)"), THIS IS A TWO-DEGREE-
+// PER-TICK MAPPING: a tap can select any of 180 slots, and two adjacent
+// slots are ~6.0px of arc apart at this file's RING_OUTER_R (double the
+// previous ~3.0px - see the tick-geometry section above) - still not
+// reliably choosable by a real fingertip one slot at a time, so the same
+// reasoning holds: a point is described as landing "in the right
+// neighbourhood", and it is drag_touch(), immediately below, that actually
+// resolves the exact 5-second step from there.
 static int sub_lap_ticks_for_angle(float angleDeg) {
     int slot = (int)lroundf(angleDeg / 360.0f * (float)TICKS_PER_LAP);
     if (slot >= TICKS_PER_LAP) slot -= TICKS_PER_LAP;
@@ -1066,9 +1425,12 @@ static int sub_lap_ticks_for_angle(float angleDeg) {
 // change which lap, drag past twelve o'clock instead, see drag_touch()
 // below). From zero (lap 0), tapping six o'clock (180 degrees, half a
 // turn) sets exactly half of TICKS_PER_LAP's worth of time - AT THIS
-// FILE'S CURRENT 30-minute lap length that is 15:00, not the 5:00 a
-// 10-minute lap gave; see this file's header, "First, six o'clock is now
-// 15:00, not 5:00", for why that changed and is accepted.
+// FILE'S CURRENT 15-minute lap length that is 7:30 (SUPERSEDED FROM 15:00
+// at the previous 30-minute lap, SUPERSEDED FROM 5:00 before that, at the
+// original 10-minute lap): the worked example keeps moving with the lap
+// length, on the same terms the header already accepted once - see this
+// file's header, "First, six o'clock is now 15:00, not 5:00", for the
+// original reasoning, which applies again unchanged.
 //
 // Called on every fresh touch context: a genuine f->touchPressed, AND the
 // one frame TS_PAUSED converts into TS_SETTING (see timer_tick()) - both
@@ -1081,11 +1443,12 @@ static void point_touch(timer_state_t *s, int touchX, int touchY) {
     int lap = s->setTicks / TICKS_PER_LAP; // integer division; see below for lap==LAPS_MAX
     int newTotal = lap * TICKS_PER_LAP + sub_lap_ticks_for_angle(angle);
     // lap can be exactly LAPS_MAX only when setTicks is exactly MAX_TICKS
-    // (720/360 = 2): there is no lap beyond the last one to preserve a
-    // position within, so newTotal comes out >= MAX_TICKS regardless of the
-    // tapped angle and the clamp below holds it at the ceiling - tapping
-    // the coil while already at 60:00 stays at 60:00, whichever angle is
-    // tapped. Reads as the ceiling behaving like a ceiling, not as a bug.
+    // (360/180 = 2, SUPERSEDED FROM 720/360): there is no lap beyond the
+    // last one to preserve a position within, so newTotal comes out >=
+    // MAX_TICKS regardless of the tapped angle and the clamp below holds it
+    // at the ceiling - tapping the coil while already at 30:00 (SUPERSEDED
+    // FROM 60:00) stays at 30:00, whichever angle is tapped. Reads as the
+    // ceiling behaving like a ceiling, not as a bug.
     if (newTotal > MAX_TICKS) newTotal = MAX_TICKS;
     if (newTotal < 0) newTotal = 0;
     s->setTicks = newTotal;
@@ -1135,33 +1498,56 @@ static void point_touch(timer_state_t *s, int touchX, int touchY) {
 // does. It only adds reluctance for a value that is hovering near a
 // boundary rather than committing to either side of it.
 //
-// THE HONEST LIMIT. DRAG_COMMIT_HYSTERESIS_TICKS = 0.3 was sized against
-// this file's own geometry, not against a measurement of the real touch
-// controller's noise floor (no such measurement exists yet): one raw pixel
-// of touch-coordinate noise at RING_OUTER_R (173) is roughly 1/173 radian,
-// about 0.33 degrees - close to a FULL tick's own width at this ratio. A
-// single pixel of real controller noise is therefore already comparable in
-// size to one tick, and no purely software dead band placed after the fact
-// can fully absorb noise of that same order without also eating genuine
-// slow motion by the same amount. What this hysteresis DOES guarantee: a
-// perfectly still finger (identical reported pixel every frame, which is
-// what this emulator's own mouse-driven touch always produces) never
-// flickers, because delta is exactly zero and nothing ever approaches a
-// commit boundary in the first place. What it does NOT guarantee, because
-// nothing at the software layer can, is that real hardware touch noise of
-// a full pixel or more will always be absorbed - if the physical sensor
-// turns out noisier than this margin on real hardware, that is a genuine,
-// reportable finding about this device's touch resolution at a 360-tick
-// lap, not something to quietly round away, and the fix at that point is
-// hardware-level averaging or a coarser DISPLAY step (not what the coil
-// actually STORES, which stays exact 5s ticks either way) rather than a
-// bigger software hysteresis, which would just trade flicker for
-// sluggishness. Flagged here, not silently assumed solved - see this
-// task's own report for the same flag, and repro-timer-coil.ts for the
-// jitter-relevant coverage this emulator CAN provide (a perfectly still
-// simulated finger produces zero displayed-value changes across many
-// ticks).
-#define DRAG_COMMIT_HYSTERESIS_TICKS 0.3f
+// THE HONEST LIMIT, AND WHY THIS PASS HALVES THE VALUE RATHER THAN CARRYING
+// IT FORWARD UNEXAMINED. DRAG_COMMIT_HYSTERESIS_TICKS was 0.3 at the
+// previous (30-minute-lap, 360-tick) geometry - see this file's header,
+// "CORRECTED 2026-08-14 (AFTER REAL-HARDWARE USE)": one raw pixel of touch-
+// coordinate noise at RING_OUTER_R (173, UNCHANGED by this pass - see the
+// ring-geometry section above) is still roughly 1/173 radian, about 0.33
+// degrees - that arithmetic has not moved. What DID move is how many ticks
+// that 0.33 degrees is worth: at the OLD 360-tick lap, 1 degree was exactly
+// 1 tick, so 0.33 degrees was 0.33 ticks - close to a full tick's own
+// commit granularity, which is what made noise a genuine risk and motivated
+// a hysteresis of comparable size. At the NEW 180-tick lap, 1 degree is
+// only 0.5 ticks, so the SAME 0.33 degrees of pixel noise is now only
+// 0.33 * 0.5 = 0.166 ticks - HALF as much noise relative to a tick's own
+// width, because the same physical arc length (~6.0px, see the tick-
+// geometry section above) now buys twice as much angular margin per tick as
+// it did before. This is the "one welcome consequence" the owner's own
+// brief for this pass named directly: finer-grained drag jitter, flagged as
+// a genuine open question at the old 3px-per-tick geometry, should be
+// materially better at the new ~6px-per-tick one - and the arithmetic here
+// says specifically HOW much better (2x), not just "probably some".
+//
+// DRAG_COMMIT_HYSTERESIS_TICKS = 0.15, HALVED from 0.3, tracking the halved
+// noise-to-tick ratio exactly rather than being left at the old value out
+// of caution: the old 0.3 was chosen to sit just under the old 0.33-degree
+// noise figure (see the git history of this constant), so the new value
+// sits just under the new 0.166-degree-equivalent figure the same way,
+// preserving the SAME relative safety margin this file has used at every
+// tick geometry rather than accumulating unnecessary lag as the geometry
+// gets kinder. A single pixel of real controller noise is no longer
+// comparable in size to one tick's own commit granularity the way it was
+// before, so less software dead band is needed to absorb it without also
+// eating genuine slow motion by the same amount. What this hysteresis DOES
+// guarantee: a perfectly still finger (identical reported pixel every
+// frame, which is what this emulator's own mouse-driven touch always
+// produces) never flickers, because delta is exactly zero and nothing ever
+// approaches a commit boundary in the first place. What it does NOT
+// guarantee, because nothing at the software layer can, is that real
+// hardware touch noise of a full pixel or more will always be absorbed -
+// if the physical sensor turns out noisier than this margin on real
+// hardware, that is a genuine, reportable finding about this device's touch
+// resolution at a 180-tick lap, not something to quietly round away, and
+// the fix at that point is hardware-level averaging or a coarser DISPLAY
+// step (not what the coil actually STORES, which stays exact 5s ticks
+// either way) rather than a bigger software hysteresis, which would just
+// trade flicker for sluggishness. Flagged here, not silently assumed
+// solved - see this task's own report for the same flag, and
+// repro-timer-coil.ts for the jitter-relevant coverage this emulator CAN
+// provide (a perfectly still simulated finger produces zero displayed-value
+// changes across many ticks).
+#define DRAG_COMMIT_HYSTERESIS_TICKS 0.15f
 
 static void drag_touch(timer_state_t *s, int touchX, int touchY) {
     float angle = raw_touch_angle_deg(touchX, touchY);
@@ -1178,6 +1564,64 @@ static void drag_touch(timer_state_t *s, int touchX, int touchY) {
     if (diff >= 0.5f + DRAG_COMMIT_HYSTERESIS_TICKS || diff <= -(0.5f + DRAG_COMMIT_HYSTERESIS_TICKS)) {
         s->setTicks = (int)lroundf(s->dragAccumTicks);
     }
+}
+
+// BRIDGING A DROPPED-CONTACT touchPressed - CORRECTED 2026-08-14, the actual
+// fix for "winding past the end of the first lap restarts at zero".
+//
+// app.h's touchPressed is the runtime's own edge detector (runtime_core.c,
+// "down && !g_touchWasDown"), computed from whichever raw sample happened to
+// be queued last when this app's tick ran. The real touch controller this
+// device carries does not report a clean, continuous stream of contact
+// while a finger sits on the glass: sketch.c's own CONFIRM_MS comment cites
+// a measured session with 798 dropouts (runs of zero-finger reports) in
+// about 23 seconds of continuous drawing - one roughly every 30ms, far
+// inside a single human drag gesture. A dropout that happens to land on its
+// own tick reads, at the resolved touchDown/touchPressed level this file
+// consumes, as a genuine touchReleased followed by a genuine touchPressed
+// a frame or two later, indistinguishable from an actual lift-and-retouch
+// UNLESS something tracks how recently contact was last seen.
+//
+// That something used to be nothing: every touchPressed in the TS_SETTING
+// branch below called point_touch(), which reads the CURRENT angle and
+// s->setTicks' CURRENT lap and reseeds dragAccumTicks from that snapshot -
+// correct for a genuine new gesture, catastrophic for a bridged dropout
+// mid-drag, because it throws away the continuous unwrap that is the only
+// thing that knows a lap boundary was ever crossed. A dropout landing right
+// as a drag passes twelve o'clock is exactly the reported symptom: the
+// snapshot reads a small angle just past the top and a lap count that has
+// not advanced yet, so the "restart" is real, not perceived - point_touch()
+// really did throw the wound lap away and start over near zero.
+//
+// The fix cannot live in runtime_core.c (out of scope for this change - see
+// this task's own constraints, and sketch.c already owns the one app that
+// reads the raw sample stream directly for exactly this reason, app.h's
+// touchDown/X/Y comment). So this file re-derives the same "a lift is only
+// believed after a short grace period with no contact" rule sketch.c's own
+// LIFT_DEBOUNCE_MS applies to the raw stream, but at the resolved-edge level
+// this file actually has: if the previous frame this file saw touchDown was
+// inside TOUCH_DROPOUT_GRACE_MS of now, a touchPressed this frame is treated
+// as the SAME gesture continuing, and dispatched to drag_touch() (whose own
+// branch-cut unwrap already handles a multi-frame gap correctly - it just
+// computes one larger delta against s->lastTouchAngleDeg, same as it would
+// for several small ones) instead of point_touch().
+//
+// TOUCH_DROPOUT_GRACE_MS = 80, identical to sketch.c's LIFT_DEBOUNCE_MS: same
+// controller, same "how long a dropout can plausibly last" question, so
+// there is no independent number to derive here - see that file's own
+// comment for the reasoning (a real lift takes noticeably longer than a
+// dropout in every measured session).
+#define TOUCH_DROPOUT_GRACE_MS 80u
+
+// True when this frame's touchPressed should be believed as a REAL fresh
+// touch-down rather than folded into the drag that was already in progress.
+// touchContextLive is false only before this SETTING session's very first
+// touch (the zeroed-arena default), which guards the one case elapsed-time
+// alone cannot: at nowMs close to zero, "no previous touch" and "a touch
+// bridged from very recently" are not otherwise distinguishable.
+static bool is_genuine_new_press(const timer_state_t *s, uint32_t nowMs) {
+    if (!s->touchContextLive) return true;
+    return (nowMs - s->lastTouchDownMs) >= TOUCH_DROPOUT_GRACE_MS;
 }
 
 /* ---------------------------------------------------------------------
@@ -1238,7 +1682,8 @@ static float running_true_remaining(const timer_state_t *s, uint32_t nowMs) {
 // is FULLY wound once totalTicks >= bandStartTicks + TICKS_PER_LAP (outDeg
 // 360, solid black, "completed"), and in between shows the live fraction -
 // this one formula produces every case this file's header describes: both
-// bands empty at exactly 0:00, both full at exactly 60:00, and a smooth,
+// bands empty at exactly 0:00, both full at exactly 30:00 (SUPERSEDED FROM
+// 60:00), and a smooth,
 // continuous transition through the one lap boundary in between, with no
 // special-casing of any boundary anywhere in this function (see this
 // file's header, "SETTING AND RUNNING STILL SHARE ONE MAPPING" - SETTING
@@ -1355,6 +1800,9 @@ static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
         // dial forward.
         if (s->setTicks > 0) s->lastSetTicks = s->setTicks;
         s->setTicks = 0;
+        s->touchContextLive = false; // see touchContextLive's own struct comment: the alarm
+                                      // just wiped setTicks, not a drag, so any touch after
+                                      // dismissal - however soon - starts a fresh gesture
 
         // Clear the whole panel first: the alarm's last flash frame may have
         // left it solid black (see the fill below, PX_BLACK on the inverted
@@ -1448,6 +1896,13 @@ static void timer_tick(const app_frame_t *f) {
         // BOOT-resets-to-zero except the target is setTicks, not zero.
         if (s->state != TS_SETTING) {
             s->state = TS_SETTING;
+            // Invalidates any drag-continuation context left over from a
+            // previous SETTING session (see touchContextLive's own struct
+            // comment): setTicks was just set by BOOT, not by a drag, so the
+            // next touchPressed - however soon it arrives - must be believed
+            // as genuinely fresh, never bridged into whatever gesture last
+            // touched the ring before RUNNING/PAUSED started.
+            s->touchContextLive = false;
             redraw_full(s, f->nowMs);
             gfx_push_all();
             int sec = seconds_for_ticks(s->setTicks);
@@ -1461,6 +1916,7 @@ static void timer_tick(const app_frame_t *f) {
             // fires when there is genuinely nothing set (setTicks == 0), so
             // it never fights a finger already mid-drag to a real value.
             s->setTicks = s->lastSetTicks;
+            s->touchContextLive = false; // same reasoning as the reset branch above
             redraw_full(s, f->nowMs);
             gfx_push_all();
             int sec = seconds_for_ticks(s->setTicks);
@@ -1584,6 +2040,9 @@ static void timer_tick(const app_frame_t *f) {
         if (s->setTicks > 0) s->lastSetTicks = s->setTicks;
         s->setTicks = 0;
         s->state = TS_SETTING;
+        s->touchContextLive = false; // see touchContextLive's own struct comment: setTicks
+                                      // was just wiped by the shake, not by a drag, so any
+                                      // touch afterward - however soon - starts fresh
         redraw_full(s, f->nowMs);
         gfx_push_all();
         int recallSec = seconds_for_ticks(s->lastSetTicks);
@@ -1620,6 +2079,8 @@ static void timer_tick(const app_frame_t *f) {
         // update_ring_to()'s incremental path the way a later drag_touch()
         // in this same TS_SETTING session will.
         point_touch(s, f->touchX, f->touchY);
+        s->lastTouchDownMs = f->nowMs;
+        s->touchContextLive = true;
         redraw_full(s, f->nowMs);
         gfx_push_all();
         int sec = seconds_for_ticks(s->setTicks);
@@ -1631,8 +2092,24 @@ static void timer_tick(const app_frame_t *f) {
         if (!f->touchDown) return;
 
         int beforeTicks = s->setTicks;
-        if (f->touchPressed) point_touch(s, f->touchX, f->touchY);
-        else drag_touch(s, f->touchX, f->touchY);
+        // f->touchPressed alone is NOT enough to decide point_touch() vs
+        // drag_touch() any more - see is_genuine_new_press()'s own comment
+        // for why (the real touch controller's dropouts make the runtime's
+        // touchPressed edge fire mid-drag, and point_touch() reseeding on
+        // one of those is what "restarts at zero" crossing a lap actually
+        // was). A touchPressed this file believes is genuine gets
+        // point_touch(); everything else - a continuing drag sample, OR a
+        // touchPressed close enough behind the last seen touchDown to be a
+        // bridged dropout - gets drag_touch(), which is exactly correct for
+        // a bridged sample too (its own branch-cut unwrap does not care how
+        // many frames the gap it is unwrapping across spans).
+        if (f->touchPressed && is_genuine_new_press(s, f->nowMs)) {
+            point_touch(s, f->touchX, f->touchY);
+        } else {
+            drag_touch(s, f->touchX, f->touchY);
+        }
+        s->lastTouchDownMs = f->nowMs;
+        s->touchContextLive = true;
         if (s->setTicks == beforeTicks) return;
 
         int newSeconds = seconds_for_ticks(s->setTicks);

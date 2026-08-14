@@ -67,10 +67,10 @@ const RING_CX = 224, RING_CY = 184;
 const DEG2RAD = Math.PI / 180;
 
 const LAPS_MAX = 2;
-const BAND_THICK_PX = 6;
-const BAND_GAP_PX = 4;
-const BAND_STRIDE_PX = BAND_THICK_PX + BAND_GAP_PX; // 10
-const RING_OUTER_R = 173;
+const BAND_THICK_PX = 12;  // SUPERSEDED FROM 6, 2026-08-14 real-hardware pass ("double the band again")
+const BAND_GAP_PX = 8;     // SUPERSEDED FROM 4, same pass
+const BAND_STRIDE_PX = BAND_THICK_PX + BAND_GAP_PX; // 20, SUPERSEDED FROM 10
+const RING_OUTER_R = 173;  // unchanged - see timer.c's "Ring geometry: the coil, CURRENT"
 
 function bandOuterR(b: number): number { return RING_OUTER_R - b * BAND_STRIDE_PX; }
 function bandInnerR(b: number): number { return bandOuterR(b) - BAND_THICK_PX; }
@@ -78,9 +78,9 @@ function bandInnerR(b: number): number { return bandOuterR(b) - BAND_THICK_PX; }
 // timer.c's flat, uniform tick step (2026-08-14 on) - see TICK_STEP_S/
 // TICKS_PER_LAP/MAX_TICKS in timer.c.
 const TICK_STEP_S = 5;
-const TICKS_PER_LAP = 360;   // 30:00 / 5s
-const MAX_TICKS = TICKS_PER_LAP * LAPS_MAX; // 720, i.e. 60:00
-const TIMER_MAX_SECONDS = MAX_TICKS * TICK_STEP_S; // 3600
+const TICKS_PER_LAP = 180;   // 15:00 / 5s - SUPERSEDED FROM 360 (real-hardware pass)
+const MAX_TICKS = TICKS_PER_LAP * LAPS_MAX; // 360, i.e. 30:00 - SUPERSEDED FROM 720/60:00
+const TIMER_MAX_SECONDS = MAX_TICKS * TICK_STEP_S; // 1800 - SUPERSEDED FROM 3600
 
 // Mirror of timer.c's compute_band_fill_degs(): each band's own fraction of
 // TICKS_PER_LAP, from a continuous total-ticks value.
@@ -137,7 +137,7 @@ class DragSim {
         this.accum += (delta / 360) * TICKS_PER_LAP;
         this.accum = Math.max(0, Math.min(MAX_TICKS, this.accum));
         const diff = this.accum - this.ticks;
-        const HYSTERESIS = 0.3; // timer.c's DRAG_COMMIT_HYSTERESIS_TICKS
+        const HYSTERESIS = 0.15; // timer.c's DRAG_COMMIT_HYSTERESIS_TICKS - SUPERSEDED FROM 0.3 (real-hardware pass, halved with TICKS_PER_LAP)
         if (diff >= 0.5 + HYSTERESIS || diff <= -(0.5 + HYSTERESIS)) {
             this.ticks = Math.round(this.accum);
         }
@@ -146,8 +146,9 @@ class DragSim {
 
 // Generous angular tolerance for the caps' own intentional rounded bulge
 // past the arc's exact edge (see timer.c's CAP_SWEEP_MARGIN_DEG derivation,
-// ~1.5deg): rounded up further here since this is a black-box pixel scan,
-// not the firmware's own math.
+// ~3.5deg as of the 2026-08-14 real-hardware pass, SUPERSEDED FROM ~1.5deg):
+// rounded up further here since this is a black-box pixel scan, not the
+// firmware's own math.
 const CAP_BULGE_TOLERANCE_DEG = 6;
 
 // The worst single (band, 5-degree) bucket's stray-pixel count that the
@@ -360,6 +361,38 @@ function pwrShortClick(dev: Device, tPressMs: number) {
     dev.tick(tPressMs + 50);
 }
 
+// Scans STRICTLY the white gap between the two bands - radius (bandOuterR(1),
+// bandInnerR(0)), i.e. EXCLUDING both bands' own +-1px membership tolerance
+// (unlike findStrayBlackPixels above, which is an ANGULAR tolerance check
+// per band and folds gap pixels into its own band=-1 bucket alongside a
+// generous CAP_BULGE_TOLERANCE_DEG) - added 2026-08-14 (real-hardware pass)
+// for the owner's second report, "sur le minuteur j'ai des pixels qui stray
+// autour de l'anneau": a handful of permanently-black pixels landing in the
+// gap between bands, caused by a rounded cap's own rasterisation overshoot
+// (shapes_fill_half_width_table rounding a corner pixel up, stacked with
+// cap_center()'s own lroundf() snap) reaching about 1px past its band's true
+// radius - see timer.c's header, "BUG 2", for the full mechanism and the
+// draw_cap_row_clipped() fix. This check is RADIUS-only and angle-agnostic
+// (checks EVERY angle around the whole gap, not just where a cap happened to
+// sweep in one specific scenario) and gates on an ABSOLUTE ZERO, not a
+// bucketed threshold like MAX_STRAY_PER_BUCKET: the gap must never contain
+// ink, full stop - there is no "acceptable noise" class for it the way there
+// is for a cap's own angular bulge past its arc's exact edge.
+function findGapResidue(fb: Uint8Array): { lx: number; ly: number; r: number }[] {
+    const found: { lx: number; ly: number; r: number }[] = [];
+    const gapOuter = bandInnerR(0) - 1;   // just inside band 0's own tolerance
+    const gapInner = bandOuterR(LAPS_MAX - 1) + 1; // just outside the innermost band's own tolerance
+    for (let ly = RING_CY - gapOuter - 1; ly <= RING_CY + gapOuter + 1; ly++) {
+        for (let lx = RING_CX - gapOuter - 1; lx <= RING_CX + gapOuter + 1; lx++) {
+            const dx = lx - RING_CX, dy = ly - RING_CY;
+            const r = Math.sqrt(dx * dx + dy * dy);
+            if (r <= gapInner || r >= gapOuter) continue;
+            if (isBlackAtLand(fb, lx, ly)) found.push({ lx, ly, r });
+        }
+    }
+    return found;
+}
+
 async function main() {
     console.log("=== reproduction + regression: coil band residue after the arc shrinks ===\n");
 
@@ -374,7 +407,7 @@ async function main() {
         check("switched into timer", dev.appCurrent() === APP_TIMER, `app_current()=${dev.appCurrent()}`);
 
         const sim = new DragSim();
-        console.log("-- drag 1: 0 -> 1260deg (past the 2-lap/720-tick ceiling, so it also exercises clamping) over 180 samples (a real drag, not one touch) --");
+        console.log("-- drag 1: 0 -> 1260deg (past the 2-lap/360-tick ceiling, so it also exercises clamping) over 180 samples (a real drag, not one touch) --");
         let t = dragTo(dev, sim, 0, 1260, 1000, 180);
         console.log("-- drag 2: a fresh touch-down, back down to 48deg (well under one lap) over 60 samples --");
         t = dragTo(dev, sim, 1260, 48, t + 200, 60);
@@ -402,9 +435,9 @@ async function main() {
         dev.appSwitch(APP_TIMER);
         dev.tick(1000);
 
-        console.log("\n-- drag to a value just past one lap boundary (~33 minutes), start RUNNING, let 90s pass --");
+        console.log("\n-- drag to a value just past one lap boundary, start RUNNING, let 90s pass --");
         const sim = new DragSim();
-        let t = dragTo(dev, sim, 0, 400, 1100, 30); // 400deg = 400 ticks = 2000s = 33:20 (TICKS_PER_LAP=360)
+        let t = dragTo(dev, sim, 0, 400, 1100, 30); // 400deg unwrapped, crosses the twelve o'clock branch cut once - exact resulting ticks read from sim.ticks below, not hand-computed (depends on hysteresis)
         pwrShortClick(dev, t + 50);
         t += 100;
 
@@ -431,6 +464,40 @@ async function main() {
             "no dense cluster of black residue in the coil after a smooth RUNNING countdown across a lap boundary",
             worst.count <= MAX_STRAY_PER_BUCKET,
             `worst bucket=${worst.key} count=${worst.count}, threshold=${MAX_STRAY_PER_BUCKET}, total stray=${stray.length}`,
+        );
+    }
+
+    // ---- scenario C: gap residue - a clean drag (no dropouts, no lifts)
+    // sweeping caps through a wide range of angles must never leave a black
+    // pixel in the white gap between the two bands - see findGapResidue()'s
+    // own header comment for the mechanism this reproduces. Deliberately a
+    // CLEAN drag (a plain mouse-style touch stream, same as dragTo() used
+    // everywhere else in this file): the owner's report reproduced this way
+    // directly, with no dropouts or touch imperfection involved at all,
+    // unlike the wrap-to-zero bug this file's sibling test
+    // (repro-timer-coil.ts's scenario 6) covers. -------------------------
+    {
+        const dev = await loadDevice();
+        dev.tick(0);
+        dev.appSwitch(APP_TIMER);
+        dev.tick(1000);
+
+        console.log("\n-- clean drag through almost two full laps, sweeping every cap angle at least once --");
+        const sim = new DragSim();
+        // 10 -> 700deg: crosses the lap boundary once and sweeps close to a
+        // full second lap besides, the same wide angular coverage that
+        // found the original defect (a cap near 117deg left a permanently
+        // black pixel at radius 165.9 against this file's PREVIOUS 6px-band
+        // geometry's 163-167 gap).
+        dragTo(dev, sim, 10, 700, 1100, 400);
+
+        const fb = dev.fbBytes();
+        const gapResidue = findGapResidue(fb);
+        console.log(`    gap residue pixels=${gapResidue.length}${gapResidue.length > 0 ? " " + JSON.stringify(gapResidue.slice(0, 8)) : ""}`);
+        check(
+            "a clean drag through the coil leaves ZERO black pixels in the gap between bands",
+            gapResidue.length === 0,
+            `${gapResidue.length} pixel(s) found${gapResidue.length > 0 ? ", e.g. " + JSON.stringify(gapResidue[0]) : ""}`,
         );
     }
 

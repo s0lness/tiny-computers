@@ -1,29 +1,33 @@
 // repro-timer-coil: regression coverage for the coil redesign of the
 // timer's dial (firmware/apps/timer.c, "CORRECTED 2026-08-14: THE COIL",
-// and its same-day follow-up "30 MINUTES A LAP, TWO LAPS, A WIDER BAND").
-// Run with:
+// its same-day follow-up "30 MINUTES A LAP, TWO LAPS, A WIDER BAND", and
+// the later real-hardware pass "CORRECTED 2026-08-14 (AFTER REAL-HARDWARE
+// USE)" - 15 minutes a lap, the dropout-bridging fix, and the cap-clipping
+// fix). Run with:
 //
 //   bun run emulator/wasm/tests/repro-timer-coil.ts
 //
 // The coil replaced the old three-tier ring (5s/30s/1m steps at different
 // radii) with a flat 5s step everywhere and concentric bands wound inward,
-// then was revised the same day to a 30-minute lap / two-lap ceiling / a
-// doubled band width, and gained a shake-to-clear reaction. This file
-// exercises exactly the properties that are NEW rather than the ones the
-// ring already had (those stay covered by repro-ring-shrink-residue.ts,
-// itself updated for the coil, and the other repro-timer-*.ts files, which
-// this change did not touch the logic of):
+// was revised the same day to a 30-minute lap / two-lap ceiling / a doubled
+// band width, gained a shake-to-clear reaction, and was revised again after
+// real-hardware use to a 15-minute lap / 30-minute ceiling / a band width
+// doubled again. This file exercises exactly the properties that are NEW
+// rather than the ones the ring already had (those stay covered by
+// repro-ring-shrink-residue.ts, itself updated for the coil, and the other
+// repro-timer-*.ts files, which this change did not touch the logic of):
 //
 //   1. a drag that crosses twelve o'clock, forward then back by the same
 //      amount, lands on EXACTLY the value it started from - the branch-cut
 //      unwrap this file's header calls out as the mechanism, checked
 //      directly rather than trusted by inspection, since that branch cut
 //      "bit this project once already" (the ring-shrink-residue bug).
-//   2. direct pointing at six o'clock from zero sets exactly 15:00 (half of
-//      the current 30-minute lap) - the owner's own worked example was
-//      5:00 at the original 10-minute lap and no longer applies; see
-//      timer.c's header for why that is accepted, not a regression.
-//   3. the 60 minute ceiling: dragging well past it holds at exactly 60:00
+//   2. direct pointing at six o'clock from zero sets exactly 7:30 (half of
+//      the current 15-minute lap) - the owner's own worked example was
+//      5:00 at the original 10-minute lap, then 15:00 at the 30-minute
+//      lap, and now 7:30; see timer.c's header for why the worked example
+//      keeps moving with the lap length, not a regression.
+//   3. the 30 minute ceiling: dragging well past it holds at exactly 30:00
 //      with no overflow, and immediately resumes decreasing on a reversal
 //      (no dead zone).
 //   4. pause, then edit: touching the coil while paused edits the paused
@@ -35,6 +39,18 @@
 //      dismisses it and does not ALSO clear a second time on the same
 //      tick; shaking while RUNNING does nothing (a deliberate judgement
 //      call - see timer.c's own shake-clear branch for the reasoning).
+//   6. winding past a lap boundary under a REALISTIC, dropout-heavy touch
+//      stream (not a clean mouse drag) lands where the physical motion
+//      actually says, not near zero - the headless reproduction and
+//      regression check for the owner's "je n'arrive pas à enrouler
+//      l'anneau, ça recommence à zéro quand je passe 30min" report. A
+//      clean drag never reproduced this (scenario 1 above already proves
+//      the branch-cut math itself is correct), which is why this scenario
+//      drives emulator/src/touchsim.ts's TouchSim instead of a plain mouse
+//      drag - see timer.c's header, "CORRECTED 2026-08-14 (AFTER
+//      REAL-HARDWARE USE)", for the mechanism (a dropout-induced spurious
+//      touchPressed reseeding point_touch() mid-drag) and the fix
+//      (TOUCH_DROPOUT_GRACE_MS / is_genuine_new_press()).
 //
 // PLUS the two invariants firmware fuzzing already proved for the WHOLE
 // codebase (emulator/docs/findings-app-fuzzing.md, section 2) - checked
@@ -49,10 +65,12 @@
 // Every scenario below runs through tickChecked()/touchChecked(), a thin
 // wrapper around the raw device calls that snapshots the framebuffer before
 // and the push list + framebuffer after EVERY tick, so these two invariants
-// are asserted continuously across all five scenarios' drags, points,
+// are asserted continuously across all six scenarios' drags, points,
 // pauses, resumes and shakes - not just at a few hand-picked moments.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { TouchSim } from "../../src/touchsim";
+import { TOUCHSIM_DEFAULTS } from "../../src/constants";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 
@@ -392,14 +410,15 @@ async function testBranchCutRoundTrip() {
 }
 
 // ---------------------------------------------------------------------
-// 2. Direct pointing at six o'clock from zero sets exactly 15:00 - the
-//    owner's own worked example was 5:00 at the original 10-minute lap
-//    length; at the current 30-minute lap, six o'clock (half a turn) is
-//    half of 30:00, i.e. 15:00 - see timer.c's header, "First, six o'clock
-//    is now 15:00, not 5:00", for why that changed and is accepted.
+// 2. Direct pointing at six o'clock from zero sets exactly 7:30 - the
+//    owner's own worked example was 5:00 at the original 10-minute lap,
+//    then 15:00 at the 30-minute lap, and is now 7:30 at the current
+//    15-minute lap (six o'clock, half a turn, is half of 15:00) - see
+//    timer.c's header, "First, six o'clock is now 15:00, not 5:00", for
+//    why the worked example keeps moving with the lap length.
 // ---------------------------------------------------------------------
 async function testPointSixOClock() {
-    console.log("\n=== 2. pointing directly at six o'clock from zero sets exactly 15:00 ===\n");
+    console.log("\n=== 2. pointing directly at six o'clock from zero sets exactly 7:30 ===\n");
 
     const dev = await loadDevice();
     dev.appSwitch(APP_TIMER);
@@ -409,39 +428,40 @@ async function testPointSixOClock() {
     t = pwrShortClickChecked(dev, t + 50);
     const line = lastStartLine(dev);
     check(
-        "a single tap at six o'clock from zero starts at exactly 15:00",
-        line === "timer: start, 15:00\r\n",
+        "a single tap at six o'clock from zero starts at exactly 7:30",
+        line === "timer: start, 07:30\r\n",
         line,
     );
 }
 
 // ---------------------------------------------------------------------
-// 3. The 60 minute ceiling: dragging well past it holds at exactly 60:00,
+// 3. The 30 minute ceiling: dragging well past it holds at exactly 30:00,
 //    and reversing immediately resumes decreasing (no dead zone).
 // ---------------------------------------------------------------------
 async function testCeiling() {
-    console.log("\n=== 3. the 60 minute ceiling ===\n");
+    console.log("\n=== 3. the 30 minute ceiling ===\n");
 
     const dev = await loadDevice();
     dev.appSwitch(APP_TIMER);
     dev.tickChecked(1000);
 
-    // Two laps is the max (2 * 30:00 = 60:00); drag a good deal further
-    // than that (8 laps' worth) to prove it clamps rather than wrapping or
-    // overflowing.
+    // Two laps is the max (2 * 15:00 = 30:00); drag a good deal further
+    // than that (8 laps' worth, still 360 degrees per physical revolution -
+    // a lap's own DEGREE span is unaffected by TICKS_PER_LAP, only how many
+    // ticks fill it) to prove it clamps rather than wrapping or overflowing.
     let t = dragTo(dev, 0, 8 * 360, 1000, 240);
     t = pwrShortClickChecked(dev, t + 50);
     let line = lastStartLine(dev);
-    check("dragging well past two laps clamps at exactly 60:00", line === "timer: start, 60:00\r\n", line);
+    check("dragging well past two laps clamps at exactly 30:00", line === "timer: start, 30:00\r\n", line);
 
     // Pause it, touch to edit again (still at the ceiling), drag forward
-    // EVEN FURTHER, confirm it is still exactly 60:00 - the ceiling has to
+    // EVEN FURTHER, confirm it is still exactly 30:00 - the ceiling has to
     // hold from a paused-edit re-entry too, not just from a fresh SETTING.
     t = pwrShortClickChecked(dev, t + 500); // RUNNING -> PAUSED
     t = dragTo(dev, 8 * 360, 12 * 360, t + 100, 120);
     t = pwrShortClickChecked(dev, t + 50);
     line = lastStartLine(dev);
-    check("still exactly 60:00 after more forward dragging from an already-maxed paused edit", line === "timer: start, 60:00\r\n", line);
+    check("still exactly 30:00 after more forward dragging from an already-maxed paused edit", line === "timer: start, 30:00\r\n", line);
 
     // Now reverse a small amount from the ceiling and confirm it actually
     // decreases right away - no dead zone before the drag "catches up".
@@ -449,16 +469,18 @@ async function testCeiling() {
     dev2.appSwitch(APP_TIMER);
     dev2.tickChecked(1000);
     let t2 = dragTo(dev2, 0, 8 * 360, 1000, 240); // pinned at the ceiling
-    // Reverse by 30 degrees only (10 ticks = 50s) - small enough that a
-    // dead zone (the old single-ring drag's own risk, guarded against by
-    // clamping the ACCUMULATOR itself, not just the displayed value - see
-    // drag_touch()'s own comment) would leave this still reading 60:00.
+    // Reverse by 30 degrees only (15 ticks = 75s at TICKS_PER_LAP=180,
+    // SUPERSEDED FROM 30 ticks/150s at the previous 360-tick lap) - small
+    // enough that a dead zone (the old single-ring drag's own risk, guarded
+    // against by clamping the ACCUMULATOR itself, not just the displayed
+    // value - see drag_touch()'s own comment) would leave this still
+    // reading 30:00.
     t2 = dragTo(dev2, 8 * 360, 8 * 360 - 30, t2 + 100, 10);
     t2 = pwrShortClickChecked(dev2, t2 + 50);
     const line2 = lastStartLine(dev2);
     check(
-        "reversing 30deg off the ceiling immediately reads under 60:00 (no dead zone)",
-        line2 !== undefined && line2 !== "timer: start, 60:00\r\n",
+        "reversing 30deg off the ceiling immediately reads under 30:00 (no dead zone)",
+        line2 !== undefined && line2 !== "timer: start, 30:00\r\n",
         line2,
     );
 }
@@ -474,10 +496,10 @@ async function testPauseThenEdit() {
     dev.appSwitch(APP_TIMER);
     dev.tickChecked(1000);
 
-    let t = tapAt(dev, 30, 1000); // sub_lap_ticks_for_angle(30) = 30 ticks = 2:30
+    let t = tapAt(dev, 30, 1000); // sub_lap_ticks_for_angle(30) = 15 ticks = 1:15 (TICKS_PER_LAP=180)
     t = pwrShortClickChecked(dev, t + 50);
     const startLine = lastStartLine(dev);
-    check("started at 2:30 before pausing", startLine === "timer: start, 02:30\r\n", startLine);
+    check("started at 1:15 before pausing", startLine === "timer: start, 01:15\r\n", startLine);
 
     // Let a little real time pass while RUNNING, then pause.
     for (let i = 0; i < 20; i++) { t += 50; dev.tickChecked(t); }
@@ -499,14 +521,14 @@ async function testPauseThenEdit() {
     );
 
     // Confirm the edit is real by starting from it and reading the value
-    // back: sub_lap_ticks_for_angle(60) = 60 ticks = 5:00, and the lap the
-    // paused value carried (0, since 2:30 never left lap 0) must be
-    // preserved, matching point_touch()'s own contract.
+    // back: sub_lap_ticks_for_angle(60) = 30 ticks = 2:30 (TICKS_PER_LAP=180),
+    // and the lap the paused value carried (0, since 1:15 never left lap 0)
+    // must be preserved, matching point_touch()'s own contract.
     t = pwrShortClickChecked(dev, t + 50);
     const restartLine = lastStartLine(dev);
     check(
-        "starting after the pause-edit runs from the EDITED value (05:00), not the original 02:30",
-        restartLine === "timer: start, 05:00\r\n",
+        "starting after the pause-edit runs from the EDITED value (02:30), not the original 01:15",
+        restartLine === "timer: start, 02:30\r\n",
         restartLine,
     );
 
@@ -547,7 +569,7 @@ async function testShakeToClear() {
         dev.appSwitch(APP_TIMER);
         dev.tickChecked(1000);
 
-        let t = tapAt(dev, 30, 1000); // 30 ticks = 2:30, well short of starting it
+        let t = tapAt(dev, 30, 1000); // 15 ticks = 1:15 (TICKS_PER_LAP=180), well short of starting it
         const beforeShakeCount = dev.fwLogLines().length;
         t += 100;
         dev.shakeChecked(t);
@@ -555,7 +577,7 @@ async function testShakeToClear() {
         const clearLine = shakeLines.find((l) => l.startsWith("timer: shake cleared to 00:00"));
         check(
             "shaking while SETTING (not yet started) clears to 00:00",
-            clearLine === "timer: shake cleared to 00:00 (BOOT recalls 02:30)\r\n",
+            clearLine === "timer: shake cleared to 00:00 (BOOT recalls 01:15)\r\n",
             JSON.stringify(shakeLines),
         );
 
@@ -567,7 +589,7 @@ async function testShakeToClear() {
         t += 16;
         dev.tickChecked(t);
         const recallLine = dev.fwLogLines().find((l) => l.startsWith("timer: BOOT recalled "));
-        check("BOOT afterwards recalls the shaken-away 02:30 in one press", recallLine === "timer: BOOT recalled 02:30\r\n", recallLine);
+        check("BOOT afterwards recalls the shaken-away 01:15 in one press", recallLine === "timer: BOOT recalled 01:15\r\n", recallLine);
     }
 
     // ---- PAUSED: shake wipes to 00:00 even WITHOUT touching first - see
@@ -577,7 +599,7 @@ async function testShakeToClear() {
         dev.appSwitch(APP_TIMER);
         dev.tickChecked(1000);
 
-        let t = tapAt(dev, 60, 1000); // 60 ticks = 5:00
+        let t = tapAt(dev, 60, 1000); // 30 ticks = 2:30 (TICKS_PER_LAP=180)
         t = pwrShortClickChecked(dev, t + 50); // start
         for (let i = 0; i < 10; i++) { t += 50; dev.tickChecked(t); }
         t = pwrShortClickChecked(dev, t + 16); // pause
@@ -587,14 +609,14 @@ async function testShakeToClear() {
         dev.shakeChecked(t); // no touch at all before this - straight from PAUSED
         const shakeLines = dev.fwLogLines().slice(beforeShakeCount);
         const clearLine = shakeLines.find((l) => l.startsWith("timer: shake cleared to 00:00"));
-        // Clears back to the ORIGINALLY SET value (05:00), not the live
-        // paused remainder (a couple of seconds under 5:00 by now) - shake-
+        // Clears back to the ORIGINALLY SET value (02:30), not the live
+        // paused remainder (a couple of seconds under 2:30 by now) - shake-
         // clear reads s->setTicks, which RUNNING/PAUSED never modify, the
         // same field BOOT's own reset reads - see timer.c's shake-clear
         // branch and handle_alarm()'s identical pattern.
         check(
-            "shaking a PAUSED countdown with no prior touch also clears to 00:00, recalling the originally SET 05:00",
-            clearLine === "timer: shake cleared to 00:00 (BOOT recalls 05:00)\r\n",
+            "shaking a PAUSED countdown with no prior touch also clears to 00:00, recalling the originally SET 02:30",
+            clearLine === "timer: shake cleared to 00:00 (BOOT recalls 02:30)\r\n",
             JSON.stringify(shakeLines),
         );
 
@@ -687,14 +709,91 @@ async function testShakeToClear() {
     }
 }
 
+// ---------------------------------------------------------------------
+// 6. Winding past a lap boundary under a REALISTIC, dropout-heavy touch
+//    stream - the headless reproduction and regression check for "je
+//    n'arrive pas à enrouler l'anneau, ça recommence à zéro quand je passe
+//    30min" (now the 15-minute lap boundary). See this file's header for
+//    why a clean drag (scenario 1) cannot reproduce this and this scenario
+//    drives TouchSim instead.
+//
+// The physical path is fixed (20deg to 380deg - one full 360-degree
+// revolution past the starting point, crossing twelve o'clock exactly
+// once): a point_touch() at 20deg lands on sub_lap_ticks_for_angle(20) = 10
+// ticks, and one full revolution afterward adds exactly TICKS_PER_LAP (180)
+// more, landing on 190 ticks = 950s = 15:50 - computed once, independent of
+// however many dropouts land along the way, since a bridged dropout must
+// not change WHERE the drag ends up, only how it gets resolved frame to
+// frame. That expected value is asserted directly (not read from a clean-
+// drag baseline device) precisely because it does not depend on the
+// dropout pattern at all if the bridging fix is doing its job.
+//
+// TouchSim draws from Math.random() with no seed hook (see
+// repro-touch-dropout-stroke-start.ts's own header for the same caveat), so
+// this runs many trials and gates on a rate, not a single pass/fail -
+// measured directly (not merely reasoned about) at TOUCHSIM_DEFAULTS'
+// dropoutsPerSec (2/s, this device's own measured FT3168 rate while
+// drawing): 30/30 trials landed exactly on 15:50 across several runs of
+// this exact scenario. 80% leaves comfortable margin below that floor
+// while still failing hard if the bridging fix regresses.
+// ---------------------------------------------------------------------
+async function testDropoutBridging() {
+    console.log("\n=== 6. winding past a lap boundary under a dropout-heavy touch stream ===\n");
+
+    const FROM_DEG = 20, TO_DEG = 380; // one full revolution, crossing twelve o'clock once
+    const EXPECTED_LINE = "timer: start, 15:50\r\n"; // 10 + TICKS_PER_LAP(180) = 190 ticks = 950s
+
+    const TRIALS = 20;
+    let matched = 0;
+    for (let trial = 0; trial < TRIALS; trial++) {
+        const dev = await loadDevice();
+        dev.appSwitch(APP_TIMER);
+        dev.tickChecked(1000);
+
+        const sim = new TouchSim(
+            { ...TOUCHSIM_DEFAULTS, dropoutsEnabled: true, straysEnabled: false },
+            PANEL_W,
+            PANEL_H,
+        );
+        let t = 1000;
+        const STEP_MS = 1000 / TOUCHSIM_DEFAULTS.reportRateHz;
+        const STEPS = 200;
+        for (let i = 1; i <= STEPS; i++) {
+            const deg = FROM_DEG + (TO_DEG - FROM_DEG) * (i / STEPS);
+            const mod = ((deg % 360) + 360) % 360;
+            const [px, py] = panelTouchForAngle(mod);
+            sim.setPointer(true, px, py);
+            t += STEP_MS;
+            const report = sim.poll(t);
+            dev.touchChecked(report.fingers === 1, report.x, report.y, t);
+        }
+        sim.setPointer(false, 0, 0);
+        t += STEP_MS;
+        dev.touchChecked(false, 0, 0, t);
+
+        t = pwrShortClickChecked(dev, t + 50);
+        const line = lastStartLine(dev);
+        if (line === EXPECTED_LINE) matched++;
+    }
+
+    const rate = (matched / TRIALS) * 100;
+    console.log(`    ${matched}/${TRIALS} trials landed exactly on 15:50 (${rate.toFixed(0)}%)`);
+    check(
+        "winding past a lap boundary under realistic dropouts lands where the physical motion says, not near zero",
+        rate >= 80,
+        `${rate.toFixed(0)}% over ${TRIALS} trials, expected "${EXPECTED_LINE.trim()}"`,
+    );
+}
+
 async function main() {
-    console.log("=== timer coil redesign: branch cut, point gesture, ceiling, pause-then-edit, shake ===");
+    console.log("=== timer coil redesign: branch cut, point gesture, ceiling, pause-then-edit, shake, dropout bridging ===");
 
     await testBranchCutRoundTrip();
     await testPointSixOClock();
     await testCeiling();
     await testPauseThenEdit();
     await testShakeToClear();
+    await testDropoutBridging();
 
     console.log("\n=== invariants over all of the above: 8px rule + no pixels outside pushed rects ===");
     const byKind = new Map<string, number>();

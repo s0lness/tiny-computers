@@ -209,10 +209,11 @@ async function testAlarm() {
     dev.tick(t);
 
     console.log("-- drag the ring to the smallest settable value (one 5s tick) and start it --");
-    // timer.c's coil (2026-08-14 on) is a flat, one-degree-per-tick mapping
-    // (TICKS_PER_LAP=360 across a 360-degree lap): a tap at 1 degree rounds
-    // to sub-lap tick 1, i.e. TICK_STEP_S = 5 seconds - the fastest
-    // reachable route to ALARM. Updated from the old tiered ring's angle=2
+    // timer.c's coil is a flat step everywhere: a tap at 1 degree always
+    // rounds to sub-lap tick 1 (lroundf(1/360*TICKS_PER_LAP) = 1 at both
+    // 360 and the current 180), i.e. TICK_STEP_S = 5 seconds - the fastest
+    // reachable route to ALARM, unaffected by the real-hardware pass's
+    // TICKS_PER_LAP halving. Updated from the old tiered ring's angle=2
     // (which landed on tick slot 0 there); at the coil's finer, flat
     // resolution angle=2 now rounds to tick 2 (10s) instead, so this uses
     // angle=1 to land on exactly one tick.
