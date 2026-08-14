@@ -265,20 +265,60 @@ static void draw_icon_chrono(int ox, int oy, uint16_t color) {
     // the seam), its straight edge now s_chronoWedgeWobble instead of a
     // constant ccx.
     {
-        int rowStart = 0;
-        while (rowStart < CHRONO_R_OUT && s_chronoHwInner[rowStart] <= 0) rowStart++;
-        int wedgeRows = CHRONO_R_OUT - rowStart;
-        int ringTop = ccy - CHRONO_R_OUT;
-        const int wedgeSeamOverlap = 1;
-        int wobCount = (int)(sizeof(s_chronoWedgeWobble) / sizeof(s_chronoWedgeWobble[0]));
-        if (wedgeRows > 0) {
-            int16_t leftX[CHRONO_R_OUT], rightX[CHRONO_R_OUT];
-            for (int i = 0; i < wedgeRows; i++) {
-                int wob = s_chronoWedgeWobble[i < wobCount ? i : wobCount - 1];
-                leftX[i] = (int16_t)(ccx + wob);
-                rightX[i] = (int16_t)(ccx + s_chronoHwInner[rowStart + i] + wedgeSeamOverlap);
-            }
-            shapes_fill_between_curves_aa_land(ringTop + rowStart, wedgeRows, leftX, rightX, color);
+        // PAINTED, not filled. Owner, drawing the shape he wanted straight
+        // onto a magnified render: the L-shaped corner is "trop droite par
+        // rapport au reste du dessin", and his line shows the two edges
+        // bowing and the inner corner rounding off.
+        //
+        // The row fill could not do that at any amplitude, for the reason
+        // recorded above s_chronoWedgeWobble: integer columns, no sub-pixel
+        // edge, every deviation quantises into a staircase. So the wedge is
+        // now swept with the float capsule primitive instead, the same brush
+        // sketch.c draws with. Capsules from the apex out to the rim, one per
+        // small angular step, merged by MIN composition into one mass.
+        //
+        // Three things fall out of that and all three are the point. Every
+        // edge is genuinely anti-aliased, because the capsule is. The inner
+        // corner is round by construction, since it is the apex cap. And the
+        // radial edges can bow, because nothing here is quantised to a
+        // column any more.
+        //
+        // Cost is about ninety capsule calls, paid once when the menu opens,
+        // not per frame.
+        const float wedgeR = (float)CHRONO_R_IN + 1.0f; // +1: the same seam overlap the row fill needed
+        const float apexR = 4.0f;   // rounds the inner corner
+        const float rimR = 1.6f;    // keeps the swept edge solid between steps
+        const int wedgeSteps = 90;
+        for (int i = 0; i <= wedgeSteps; i++) {
+            float t = (float)i / (float)wedgeSteps;      // 0 at 12 o'clock, 1 at 3 o'clock
+            float a = t * 90.0f * 3.14159265f / 180.0f;
+            float x1 = (float)ccx + wedgeR * sinf(a);
+            float y1 = (float)ccy - wedgeR * cosf(a);
+            shapes_fill_capsule_aa_land((float)ccx, (float)ccy, apexR, x1, y1, rimR, color);
+        }
+
+        // The two radial edges, bowed outward. Kept as a separate pass on
+        // purpose: an earlier attempt bowed the sweep itself by rotating each
+        // capsule, which needed the rotation to change sign at the midpoint
+        // and therefore left an eight degree wedge with no capsule in it at
+        // all. Filling and outlining are two jobs, and one primitive doing
+        // both is how that gap got in.
+        //
+        // A quadratic with its control point pushed perpendicular to the edge
+        // is the bow. MIN composition merges these into the swept mass, so
+        // the result is one piece of ink with slightly curved sides rather
+        // than a shape with a stroke drawn around it.
+        {
+            const float bowPx = 3.0f;  // THE KNOB for how much the sides curve
+            float rim = wedgeR;
+            // Edge A: apex straight up to 12 o'clock, bowing left.
+            shapes_fill_tapered_quad_aa_land((float)ccx, (float)ccy, apexR,
+                                             (float)ccx - bowPx, (float)ccy - rim * 0.5f,
+                                             (float)ccx, (float)ccy - rim, rimR, color);
+            // Edge B: apex straight right to 3 o'clock, bowing down.
+            shapes_fill_tapered_quad_aa_land((float)ccx, (float)ccy, apexR,
+                                             (float)ccx + rim * 0.5f, (float)ccy + bowPx,
+                                             (float)ccx + rim, (float)ccy, rimR, color);
         }
     }
 
