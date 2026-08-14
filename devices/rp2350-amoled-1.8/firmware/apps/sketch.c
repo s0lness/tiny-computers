@@ -266,6 +266,20 @@ typedef struct {
     // as struct fields (rather than dropped) because they are exactly the
     // "the counters" the porting brief named, and they cost 16 bytes.
     uint32_t glitches, dropouts, strays, splits;
+
+#if TOUCH_POLL_SELFTEST
+    // TEMPORARY: the app-side stage of the touch pipeline diagnostic (see
+    // sensors.h's sketch_touch_diag_t). Every sample this app's drain loop
+    // sees passes through here in order, so a live incident shows exactly
+    // where the count stops growing: drained (came out of sensors_touch_
+    // next() at all) -> haveTouch (fingers != 0) -> newReport (coordinates
+    // actually moved) -> pendingStart (armed the two-report start check) ->
+    // strokeStarted (persistence completed, ink should now be landing).
+    // Gated, unlike the four counters above, because these are new state
+    // added for this investigation specifically and must not ship.
+    uint32_t diagDrained, diagHaveTouch, diagNewReport, diagPendingStart;
+    uint32_t diagStrokeStarted, diagStrokeEnded;
+#endif
 } sketch_state_t;
 
 static sketch_state_t *st;
@@ -420,6 +434,9 @@ static void sketch_tick(const app_frame_t *f) {
     touch_sample_t smp;
     for (;;) {
         if (!sensors_touch_next(&smp)) break;
+#if TOUCH_POLL_SELFTEST
+        st->diagDrained++;
+#endif
 
         int x = 0, y = 0;
         bool haveTouch = (smp.fingers != 0);
@@ -427,6 +444,9 @@ static void sketch_tick(const app_frame_t *f) {
             x = smp.x; y = smp.y;
             if (x < 0) x = 0; else if (x > PANEL_W - 1) x = PANEL_W - 1;
             if (y < 0) y = 0; else if (y > PANEL_H - 1) y = PANEL_H - 1;
+#if TOUCH_POLL_SELFTEST
+            st->diagHaveTouch++;
+#endif
         }
 
         if (haveTouch) {
@@ -442,6 +462,9 @@ static void sketch_tick(const app_frame_t *f) {
             bool newReport = (x != st->lastReportX) || (y != st->lastReportY);
             st->lastReportX = x;
             st->lastReportY = y;
+#if TOUCH_POLL_SELFTEST
+            if (newReport) st->diagNewReport++;
+#endif
 
             if (!newReport) {
                 // Nothing new from the controller: leave all stroke state be.
@@ -457,6 +480,9 @@ static void sketch_tick(const app_frame_t *f) {
                 if (!st->pendingStart) {
                     st->pendingStart = true;
                     st->pendX = x; st->pendY = y;
+#if TOUCH_POLL_SELFTEST
+                    st->diagPendingStart++;
+#endif
                 } else {
                     st->pendingStart = false;
                     st->fingerDown = true;
@@ -467,6 +493,9 @@ static void sketch_tick(const app_frame_t *f) {
                     stroke_begin(st, gfx_fb, st->pendX, st->pendY, &dMinX, &dMinY, &dMaxX, &dMaxY);
                     st->lastRawX = x; st->lastRawY = y;
                     stroke_sample(st, gfx_fb, x, y, false, &dMinX, &dMinY, &dMaxX, &dMaxY);
+#if TOUCH_POLL_SELFTEST
+                    st->diagStrokeStarted++;
+#endif
                     printf("stroke start (%d,%d) t=%lu\r\n",
                            st->pendX, st->pendY, (unsigned long)nowMs);
                 }
@@ -525,6 +554,9 @@ static void sketch_tick(const app_frame_t *f) {
                 // exact same pixel still counts as a new report.
                 st->lastReportX = -1; st->lastReportY = -1;
                 stroke_end(st, gfx_fb, &dMinX, &dMinY, &dMaxX, &dMaxY);
+#if TOUCH_POLL_SELFTEST
+                st->diagStrokeEnded++;
+#endif
                 printf("stroke end t=%lu\r\n", (unsigned long)nowMs);
             } else {
                 // Still inside the grace window: keep the stroke open, and mark
@@ -567,3 +599,32 @@ const app_t g_sketchApp = {
     .landscape = false,     // the sketchpad draws portrait
     .wantsShake = true,     // shake-to-erase IS this app's identity
 };
+
+// TEMPORARY diagnostic accessor - see sensors.h's sketch_touch_diag_t.
+// `st` is arena-allocated (app.h) and NULL until sketch_enter() has run at
+// least once this boot; reads as all-zero rather than dereferencing NULL in
+// that case, same as before the sketchpad has ever been the current app.
+void sketch_debug_touch_diag(sketch_touch_diag_t *out) {
+#if TOUCH_POLL_SELFTEST
+    if (st == NULL) {
+        out->drained = out->haveTouch = out->newReport = out->pendingStart = 0;
+        out->strokeStarted = out->strokeEnded = 0;
+        out->glitches = out->dropouts = out->strays = out->splits = 0;
+        return;
+    }
+    out->drained = st->diagDrained;
+    out->haveTouch = st->diagHaveTouch;
+    out->newReport = st->diagNewReport;
+    out->pendingStart = st->diagPendingStart;
+    out->strokeStarted = st->diagStrokeStarted;
+    out->strokeEnded = st->diagStrokeEnded;
+    out->glitches = st->glitches;
+    out->dropouts = st->dropouts;
+    out->strays = st->strays;
+    out->splits = st->splits;
+#else
+    out->drained = out->haveTouch = out->newReport = out->pendingStart = 0;
+    out->strokeStarted = out->strokeEnded = 0;
+    out->glitches = out->dropouts = out->strays = out->splits = 0;
+#endif
+}

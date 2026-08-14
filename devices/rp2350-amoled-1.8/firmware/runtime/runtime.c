@@ -487,6 +487,56 @@ int main(void) {
                    // is what proves a truncation happened rather than nothing
                    // running at all.
                    (unsigned long)devlink_dropped_shots());
+
+#if TOUCH_POLL_SELFTEST
+            // TEMPORARY: the widened touch diagnostic. Three lines, one per
+            // stage of the pipeline, cumulative (not per-second deltas, like
+            // the shot-drops and reg10h fields above) - the question here is
+            // "does this count ever move at all", not steady-state rate, and
+            // a cumulative count survives being read only once at the end of
+            // a soak. All three accessors are unconditionally safe to call
+            // (sensors.h/sketch.c): they read as all-zero when the gate is
+            // off or before the relevant code has run, never garbage.
+            //
+            // Read them in order: touchdiag answers "does the FT3168 see the
+            // finger at all", independent of Touch_INT_PIN. pipeline answers
+            // "do samples - real or devlink-injected - make it through the
+            // two rings and their merge". sketch answers "what did the draw
+            // app's own stroke state machine do with what it received". The
+            // first stage where a count stops moving is where the chain
+            // actually breaks.
+            sensors_touch_diag_t td;
+            sensors_debug_touch_poll_selftest(&td);
+            printf("touchdiag polls=%lu ok=%lu fail=%lu | INT pin low=%lu high=%lu last=%s | "
+                   "fingers=%lu max=%lu xy=%lu,%lu | regs mode=0x%02lx power=0x%02lx intmode(0xA4)=0x%02lx "
+                   "regpolls=%lu regfails=%lu\r\n",
+                   (unsigned long)td.polls, (unsigned long)td.ok, (unsigned long)td.fail,
+                   (unsigned long)td.intLowCount, (unsigned long)td.intHighCount,
+                   td.intLastLevel ? "HIGH" : "LOW",
+                   (unsigned long)td.fingers, (unsigned long)td.maxFingers,
+                   (unsigned long)td.x, (unsigned long)td.y,
+                   (unsigned long)td.deviceModeReg, (unsigned long)td.powerModeReg, (unsigned long)td.intModeReg,
+                   (unsigned long)td.regPolls, (unsigned long)td.regFails);
+
+            sensors_touch_pipeline_diag_t pd;
+            sensors_debug_touch_pipeline(&pd);
+            printf("pipediag realPush=%lu injectPush=%lu injectDrop=%lu | merge calls=%lu yieldReal=%lu "
+                   "yieldInjected=%lu empty=%lu yieldFingers=%lu\r\n",
+                   (unsigned long)pd.realPushOk, (unsigned long)pd.injectPushOk, (unsigned long)pd.injectPushDropped,
+                   (unsigned long)pd.mergeCalls, (unsigned long)pd.mergeYieldReal,
+                   (unsigned long)pd.mergeYieldInjected, (unsigned long)pd.mergeEmpty,
+                   (unsigned long)pd.mergeYieldFingersNonzero);
+
+            sketch_touch_diag_t skd;
+            sketch_debug_touch_diag(&skd);
+            printf("sketchdiag drained=%lu haveTouch=%lu newReport=%lu pendingStart=%lu strokeStarted=%lu "
+                   "strokeEnded=%lu | glitches=%lu dropouts=%lu strays=%lu splits=%lu\r\n",
+                   (unsigned long)skd.drained, (unsigned long)skd.haveTouch, (unsigned long)skd.newReport,
+                   (unsigned long)skd.pendingStart, (unsigned long)skd.strokeStarted, (unsigned long)skd.strokeEnded,
+                   (unsigned long)skd.glitches, (unsigned long)skd.dropouts, (unsigned long)skd.strays,
+                   (unsigned long)skd.splits);
+#endif
+
             g_profLastCore1Loops = core1Loops;
             g_profLastStats = cur;
             g_profLoops = 0;

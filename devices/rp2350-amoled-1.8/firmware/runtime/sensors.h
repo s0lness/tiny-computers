@@ -308,6 +308,127 @@ uint32_t sensors_debug_core1_fault_cfsr(void);
 // firmware ships - see that block's comment).
 void sensors_debug_pmic_selftest(uint32_t *writes, uint32_t *fails);
 
+/* ---- TEMPORARY: touch poll self-test, for the "does the FT3168 see the
+ * finger at all" question -----------------------------------------------
+ *
+ * Declared here, not in sensors.c, so runtime.c (core0's profiler) can gate
+ * its own printf on the same macro sensors.c gates the polling on - one
+ * source of truth for "is this diagnostic build or a normal one", the same
+ * way both files already share every other public name in this header.
+ * MUST be 0 in anything shipped.
+ *
+ * Every measurement so far (touch reads=0, recoveries climbing every 5s)
+ * comes from a counter that only increments inside `if (intLow)` in
+ * core1_entry()'s loop - so all it can prove is that Touch_INT_PIN never
+ * reads low. It says nothing about whether the FT3168 itself ever notices a
+ * finger, because nothing ever asks it while the INT line is high.
+ *
+ * With TOUCH_POLL_SELFTEST set, core1 polls the controller directly, a few
+ * times a second, ignoring Touch_INT_PIN entirely, and separately reads back
+ * a few of its mode/config registers about once a second. Same discipline as
+ * PMIC_WRITE_SELFTEST (sensors.c): a compile-time gate, default 0, MUST be 0
+ * in anything shipped, and every read goes through this file's own
+ * timeout-bounded i2c1 calls (never DEV_I2C_*, never the SDK's blocking
+ * ones) so it cannot become the thing that wedges core1 while investigating
+ * why input does not work.
+ *
+ * `polls` is deliberately a separate counter from `fingers`: a `fingers==0`
+ * reading only means something once `polls` proves the loop actually ran.
+ * See docs/decisions/0004's "a counter that can only read zero is not a
+ * measurement" for why that distinction is the whole point.
+ */
+#ifndef TOUCH_POLL_SELFTEST
+#define TOUCH_POLL_SELFTEST 0
+#endif
+
+typedef struct {
+    uint32_t polls;         // diagnostic poll attempts (i2c to the controller), regardless of outcome
+    uint32_t ok;            // of those, how many completed without a timeout
+    uint32_t fail;          // of those, how many timed out (finger-count or xy read)
+    uint32_t fingers;       // last finger count read, snapshot
+    uint32_t maxFingers;    // highest finger count observed this boot, in case a snapshot missed a blip
+    uint32_t x, y;          // last reported coordinates, when fingers != 0
+    uint32_t intLowCount;   // of `polls`, how many sampled Touch_INT_PIN low at that instant
+    uint32_t intHighCount;  // of `polls`, how many sampled it high
+    uint32_t intLastLevel;  // most recent raw sample, 0 or 1 (1 = high)
+    uint32_t regPolls;      // register-readback attempts (~1/s), regardless of outcome
+    uint32_t regFails;      // of those, how many timed out
+    uint32_t deviceModeReg; // last read of 0x00 DEVICE_MODE (0 = normal working mode)
+    uint32_t powerModeReg;  // last read of 0xA5 REG_POWER_MODE (0 = active, per FT3168_Device_Mode)
+    uint32_t intModeReg;    // last read of 0xA4 - see sensors.c for why this address, specifically
+} sensors_touch_diag_t;
+
+// Reads back the touch poll self-test's published state - see the struct
+// above. Every field is 0 when the gate is off (mirrors sensors_debug_
+// pmic_selftest()'s own "reads as 0/0 in a build with the gate off").
+void sensors_debug_touch_poll_selftest(sensors_touch_diag_t *out);
+
+/* ---- TEMPORARY: touch pipeline diagnostics ------------------------------
+ *
+ * Added after the FT3168-level self-test above turned out not to be the
+ * whole story: injected touches (which enter downstream of core1 entirely,
+ * in devlink's own core0-owned ring, so they cannot be explained by
+ * anything at the controller or GPIO level) failed to draw too. That points
+ * at a shared stage further downstream: the real ring, the injection ring,
+ * their merge (sensors_touch_next()), or what an app does with what comes
+ * out. Every field below is a count at one specific stage, so "the chain
+ * breaks between the merge and the app" is readable from one profiler line
+ * instead of inferred from what did NOT print. Same gate as the struct
+ * above (TOUCH_POLL_SELFTEST); every field is 0 when it is off.
+ */
+typedef struct {
+    uint32_t realPushOk;             // touch_q_push() (core1) accepted a sample
+    uint32_t injectPushOk;           // sensors_inject_touch() (core0, devlink) accepted a sample
+    uint32_t injectPushDropped;      // ...and how many it rejected (ring full)
+    uint32_t mergeCalls;             // sensors_touch_next() call count
+    uint32_t mergeYieldReal;         // ...returned true, taken from the real ring
+    uint32_t mergeYieldInjected;     // ...returned true, taken from the injected ring
+    uint32_t mergeEmpty;             // ...returned false, both rings empty
+    uint32_t mergeYieldFingersNonzero; // of the yields (either ring), fingers != 0
+} sensors_touch_pipeline_diag_t;
+
+// Reads back the touch pipeline diagnostic's published state - see the
+// struct above. realPushDropped is deliberately not duplicated here: it is
+// already sensors_stats_t.touchQueueDrops (unconditional, not gated), so
+// read that alongside this rather than a second copy of the same counter.
+void sensors_debug_touch_pipeline(sensors_touch_pipeline_diag_t *out);
+
+/* ---- TEMPORARY: sketchpad-side touch diagnostics ------------------------
+ *
+ * The sketchpad is the one app that reads sensors_touch_next() itself
+ * (apps/sketch.c's own comment, and runtime_core.c's `g_currentApp !=
+ * &g_sketchApp` branch: the shared touchDown/X/Y resolver never runs while
+ * it is current), so the pipeline diagnostic above ends at the merge - what
+ * happens to a sample after that is entirely inside sketch.c's own stroke
+ * state machine. This struct is that last stage: what the app's drain loop
+ * actually saw and did with it. Declared here rather than a new header,
+ * alongside every other TOUCH_POLL_SELFTEST name, since it exists for the
+ * same investigation and shares the same gate; implemented in sketch.c
+ * (the only file with the state to report), not sensors.c.
+ */
+typedef struct {
+    uint32_t drained;         // samples pulled from sensors_touch_next() this run
+    uint32_t haveTouch;       // of those, fingers != 0
+    uint32_t newReport;       // of the haveTouch ones, coordinates differed from the last report
+    uint32_t pendingStart;    // newReport samples that (re)armed the two-report start check
+    uint32_t strokeStarted;   // fingerDown transitioned false->true (stroke_begin() ran)
+    uint32_t strokeEnded;     // fingerDown transitioned true->false (stroke_end() ran, real lift)
+    // Existing per-run counters (sketch_state_t's glitches/dropouts/strays/
+    // splits), surfaced here rather than duplicated - see that struct's own
+    // comment ("nothing currently reads these"). 0 if no app run has
+    // happened yet this boot (arena not yet allocated).
+    uint32_t glitches;
+    uint32_t dropouts;
+    uint32_t strays;
+    uint32_t splits;
+} sketch_touch_diag_t;
+
+// Reads back the sketchpad's touch diagnostic state - see the struct above.
+// Every field is 0 when TOUCH_POLL_SELFTEST is off, or before the sketchpad
+// has been entered at least once this boot (its counters live in the
+// per-run arena, like the rest of sketch_state_t - see app.h on why).
+void sketch_debug_touch_diag(sketch_touch_diag_t *out);
+
 /* ---- FT3168 has no pressure signal, measured -----------------------------
  *
  * Measured 2026-08-13: FT3168 registers 0x07 (FocalTech's per-touch "weight")

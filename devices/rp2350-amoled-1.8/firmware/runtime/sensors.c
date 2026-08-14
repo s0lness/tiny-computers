@@ -468,6 +468,52 @@ static bool touch_set_active_to(void) {
     return ok;
 }
 
+/* ---- TEMPORARY: touch pipeline diagnostics ------------------------------
+ *
+ * Widened diagnostic, added after the FT3168-level self-test above turned
+ * out not to be the whole story: injected touches (which enter downstream
+ * of core1, in devlink's own core0-owned ring - see the injection-ring
+ * banner below) also failed to draw, which points at something these two
+ * independent producers share once they are already samples - the merge in
+ * sensors_touch_next(), or whatever an app does with what it hands back.
+ * These counters make every stage between "a sample was produced" and "an
+ * app consumed one" separately readable, gated on the same TOUCH_POLL_
+ * SELFTEST flag as the controller-level diagnostic above (sensors.h), so one
+ * build answers both questions. Declared here, ahead of touch_q_push() and
+ * friends below, because those are this section's first writers.
+ */
+#if TOUCH_POLL_SELFTEST
+// core1-owned: bumped by touch_q_push() (below) on every accepted push into
+// the real ring, alongside the existing g_touchQueueDrops (sensors_stats_t)
+// on every rejected one - together they account for every touch_q_push()
+// call, so "the real ring never gets fed" is distinguishable from "it gets
+// fed and core0 just never drains it".
+static volatile uint32_t g_diagRealPushOk;
+
+// core0-owned: bumped by sensors_inject_touch() (public API, below) on
+// every accepted/rejected push into the injection ring. Unlike the real
+// ring's drops, nothing previously counted this at all - the call site
+// comment says "full: drop, agent can just send it again", uncounted - so
+// today this is the only way to see whether devlink's own injected samples
+// are even reaching the ring in the first place.
+static volatile uint32_t g_diagInjectPushOk;
+static volatile uint32_t g_diagInjectPushDropped;
+
+// core0-owned: bumped by sensors_touch_next() (public API, below), the
+// merge that is the sole reader of both rings above and the sole producer
+// every app (or, for every app but the sketchpad, the runtime's own
+// resolver) actually consumes. mergeCalls is the "did this even run" floor
+// under the other four, same principle as the controller-level diag's
+// `polls`. mergeYieldFingersNonzero counts, of whichever ring a call
+// yielded from, how many carried an actual finger - the one number that
+// tells whether a real drawable sample ever reaches an app's tick().
+static volatile uint32_t g_diagMergeCalls;
+static volatile uint32_t g_diagMergeYieldReal;
+static volatile uint32_t g_diagMergeYieldInjected;
+static volatile uint32_t g_diagMergeEmpty;
+static volatile uint32_t g_diagMergeFingersNonzero;
+#endif // TOUCH_POLL_SELFTEST
+
 /* ---- the touch queue: core1 (producer) -> core0 (consumer) ------------
  *
  * A single-producer/single-reader ring, power-of-two sized so the index
@@ -503,6 +549,9 @@ static inline bool touch_q_push(const touch_sample_t *s) {
     g_touchQ[tail] = *s;
     __dmb();
     g_touchTail = next;
+#if TOUCH_POLL_SELFTEST
+    g_diagRealPushOk++;
+#endif
     return true;
 }
 
@@ -739,6 +788,101 @@ static void touch_recover_core1(void) {
     if (!touch_set_active_to()) g_touchTimeouts++;
     g_touchRecoveries++;
 }
+
+/* ---- TEMPORARY: touch poll self-test, core1 side ------------------------
+ *
+ * See sensors.h's TOUCH_POLL_SELFTEST comment for the question this
+ * answers. Polls the controller directly, ignoring Touch_INT_PIN, so a
+ * finger that the chip sees but never asserts INT for is still visible.
+ * Every i2c call here is one of this file's own bounded helpers
+ * (touch_read_fingers_to / touch_read_xy_to / i2c1_read_reg_n_to) -
+ * never DEV_I2C_*, never an SDK blocking call - same rule as everything
+ * else on core1's path.
+ */
+#if TOUCH_POLL_SELFTEST
+#define TOUCH_DIAG_POLL_MS     200  // 5/s: "a few times a second", per the ask
+#define TOUCH_DIAG_REG_POLL_MS 1000 // register readback is a snapshot, not a hot path
+
+// FT3168 register 0xA4. Not in this repo's vendor header (FT3168.h) or the
+// vendor .c file - grepped both, neither reads nor writes it, ever, at any
+// point in FT3168_Init(). Inferred from the FocalTech FT5x06/FT6336 family
+// register map, which every OTHER register address this codebase already
+// uses and has hardware-confirmed matches one for one: REG_MONITOR_MODE
+// (0x86) is that family's ID_G_CTRL, REG_MONITOR_TIME (0x87) is
+// ID_G_TIME_ENTER_MONITOR, FT3168_REG_PERIOD_ACTIVE (0x88, sensors.c) is
+// ID_G_PERIODACTIVE, and REG_POWER_MODE (0xA5) is ID_G_PMODE. In that same
+// family, 0xA4 is ID_G_MODE, the interrupt mode select: 0 = polling mode,
+// 1 = trigger (interrupt-on-change) mode. FT3168_Init() never writes it, so
+// whatever POR/reset left it at is what actually governs whether
+// Touch_INT_PIN can ever move - which is exactly the hypothesis this
+// diagnostic exists to test. Read-only here; nothing in this file writes it.
+#define FT3168_REG_INT_MODE_CANDIDATE 0xA4
+
+static volatile uint32_t g_diagPolls;
+static volatile uint32_t g_diagOk;
+static volatile uint32_t g_diagFail;
+static volatile uint32_t g_diagFingers;
+static volatile uint32_t g_diagMaxFingers;
+static volatile uint32_t g_diagX;
+static volatile uint32_t g_diagY;
+static volatile uint32_t g_diagIntLowCount;
+static volatile uint32_t g_diagIntHighCount;
+static volatile uint32_t g_diagIntLastLevel;
+static volatile uint32_t g_diagRegPolls;
+static volatile uint32_t g_diagRegFails;
+static volatile uint32_t g_diagDeviceModeReg;
+static volatile uint32_t g_diagPowerModeReg;
+static volatile uint32_t g_diagIntModeReg;
+
+static void touch_diag_poll_core1(uint32_t nowMs) {
+    static uint32_t lastPollMs = 0;
+    static uint32_t lastRegMs = 0;
+
+    if (nowMs - lastPollMs >= TOUCH_DIAG_POLL_MS) {
+        lastPollMs = nowMs;
+        g_diagPolls++;
+
+        // GPIO input registers are just memory (sensors.h's ownership-rule
+        // banner); this is not a second i2c1 access, just a level read, so
+        // sampling it here alongside the poll it correlates with is fine.
+        g_diagIntLastLevel = (uint32_t)(gpio_get(Touch_INT_PIN) ? 1u : 0u);
+        if (g_diagIntLastLevel) g_diagIntHighCount++; else g_diagIntLowCount++;
+
+        uint8_t fingers = 0;
+        bool ok = touch_read_fingers_to(&fingers);
+        if (ok) {
+            g_diagFingers = fingers;
+            if (fingers > g_diagMaxFingers) g_diagMaxFingers = fingers;
+            if (fingers != 0) {
+                uint16_t x = 0, y = 0;
+                ok = touch_read_xy_to(&x, &y);
+                if (ok) {
+                    g_diagX = x;
+                    g_diagY = y;
+                }
+            }
+        }
+        if (ok) g_diagOk++; else g_diagFail++;
+    }
+
+    if (nowMs - lastRegMs >= TOUCH_DIAG_REG_POLL_MS) {
+        lastRegMs = nowMs;
+        g_diagRegPolls++;
+
+        uint8_t dm = 0, pm = 0, im = 0;
+        bool ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, 0x00, &dm, 1);
+        ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, REG_POWER_MODE, &pm, 1) && ok;
+        ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, FT3168_REG_INT_MODE_CANDIDATE, &im, 1) && ok;
+        if (ok) {
+            g_diagDeviceModeReg = dm;
+            g_diagPowerModeReg = pm;
+            g_diagIntModeReg = im;
+        } else {
+            g_diagRegFails++;
+        }
+    }
+}
+#endif // TOUCH_POLL_SELFTEST
 
 /* ---- IMU: shake-to-erase, core1 side ------------------------------------
  *
@@ -1037,6 +1181,15 @@ static void core1_entry(void) {
             touch_recover_core1();
         }
 
+#if TOUCH_POLL_SELFTEST
+        // Deliberately additive, not a replacement for the intLow-gated
+        // block above: this is what proves or disproves that the gate
+        // itself is the problem. Both can safely issue i2c1 traffic in the
+        // same loop pass because core1 is single-threaded - there is only
+        // ever one transaction in flight at a time, sequential, no race.
+        touch_diag_poll_core1(nowMs);
+#endif
+
         imu_poll_core1(nowMs);
         pmic_poll_core1(nowMs);
 #if PMIC_WRITE_SELFTEST
@@ -1054,16 +1207,42 @@ bool sensors_touch_next(touch_sample_t *out) {
     touch_sample_t realHead, injHead;
     bool haveReal = touch_q_peek(&realHead);
     bool haveInj = inject_q_peek(&injHead);
-    if (!haveReal && !haveInj) return false;
+    if (!haveReal && !haveInj) {
+#if TOUCH_POLL_SELFTEST
+        g_diagMergeCalls++;
+        g_diagMergeEmpty++;
+#endif
+        return false;
+    }
 
     // See the injection-ring banner above for the tie-break rule.
     bool takeInj = haveInj && (!haveReal || (int32_t)(injHead.tMs - realHead.tMs) <= 0);
-    return takeInj ? inject_q_pop(out) : touch_q_pop(out);
+    bool ok = takeInj ? inject_q_pop(out) : touch_q_pop(out);
+#if TOUCH_POLL_SELFTEST
+    g_diagMergeCalls++;
+    if (ok) {
+        if (takeInj) g_diagMergeYieldInjected++; else g_diagMergeYieldReal++;
+        if (out->fingers != 0) g_diagMergeFingersNonzero++;
+    } else {
+        // peek said one ring was non-empty but the matching pop found it
+        // empty anyway: cannot happen for a single-producer/single-consumer
+        // ring (see this function's own banner), counted here rather than
+        // assumed away, so a violation of that invariant would be visible
+        // as a nonzero count instead of silently falling through as "empty".
+        g_diagMergeEmpty++;
+    }
+#endif
+    return ok;
 }
 
 void sensors_inject_touch(uint8_t fingers, uint16_t x, uint16_t y) {
     touch_sample_t s = { to_ms_since_boot(get_absolute_time()), fingers, x, y };
-    (void)inject_q_push(&s); // full: drop, agent can just send it again
+    bool ok = inject_q_push(&s);
+#if TOUCH_POLL_SELFTEST
+    if (ok) g_diagInjectPushOk++; else g_diagInjectPushDropped++;
+#else
+    (void)ok; // full: drop, agent can just send it again
+#endif
 }
 
 void sensors_set_finger_down(bool down) {
@@ -1319,4 +1498,69 @@ void sensors_start(void) {
 void sensors_debug_pmic_selftest(uint32_t *writes, uint32_t *fails) {
     *writes = g_selftestWrites;
     *fails = g_selftestFails;
+}
+
+// TEMPORARY diagnostic accessor for the touch poll self-test - see
+// sensors.h's TOUCH_POLL_SELFTEST comment. Reads as all-zero in a build
+// with the gate off, same discipline as sensors_debug_pmic_selftest()
+// above.
+void sensors_debug_touch_poll_selftest(sensors_touch_diag_t *out) {
+#if TOUCH_POLL_SELFTEST
+    out->polls = g_diagPolls;
+    out->ok = g_diagOk;
+    out->fail = g_diagFail;
+    out->fingers = g_diagFingers;
+    out->maxFingers = g_diagMaxFingers;
+    out->x = g_diagX;
+    out->y = g_diagY;
+    out->intLowCount = g_diagIntLowCount;
+    out->intHighCount = g_diagIntHighCount;
+    out->intLastLevel = g_diagIntLastLevel;
+    out->regPolls = g_diagRegPolls;
+    out->regFails = g_diagRegFails;
+    out->deviceModeReg = g_diagDeviceModeReg;
+    out->powerModeReg = g_diagPowerModeReg;
+    out->intModeReg = g_diagIntModeReg;
+#else
+    out->polls = 0;
+    out->ok = 0;
+    out->fail = 0;
+    out->fingers = 0;
+    out->maxFingers = 0;
+    out->x = 0;
+    out->y = 0;
+    out->intLowCount = 0;
+    out->intHighCount = 0;
+    out->intLastLevel = 0;
+    out->regPolls = 0;
+    out->regFails = 0;
+    out->deviceModeReg = 0;
+    out->powerModeReg = 0;
+    out->intModeReg = 0;
+#endif
+}
+
+// TEMPORARY diagnostic accessor for the touch pipeline diagnostic - see
+// sensors.h's sensors_touch_pipeline_diag_t comment. Reads as all-zero in a
+// build with the gate off.
+void sensors_debug_touch_pipeline(sensors_touch_pipeline_diag_t *out) {
+#if TOUCH_POLL_SELFTEST
+    out->realPushOk = g_diagRealPushOk;
+    out->injectPushOk = g_diagInjectPushOk;
+    out->injectPushDropped = g_diagInjectPushDropped;
+    out->mergeCalls = g_diagMergeCalls;
+    out->mergeYieldReal = g_diagMergeYieldReal;
+    out->mergeYieldInjected = g_diagMergeYieldInjected;
+    out->mergeEmpty = g_diagMergeEmpty;
+    out->mergeYieldFingersNonzero = g_diagMergeFingersNonzero;
+#else
+    out->realPushOk = 0;
+    out->injectPushOk = 0;
+    out->injectPushDropped = 0;
+    out->mergeCalls = 0;
+    out->mergeYieldReal = 0;
+    out->mergeYieldInjected = 0;
+    out->mergeEmpty = 0;
+    out->mergeYieldFingersNonzero = 0;
+#endif
 }
