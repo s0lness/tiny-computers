@@ -23,8 +23,8 @@
 // later call's angle range only gets smaller, so a sliver left just past
 // an old edge is stuck for good.
 //
-// UPDATED 2026-08-14 FOR THE COIL REDESIGN, TWICE THE SAME DAY. This test
-// is kept and extended, not replaced: the underlying defect class (a
+// UPDATED 2026-08-14 FOR THE COIL REDESIGN, SEVERAL TIMES THE SAME DAY. This
+// test is kept and extended, not replaced: the underlying defect class (a
 // rounded cap's own overshoot getting stranded by an incremental repaint
 // that does not account for it) is exactly what the coil's
 // update_ring_to() still has to get right, now PER BAND and with the added
@@ -32,16 +32,42 @@
 // function's own header comment). The original version of this file
 // mirrored timer.c's now-superseded three-tier ticks table (5s/30s/1m) and
 // a single ring's geometry (RING_CX/CY/RADIUS); the first coil rewrite
-// mirrored six 10-minute-lap bands; the current firmware (see timer.c's
-// header, "CORRECTED 2026-08-14 (LATER THE SAME DAY): 30 MINUTES A LAP,
-// TWO LAPS") is two 30-minute-lap bands, twice as thick, and this file's
-// own mirrors below are updated to match once more. What did NOT change
-// across any of these: the actual regression being guarded (no dense
-// cluster of leftover black pixels after the arc/coil moves), the "worst
-// 5-degree bucket" metric that told the reported bug (42) apart from
-// pre-existing rounding noise (2), and the two scenarios (a real multi-
-// sample drag up-then-down, and a smooth RUNNING countdown with no drag at
-// all).
+// mirrored six 10-minute-lap bands; a later pass mirrored two 30-minute-lap
+// bands, twice as thick; this file's own mirrors below are updated to match
+// once more.
+//
+// LATEST PASS: "un seul anneau" - a single ring, not two visibly separate
+// bands. The owner's own words: "on va faire un seul anneau qui s'enroule
+// sur lui-même et garde... la largeur de cet anneau [est] la largeur totale
+// des deux trucs aujourd'hui, inclus l'outline au milieu" - and, after an
+// intermediate reading (each pass thickening the ring) was tried and
+// corrected before it was ever built: "je ne suis pas sûr que tu doives
+// augmenter la largeur au deuxième passage... ça doit rester la même
+// largeur à chaque fois." What actually shipped (see timer.c's header,
+// "CORRECTED 2026-08-14 (STILL LATER THE SAME DAY)"): the SAME mechanism
+// this file has always mirrored - two annuli, wound inward, with an
+// unpainted band between them - just retuned so the two annuli are wider
+// (14px each, equal) and the unpainted band between them is much thinner
+// (4px, a "thin outline" rather than the previous pass's fat 8px gap),
+// while the ring's own total span (32px) and outer/inner radii (173/141)
+// stay exactly what they were. Because the mechanism itself never changed,
+// this file's own scanning logic (findStrayBlackPixels/findGapResidue)
+// needed no rewrite either - only the geometry MIRROR constants below move,
+// same as every earlier pass. A NEW scenario (D, at the end of this file) is
+// added for this pass specifically: the previous scenarios all guard
+// "nothing leaks", but nothing so far has proven that a one-lap coil and a
+// two-lap coil actually look DIFFERENT to begin with, which is the entire
+// point of two equal-width turns rather than one - see that scenario's own
+// header for what it measures and why (a radial ink profile, not a single
+// thickness number, since a thickness comparison across turns of EQUAL
+// width would trivially show nothing).
+//
+// What did NOT change across any of these passes: the actual regression
+// being guarded (no dense cluster of leftover black pixels after the
+// arc/coil moves), the "worst 5-degree bucket" metric that told the
+// reported bug (42) apart from pre-existing rounding noise (2), and the two
+// original scenarios (a real multi-sample drag up-then-down, and a smooth
+// RUNNING countdown with no drag at all).
 //
 // This loads the REAL firmware compiled to wasm (emulator/wasm/dist/emu.wasm,
 // built by emulator/wasm/build.ts) and drives it through emu_tick() with a
@@ -67,9 +93,15 @@ const RING_CX = 224, RING_CY = 184;
 const DEG2RAD = Math.PI / 180;
 
 const LAPS_MAX = 2;
-const BAND_THICK_PX = 12;  // SUPERSEDED FROM 6, 2026-08-14 real-hardware pass ("double the band again")
-const BAND_GAP_PX = 8;     // SUPERSEDED FROM 4, same pass
-const BAND_STRIDE_PX = BAND_THICK_PX + BAND_GAP_PX; // 20, SUPERSEDED FROM 10
+// RING_THICK_PX (the total 32px span) is UNCHANGED across this pass - only
+// how it is divided between "turn" and "outline" moves. BAND_GAP_PX is
+// timer.c's own named knob for the outline's weight (see that file's
+// header); BAND_THICK_PX is DERIVED from it exactly the way timer.c derives
+// it, not an independent number that could drift out of sync.
+const RING_THICK_PX = 32;
+const BAND_GAP_PX = 4;                                    // THE KNOB - SUPERSEDED FROM 8
+const BAND_THICK_PX = (RING_THICK_PX - BAND_GAP_PX) / LAPS_MAX; // 14, DERIVED - SUPERSEDED FROM 12
+const BAND_STRIDE_PX = BAND_THICK_PX + BAND_GAP_PX; // 18, SUPERSEDED FROM 20
 const RING_OUTER_R = 173;  // unchanged - see timer.c's "Ring geometry: the coil, CURRENT"
 
 function bandOuterR(b: number): number { return RING_OUTER_R - b * BAND_STRIDE_PX; }
@@ -146,9 +178,11 @@ class DragSim {
 
 // Generous angular tolerance for the caps' own intentional rounded bulge
 // past the arc's exact edge (see timer.c's CAP_SWEEP_MARGIN_DEG derivation,
-// ~3.5deg as of the 2026-08-14 real-hardware pass, SUPERSEDED FROM ~1.5deg):
-// rounded up further here since this is a black-box pixel scan, not the
-// firmware's own math.
+// ~4.5deg as of the single-ring merge pass, SUPERSEDED FROM ~3.5deg, itself
+// SUPERSEDED FROM ~1.5deg): rounded up further here since this is a
+// black-box pixel scan, not the firmware's own math. Still comfortably
+// above the firmware's own 4.5deg margin, so no change needed beyond the
+// comment.
 const CAP_BULGE_TOLERANCE_DEG = 6;
 
 // The worst single (band, 5-degree) bucket's stray-pixel count that the
@@ -498,6 +532,149 @@ async function main() {
             "a clean drag through the coil leaves ZERO black pixels in the gap between bands",
             gapResidue.length === 0,
             `${gapResidue.length} pixel(s) found${gapResidue.length > 0 ? ", e.g. " + JSON.stringify(gapResidue[0]) : ""}`,
+        );
+    }
+
+    // ---- scenario D: one lap and two laps must be DISTINGUISHABLE in the
+    // framebuffer - the entire point of "two equal-width turns nested
+    // inward, separated by a thin outline" rather than one wide band. THE
+    // MEASUREMENT CHANGED FROM AN EARLIER READING OF THIS TASK: a first
+    // draft would have measured overall painted THICKNESS to tell one lap
+    // apart from two, which was correct for a rejected design (the second
+    // lap thickening the ring) but is meaningless for what actually
+    // shipped, where every turn is the SAME width regardless of lap count -
+    // see timer.c's header, "WHAT ACTUALLY GETS BUILT". What genuinely
+    // differs is the RADIAL PROFILE: scanning straight down from the coil's
+    // own centre (landscape angle 180deg, 6 o'clock, dx=0 - chosen because
+    // neither cap, the fixed start cap at 0deg or a moving tip sitting well
+    // clear of 180deg in both scenarios below, reaches it, so every sample
+    // here comes from the plain per-row bar painter, not cap rasterisation),
+    // a coil that has wound exactly one lap paints ONE black run (band 0's
+    // own turn) with band 1's own turn still bare grey track; a coil that
+    // has wound well into its second lap paints TWO separate black runs
+    // (both turns), with the thin outline between them staying non-black -
+    // proving the outline genuinely separates two turns rather than
+    // rounding noise blurring one wide band into looking like two. -------
+    {
+        // (RING_CX, RING_CY + r) is exactly angleDeg=180 under timer.c's own
+        // phi_deg_at() convention (0 at 12 o'clock, clockwise): sin(180deg)
+        // is 0 and cos(180deg) is -1, so this reduces to the plain vertical
+        // line, mirrored generally here in case a future pass wants a
+        // different angle.
+        function radialProfile(fb: Uint8Array, angleDeg: number, rFrom: number, rTo: number): { r: number; black: boolean }[] {
+            const theta = angleDeg * DEG2RAD;
+            const out: { r: number; black: boolean }[] = [];
+            for (let r = rFrom; r <= rTo; r++) {
+                const lx = RING_CX + Math.round(r * Math.sin(theta));
+                const ly = RING_CY - Math.round(r * Math.cos(theta));
+                out.push({ r, black: isBlackAtLand(fb, lx, ly) });
+            }
+            return out;
+        }
+
+        // Contiguous runs of black===true, as [rStart, rEnd] inclusive - the
+        // shape a two-turn ring's ink should take at any angle both turns
+        // have reached: zero, one or two runs, never a single run spanning
+        // the whole 32px (which would mean the outline had vanished).
+        function blackRuns(profile: { r: number; black: boolean }[]): { rStart: number; rEnd: number }[] {
+            const runs: { rStart: number; rEnd: number }[] = [];
+            let open: { rStart: number; rEnd: number } | null = null;
+            for (const p of profile) {
+                if (p.black) {
+                    if (!open) open = { rStart: p.r, rEnd: p.r };
+                    else open.rEnd = p.r;
+                } else if (open) {
+                    runs.push(open);
+                    open = null;
+                }
+            }
+            if (open) runs.push(open);
+            return runs;
+        }
+
+        const outerR = bandOuterR(0);
+        const innerR = bandInnerR(LAPS_MAX - 1);
+        const SCAN_R_FROM = innerR - 3;
+        const SCAN_R_TO = outerR + 3;
+        const ANGLE = 180; // straight down - see this scenario's own header
+
+        // ONE LAP: fully wind band 0 (lap 1) and stop comfortably short of
+        // band 1 (lap 2) reaching 180deg - any ticks in
+        // [TICKS_PER_LAP, TICKS_PER_LAP + TICKS_PER_LAP/2) keeps fillDeg[1]
+        // under 180 (see fillDegsForTicks), so the exact commit point
+        // (subject to drag hysteresis) does not matter, only that it lands
+        // in that generous window.
+        const oneLap = await loadDevice();
+        oneLap.tick(0);
+        oneLap.appSwitch(APP_TIMER);
+        oneLap.tick(1000);
+        const oneSim = new DragSim();
+        dragTo(oneLap, oneSim, 0, 370, 1100, 200); // one lap (360deg) + a small margin
+        console.log(`\n-- scenario D, one-lap coil: ${oneSim.ticks} ticks (${(oneSim.ticks * TICK_STEP_S / 60).toFixed(2)} min) --`);
+        check(
+            "one-lap drag actually wound past one full lap, short of band 1 reaching 180deg",
+            oneSim.ticks >= TICKS_PER_LAP && oneSim.ticks < TICKS_PER_LAP + TICKS_PER_LAP / 2,
+            `ticks=${oneSim.ticks}`,
+        );
+        const oneRuns = blackRuns(radialProfile(oneLap.fbBytes(), ANGLE, SCAN_R_FROM, SCAN_R_TO));
+        console.log(`    radial profile runs (r=${SCAN_R_FROM}..${SCAN_R_TO} at angle ${ANGLE}deg): ${JSON.stringify(oneRuns)}`);
+        check(
+            "one lap paints EXACTLY ONE black run at this angle (band 0's own turn only)",
+            oneRuns.length === 1,
+            `runs=${JSON.stringify(oneRuns)}`,
+        );
+        if (oneRuns.length === 1) {
+            const mid = (oneRuns[0].rStart + oneRuns[0].rEnd) / 2;
+            check(
+                "and that run sits inside band 0's own radius range (the outer turn), not band 1's",
+                mid >= bandInnerR(0) - 2 && mid <= bandOuterR(0) + 2,
+                `run midpoint r=${mid}, band0=[${bandInnerR(0)},${bandOuterR(0)}]`,
+            );
+        }
+
+        // TWO LAPS: wind well into the second lap, comfortably past the
+        // point where band 1's own fillDeg reaches 180deg (needs
+        // within-lap-2 ticks > TICKS_PER_LAP/2 = 90).
+        const twoLap = await loadDevice();
+        twoLap.tick(0);
+        twoLap.appSwitch(APP_TIMER);
+        twoLap.tick(1000);
+        const twoSim = new DragSim();
+        dragTo(twoLap, twoSim, 0, 600, 1100, 300); // ~1.67 laps
+        console.log(`-- scenario D, two-lap coil: ${twoSim.ticks} ticks (${(twoSim.ticks * TICK_STEP_S / 60).toFixed(2)} min) --`);
+        check(
+            "two-lap drag actually wound past band 1's own 180deg point",
+            twoSim.ticks > TICKS_PER_LAP + TICKS_PER_LAP / 2,
+            `ticks=${twoSim.ticks}, need > ${TICKS_PER_LAP + TICKS_PER_LAP / 2}`,
+        );
+        const twoRuns = blackRuns(radialProfile(twoLap.fbBytes(), ANGLE, SCAN_R_FROM, SCAN_R_TO));
+        console.log(`    radial profile runs (r=${SCAN_R_FROM}..${SCAN_R_TO} at angle ${ANGLE}deg): ${JSON.stringify(twoRuns)}`);
+        check(
+            "two laps paint TWO separate black runs at this angle (both turns, outline still visible between them)",
+            twoRuns.length === 2,
+            `runs=${JSON.stringify(twoRuns)}`,
+        );
+        if (twoRuns.length === 2) {
+            const [inner, outer] = twoRuns[0].rStart < twoRuns[1].rStart ? [twoRuns[0], twoRuns[1]] : [twoRuns[1], twoRuns[0]];
+            const innerMid = (inner.rStart + inner.rEnd) / 2;
+            const outerMid = (outer.rStart + outer.rEnd) / 2;
+            check(
+                "the inner run sits in band 1's own range and the outer run in band 0's own range",
+                innerMid >= bandInnerR(1) - 2 && innerMid <= bandOuterR(1) + 2 &&
+                    outerMid >= bandInnerR(0) - 2 && outerMid <= bandOuterR(0) + 2,
+                `inner mid=${innerMid} band1=[${bandInnerR(1)},${bandOuterR(1)}], outer mid=${outerMid} band0=[${bandInnerR(0)},${bandOuterR(0)}]`,
+            );
+        }
+
+        // Sanity check the same conclusion holds at the cheap whole-frame
+        // level too, not just at one sampled angle: a one-lap and a
+        // two-lap coil must not hash identically.
+        const oneHash = Bun.hash(oneLap.fbBytes());
+        const twoHash = Bun.hash(twoLap.fbBytes());
+        check(
+            "a one-lap and a two-lap coil produce different framebuffers overall",
+            oneHash !== twoHash,
+            `oneHash=${oneHash} twoHash=${twoHash}`,
         );
     }
 

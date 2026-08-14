@@ -334,6 +334,83 @@
 // numbers change (TICKS_PER_LAP, the band thickness/gap, and the digit
 // metrics); nothing about the MECHANISM does - see "Ring geometry: the
 // coil" and the digit-layout section below for the reworked derivations.
+//
+// =========================================================================
+// CORRECTED 2026-08-14 (STILL LATER THE SAME DAY): ONE RING, NOT TWO BANDS
+// - AND CORRECTED A SECOND TIME, THE SAME DAY, ON HOW THE SECOND LAP READS.
+// =========================================================================
+//
+// The owner tested the two-band coil above on real hardware and it worked:
+// "c'est très très bien tel que c'est et là j'arrive bien à enrouler, ça
+// marche très bien." Winding, lap accumulation, dropout bridging, the
+// branch-cut handling, pause-then-edit and shake-to-clear all stay exactly
+// as they are - nothing in "Tick geometry: the coil, CURRENT" above, or in
+// point_touch()/drag_touch()/timer_tick() further down, changes because of
+// this section. This is a change to how the coil is PAINTED, never to what
+// it MEANS or how it responds to a finger.
+//
+// THE INSTRUCTION, verbatim: "on va faire un seul anneau qui s'enroule sur
+// lui-même et garde. en gros je veux que la largeur de cet anneau soit la
+// largeur totale des deux trucs aujourd'hui, inclus l'outline au milieu" -
+// one ring, its width equal to the two bands' combined width TODAY,
+// including the gap between them. Concretely: the ring's total radial span
+// stays 32px (2*BAND_THICK_PX + BAND_GAP_PX before this pass, 12+8+12), and
+// because that 32px span keeps sitting exactly where it already was,
+// RING_OUTER_R (173) and RING_INNER_R (141) are UNCHANGED - "the outer and
+// inner radii of the whole dial are unchanged" is satisfied by construction,
+// and the digit-layout section below (sized against RING_INNER_R) needed no
+// changes at all for this pass, unlike every earlier geometry change to
+// this file.
+//
+// FIRST READING, TRIED AND REJECTED THE SAME DAY: a first draft of this
+// section read "un seul anneau qui s'enroule sur lui-même" together with
+// the owner's OWN earlier framing of the idea, from before the two-band
+// version existed ("the ring should be thicker on the areas where we double
+// passed"), as "the first lap draws at partial thickness, the second lap
+// passing over the same ground thickens it to the full width." The owner
+// corrected that reading before it was implemented: "je ne suis pas sûr que
+// tu doives augmenter la largeur au deuxième passage. Au contraire je pense
+// que ça doit rester la même largeur à chaque fois" - every pass draws at
+// the SAME width; ground covered twice is not denser or thicker. This
+// section's own history is kept here, in prose only, as the record of a
+// reading that was corrected before it ever became code - unlike every
+// other "SUPERSEDED, kept verbatim" block elsewhere in this file, there is
+// no live version of it to retire, because it was never shipped.
+//
+// WHAT ACTUALLY GETS BUILT, combining the "one ring" sentence with the
+// correction: TWO LAPS, EQUAL WIDTH EACH, NESTED INWARD LIKE A COILED HOSE
+// - unchanged from the two-band coil's own geometry in every respect except
+// ONE: the boundary between them shrinks from a fat, clearly-separating gap
+// to a thin outline, both CONTAINED INSIDE the same 32px total the two
+// bands already occupied, per the owner's own "inclus l'outline au milieu."
+// That is, in fact, already exactly what band_outer_r()/band_inner_r() and
+// paint_band_row() below compute and paint - two annuli, wound inward, with
+// an unpainted band between them - the SAME mechanism the two-band coil
+// already used and the owner just finished winding successfully. Nothing
+// about that mechanism was ever the problem; only its PROPORTIONS were. So
+// this pass is a retuning of two constants, not a rewrite: BAND_THICK_PX
+// grows and BAND_GAP_PX shrinks, both keeping BAND_THICK_PX*2+BAND_GAP_PX
+// pinned at the ring's own unchanged 32px total - see RING_THICK_PX below,
+// which is now the one constant that pins the total, with BAND_THICK_PX
+// DERIVED from it and BAND_GAP_PX rather than hand-picked and separately
+// checked.
+//
+// THE ONE KNOB, NAMED FOR IF THIS READING IS ALSO WRONG: BAND_GAP_PX below
+// is the outline's weight - the whole of "how thin is thin". Turning it up
+// walks back toward today's fat, clearly-two-bands look; turning it down
+// risks the two turns visually merging into one undifferentiated block (and,
+// mechanically, risks the outline's realised width on some rows shrinking to
+// nothing under the same per-row lroundf noise that motivated BAND_GAP_PX's
+// own choice below - see that constant's comment). BAND_THICK_PX is NOT a
+// second knob to hand-tune: it is `#define`-derived from BAND_GAP_PX and
+// RING_THICK_PX so the two turns always sum back to the ring's own fixed
+// total, the same discipline RING_INNER_R already used to keep the ring's
+// outer/inner radii pinned regardless of how the span between them is
+// divided. band_outer_r()/band_inner_r()/band_centerline_r() (unchanged in
+// implementation, just fed the new constants) are the one place that reads
+// both, and are the function to touch if a future reading needs the two
+// turns to stop being equal width, rather than a formula living somewhere
+// else in this file working from stale assumptions.
 #include <math.h>
 #include <stdio.h>
 
@@ -556,7 +633,15 @@
  * ------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------
- * Ring geometry: the coil, CURRENT (2026-08-14, real-hardware pass).
+ * Ring geometry: the coil - SUPERSEDED 2026-08-14 (STILL LATER THE SAME
+ * DAY: single-ring merge, thin outline instead of a fat gap), kept verbatim
+ * as the record of the two-band, 12px-thick/8px-gap coil this project
+ * shipped and tested before the owner's "un seul anneau" instruction. See
+ * this file's header, "CORRECTED 2026-08-14 (STILL LATER THE SAME DAY):
+ * ONE RING, NOT TWO BANDS", for why: BAND_THICK_PX/BAND_GAP_PX below are
+ * retuned, not replaced - the mechanism (two annuli, wound inward, with an
+ * unpainted band between them) is UNCHANGED, only how much of the ring's
+ * fixed 32px total each of "turn" and "outline" gets.
  * "Double the width of the coil band again", the owner's own instruction
  * after using the 6px-band coil with a real finger - unlike the previous
  * doubling, this one does NOT come with more room freed by fewer laps
@@ -606,13 +691,68 @@
  * at every earlier size, and the 8px gap reads as an unambiguous boundary
  * even glanced at quickly.
  * ------------------------------------------------------------------- */
-#define BAND_THICK_PX      12                                     // SUPERSEDED FROM 6
-#define BAND_GAP_PX        8                                      // SUPERSEDED FROM 4
-#define BAND_STRIDE_PX     (BAND_THICK_PX + BAND_GAP_PX)          // 20, SUPERSEDED FROM 10
+/* ---------------------------------------------------------------------
+ * Ring geometry: the coil, CURRENT (2026-08-14, single-ring merge). Two
+ * turns, EQUAL width, wound inward, separated by a thin outline rather than
+ * the previous pass's fat gap - see this file's header for the correction
+ * that produced this and why BAND_GAP_PX (not BAND_THICK_PX) is the one
+ * knob to turn if this reading is also wrong.
+ *
+ * RING_THICK_PX = 32 pins the ring's TOTAL radial span, unchanged from what
+ * the two bands and their gap already occupied (2*12 + 8, the previous
+ * pass's own numbers) - this is what makes RING_OUTER_R/RING_INNER_R come
+ * out unchanged below, the owner's own "the outer and inner radii of the
+ * whole dial are unchanged" satisfied structurally rather than re-checked.
+ *
+ * BAND_GAP_PX = 4, THE KNOB, CHOSEN AND JUSTIFIED, NOT GUESSED. This is not
+ * a new number: it is this file's OWN previously-measured "real boundary,
+ * not a hairline, at a glance" value - see the six-band coil's own
+ * retained comment further up ("the 4px gap between the two bands is wide
+ * enough to read as a real boundary rather than a hairline"), from when
+ * BAND_GAP_PX was last 4 (at a 16px-total ring, i.e. 25% of the total
+ * span). Reused here UNCHANGED IN PIXELS rather than re-derived, which
+ * means it is now proportionally THINNER against the bigger 32px ring
+ * (4/32 = 12.5% of the span, half the previous proportion) - exactly the
+ * direction "a thin outline... rather than the fat 8px white gap" asks for,
+ * while staying an absolute pixel count this file has already put on this
+ * exact panel and confirmed legible, not a fresh guess at "thin enough to
+ * still show but not so thin it looks like today's design again." The
+ * alternative rejected: something even thinner (2px) has no such prior
+ * validation, and sits closer to the ~1px worst-case slack this file's own
+ * per-row lroundf rounding already produces (see the rounded-cap history
+ * above) - a 2px outline risks locally closing to nothing at the very rows
+ * where that rounding is least favourable, which is the "too thin and the
+ * two turns merge into one block" failure the correction explicitly warned
+ * against. 4px keeps a comfortable margin over that noise floor.
+ *
+ * BAND_THICK_PX is DERIVED, not hand-picked: (RING_THICK_PX - BAND_GAP_PX)
+ * / LAPS_MAX = (32 - 4) / 2 = 14 - the two turns always split whatever
+ * RING_THICK_PX leaves over once BAND_GAP_PX's own share is set aside, so
+ * they can never silently drift out of being equal width (the owner's own
+ * "chaque tour de largeur égale") and the ring's own total can never
+ * silently drift off 32px regardless of what BAND_GAP_PX is retuned to.
+ *
+ * RING_OUTER_R stays 173, RING_INNER_R = RING_OUTER_R - RING_THICK_PX = 141
+ * - both IDENTICAL to the two-band coil's own numbers, the direct
+ * consequence of RING_THICK_PX being pinned at what the old bands-plus-gap
+ * arithmetic already summed to (2*12 + 8 = 32, same as 2*14 + 4 = 32 - the
+ * total was never in question, only how it is divided).
+ *
+ * BAND_HALF_THICK_PX = 7, exact (BAND_THICK_PX is even): both turns are the
+ * same width for the first time since the two-band coil's own six-band
+ * predecessor, so - unlike the SUPERSEDED section above, where this was
+ * about to diverge per band under the rejected thickening reading - one
+ * shared half-thickness, and so one shared cap table, is correct again; see
+ * the cap section below, which needed no structural change for this pass.
+ * ------------------------------------------------------------------- */
+#define RING_THICK_PX      32                                     // total ring span, UNCHANGED from 2*12+8
+#define BAND_GAP_PX        4                                      // THE KNOB - outline weight; SUPERSEDED FROM 8
+#define BAND_THICK_PX      ((RING_THICK_PX - BAND_GAP_PX) / LAPS_MAX) // 14, DERIVED - SUPERSEDED FROM 12 (hand-picked)
+#define BAND_STRIDE_PX     (BAND_THICK_PX + BAND_GAP_PX)          // 18, SUPERSEDED FROM 20
 #define RING_OUTER_R       173
-#define RING_INNER_R       (RING_OUTER_R - LAPS_MAX * BAND_THICK_PX - (LAPS_MAX - 1) * BAND_GAP_PX) // 141, SUPERSEDED FROM 157
+#define RING_INNER_R       (RING_OUTER_R - RING_THICK_PX)         // 141, unchanged in VALUE from the previous pass
 #define RING_ROWS          (2 * RING_OUTER_R)                      // 346
-#define BAND_HALF_THICK_PX (BAND_THICK_PX / 2)                     // 6, exact (BAND_THICK_PX is even) - SUPERSEDED FROM 3
+#define BAND_HALF_THICK_PX (BAND_THICK_PX / 2)                     // 7, exact (BAND_THICK_PX is even) - SUPERSEDED FROM 6
 
 static inline float band_outer_r(int band) {
     return (float)RING_OUTER_R - (float)band * (float)BAND_STRIDE_PX;
@@ -1097,8 +1237,18 @@ static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
  * this file already calls "band X's own territory" at that row, because it
  * is being measured against the identical yardstick - see
  * draw_cap_row_clipped() below.
+ *
+ * ADDENDUM, 2026-08-14 (single-ring merge): this pass's own retune
+ * (BAND_GAP_PX down, BAND_THICK_PX derived - see this file's header and the
+ * "Ring geometry" section above) changes BAND_HALF_THICK_PX from 6 to 7 but
+ * keeps it the SAME for both bands, unlike a rejected earlier reading of
+ * the owner's instruction that would have given the two laps different
+ * thicknesses (see the header's "FIRST READING, TRIED AND REJECTED"). One
+ * shared s_capHw table, sized off one shared BAND_HALF_THICK_PX, is
+ * therefore still exactly correct here with no structural change needed -
+ * only the numbers CAP_TABLE_ROWS/s_capHw compute from move.
  * ------------------------------------------------------------------- */
-#define CAP_TABLE_ROWS (2 * BAND_HALF_THICK_PX) // 6, exact - BAND_HALF_THICK_PX is a
+#define CAP_TABLE_ROWS (2 * BAND_HALF_THICK_PX) // 14, exact - BAND_HALF_THICK_PX is a
                                                  // whole number this time (BAND_THICK_PX
                                                  // is even), so unlike the six-band
                                                  // coil's cramped 1.5px half-thickness
@@ -1200,21 +1350,28 @@ static void paint_ring_full(const float fillDeg[LAPS_MAX]) {
 // repaint that does not account for that overshoot leaves a stuck sliver of
 // stale ink behind it).
 //
-// RECOMPUTED 2026-08-14 (real-hardware pass) for this file's current
-// geometry (BAND_HALF_THICK_PX=6, smallest radius at the innermost band,
-// b=1: band_centerline_r(1) = 173 - 1*20 - 6 = 147 - SUPERSEDED FROM 160).
-// Same tangent-line bound as before, max half-angle = asin(BAND_HALF_
-// THICK_PX / radius), evaluated at the SMALLEST radius on purpose (asin
-// grows as radius shrinks for a fixed half-thickness, so the innermost band
-// is every band's worst case, and one shared conservative constant for all
-// bands is simpler and safer than one per band for a quantity this cheap to
-// over-provision): asin(6/147) = asin(0.04082) = 2.339 degrees - SUPERSEDED
-// FROM 1.074, roughly double, tracking BAND_HALF_THICK_PX's own doubling.
-// Not computed at runtime, same reason as before - asinf is not in this
-// project's emulator ABI (see emulator/wasm/shim/math.h's header comment) -
-// so this is again one more number computed once by reasoning. Rounded up
-// to 3.5 degrees (roughly 1.5x the analytic value, the same headroom
-// discipline every earlier pass of this constant used). Also worth noting:
+// RECOMPUTED 2026-08-14 (STILL LATER: single-ring merge, thin outline) for
+// this file's current geometry (BAND_HALF_THICK_PX=7, both bands equal
+// again - see this file's header for why the retuning that produced this
+// pass turns BAND_GAP_PX, not BAND_THICK_PX, so both bands stay the same
+// thickness and this margin needs computing only once, not per band;
+// smallest radius at the innermost band, b=1: band_centerline_r(1) =
+// 173 - 1*18 - 7 = 148 - SUPERSEDED FROM 147). Same tangent-line bound as
+// before, max half-angle = asin(BAND_HALF_THICK_PX / radius), evaluated at
+// the SMALLEST radius on purpose (asin grows as radius shrinks for a fixed
+// half-thickness, so the innermost band is every band's worst case, and one
+// shared conservative constant for all bands is simpler and safer than one
+// per band for a quantity this cheap to over-provision): asin(7/148) =
+// asin(0.04730) = 2.711 degrees - SUPERSEDED FROM 2.339, a small increase
+// tracking BAND_HALF_THICK_PX's own small increase (6 -> 7) at a nearly
+// unchanged radius (147 -> 148). Not computed at runtime, same reason as
+// before - asinf is not in this project's emulator ABI (see
+// emulator/wasm/shim/math.h's header comment) - so this is again one more
+// number computed once by reasoning. Rounded up to 4.5 degrees (roughly
+// 1.66x the analytic value, generously past the ~1.5x headroom discipline
+// every earlier pass of this constant used, since this pass touches the
+// margin for the first time alongside a real change to the outline it has
+// to sweep clear of). Also worth noting:
 // this margin's OWN job shrank with this pass's cap-clipping fix
 // (draw_cap_row_clipped(), see this file's header) - a cap can no longer
 // paint outside its own band's radius regardless of this margin, so
@@ -1227,7 +1384,7 @@ static void paint_ring_full(const float fillDeg[LAPS_MAX]) {
 // residue defect - see that file), which drives the same drag-up-then-down
 // and smooth-countdown scenarios the single ring's version did, now scanning
 // both bands.
-#define CAP_SWEEP_MARGIN_DEG 3.5f
+#define CAP_SWEEP_MARGIN_DEG 4.5f
 
 // Bounding landscape row range [*yLo, *yHi] that could contain any pixel,
 // AT THE GIVEN BAND'S OWN RADII, whose angle lies in [fromDeg, toDeg]
