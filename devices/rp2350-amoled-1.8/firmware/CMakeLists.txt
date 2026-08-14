@@ -174,6 +174,26 @@ pico_enable_stdio_uart(main 1)
 # today and removes the worst case for the one that does not.
 target_compile_definitions(main PRIVATE PICO_STDIO_USB_STDOUT_TIMEOUT_US=2000)
 
+# Touch sensitivity sweep knob (firmware/runtime/sensors.c's
+# FT3168_TOUCH_THRESHOLD comment: FocalTech FT5x06-family register 0x80,
+# ID_G_THGROUP, lower = more sensitive). Optional and off by default -
+# sensors.c's own #ifndef supplies the built-in starting value - so a
+# candidate can be tried with no source edit:
+#   cmake -S firmware -B firmware/build -DFT3168_TOUCH_THRESHOLD=20
+if(DEFINED FT3168_TOUCH_THRESHOLD)
+    target_compile_definitions(main PRIVATE FT3168_TOUCH_THRESHOLD=${FT3168_TOUCH_THRESHOLD})
+endif()
+
+# Touch pipeline diagnostics (sensors.h's TOUCH_POLL_SELFTEST comment).
+# Optional, off by default. Previously this only had one way to turn on:
+# hand-edit sensors.h's #define and remember to revert it before shipping -
+# exactly the kind of change a diff review can miss. A cmake flag removes
+# that risk entirely for the default build:
+#   cmake -S firmware -B firmware/build-diag -DTOUCH_POLL_SELFTEST=1
+if(DEFINED TOUCH_POLL_SELFTEST)
+    target_compile_definitions(main PRIVATE TOUCH_POLL_SELFTEST=${TOUCH_POLL_SELFTEST})
+endif()
+
 pico_add_extra_outputs(main)
 
 # Fail the build on a violation of tools/invariants (docs/decisions/0006):

@@ -356,6 +356,12 @@ typedef struct {
     uint32_t deviceModeReg; // last read of 0x00 DEVICE_MODE (0 = normal working mode)
     uint32_t powerModeReg;  // last read of 0xA5 REG_POWER_MODE (0 = active, per FT3168_Device_Mode)
     uint32_t intModeReg;    // last read of 0xA4 - see sensors.c for why this address, specifically
+    uint32_t thGroupReg;    // last read of 0x80 ID_G_THGROUP, the touch detection threshold -
+                             // see sensors.c's FT3168_REG_THGROUP comment. This is a live readback
+                             // of whatever touch_set_active()/touch_set_active_to() last wrote
+                             // (FT3168_TOUCH_THRESHOLD), confirming the write is still holding -
+                             // NOT the untouched power-on default, which only ever appears once,
+                             // in the one-time boot printf those two functions' write is guarded by.
 } sensors_touch_diag_t;
 
 // Reads back the touch poll self-test's published state - see the struct
@@ -410,7 +416,9 @@ typedef struct {
     uint32_t drained;         // samples pulled from sensors_touch_next() this run
     uint32_t haveTouch;       // of those, fingers != 0
     uint32_t newReport;       // of the haveTouch ones, coordinates differed from the last report
-    uint32_t pendingStart;    // newReport samples that (re)armed the two-report start check
+    uint32_t pendingStart;    // haveTouch samples that armed a new stroke-start candidate
+                               // (sketch.c's CONFIRM_MS; renamed from "two-report start check" once
+                               // a dropout mid-confirmation stopped being an instant kill)
     uint32_t strokeStarted;   // fingerDown transitioned false->true (stroke_begin() ran)
     uint32_t strokeEnded;     // fingerDown transitioned true->false (stroke_end() ran, real lift)
     // Existing per-run counters (sketch_state_t's glitches/dropouts/strays/

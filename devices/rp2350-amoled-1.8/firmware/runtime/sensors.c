@@ -50,6 +50,57 @@
 #define FT3168_REG_PERIOD_ACTIVE 0x88
 #define FT3168_PERIOD_MS         10
 
+// FT3168 register 0x80. Not in this repo's vendor header (FT3168.h) or the
+// vendor .c file - grepped both, neither reads nor writes it, ever, at any
+// point in FT3168_Init(). Same gap, and inferred the same way, as
+// FT3168_REG_INT_MODE_CANDIDATE (0xA4, further down this file): from the
+// FocalTech FT5x06/FT6336 family register map, which every OTHER register
+// address this codebase already uses (0x86, 0x87, 0x88, 0xA5) matches one
+// for one. Unlike 0xA4, this one is not just cross-referenced against an
+// online driver: the family datasheet itself was downloaded
+// (displayfuture.com/Display/datasheet/controller/FT5x06.pdf) and read with
+// pdftotext, the same "download the PDF and extract the tables as text"
+// approach sensors_request_poweroff()'s comment already used for the
+// AXP2101. Section 2.1.8 reads, verbatim: "Op,80h 7:0  ID_G_THGROUP  The
+// actual value will be 4 times of the register's value. Default:280/4" -
+// i.e. register default 70 (0x46), scaled 4x internally to an actual
+// threshold of 280. "This register describes valid touching detect
+// threshold": lower stored byte, lower threshold, more sensitive. Two
+// neighbours read back alongside it below, same datasheet section: 0x81
+// ID_G_THPEAK ("valid touching peak detect threshold", default 60) and 0x82
+// ID_G_THCAL ("threshold when calculating the focus of touching", default
+// 16). The FT3168 is not the FT5x06 itself (an AMOLED-generation part in the
+// same family, per FT3168.c's own register overlap with this exact
+// datasheet), so treat the *direction* (lower THGROUP = more sensitive) as
+// solid and the absolute default (70) as approximate for this specific chip
+// - which is exactly why FT3168_TOUCH_THRESHOLD below is a tunable, not a
+// hardcoded "correct" value.
+#define FT3168_REG_THGROUP 0x80
+#define FT3168_REG_THPEAK  0x81
+#define FT3168_REG_THCAL   0x82
+
+// The touch detection threshold this firmware actually asserts. Overridable
+// at build time (`cmake --build ... ` picks this up from a prior `cmake -S
+// firmware -B <dir> -DFT3168_TOUCH_THRESHOLD=N`) specifically so it can be
+// swept against the TOUCH_POLL_SELFTEST diagnostic's pendingStart/
+// strokeStarted ratio and strays count without editing this file for every
+// candidate - see docs/decisions for the measurement this was tuned against.
+//
+// 40 is the starting point, not a measured optimum: comfortably below the
+// FT5x06 family's documented default (70, see FT3168_REG_THGROUP above) so
+// it is a genuine sensitivity increase, and independently close to 40, the
+// value a real user of a different-but-related FocalTech part (DustinWatts/
+// FT6236, an Arduino library, `begin(40)`) reports "seems to be a good
+// number" by feel on real glass. Neither source is this exact chip on this
+// exact panel with this exact finger, which is the entire reason this is a
+// tunable rather than a constant: the right way to pick the final value is
+// to flash a few candidates and read the diagnostic, not to reason harder
+// about a register whose scaling on this specific part is inferred, not
+// measured.
+#ifndef FT3168_TOUCH_THRESHOLD
+#define FT3168_TOUCH_THRESHOLD 40
+#endif
+
 // Runs once, on core0, before multicore_launch_core1() - i.e. before any
 // contention over i2c1 can exist. Never call this after core1 has started;
 // touch_set_active_to() (below) is the timeout-guarded equivalent for use
@@ -61,6 +112,30 @@ static void touch_set_active(void) {
     DEV_I2C_Write_Byte(FT3168_I2C_ADDR, 0x00, 0x00);
     DEV_I2C_Write_Byte(FT3168_I2C_ADDR, REG_POWER_MODE, FT3168_POWER_ACTIVE);
     DEV_I2C_Write_Byte(FT3168_I2C_ADDR, FT3168_REG_PERIOD_ACTIVE, FT3168_PERIOD_MS);
+
+    // Touch sensitivity. FT3168_Init() (the vendor file, FT3168.c) never
+    // configured this - see FT3168_REG_THGROUP's comment above - so until
+    // now the chip ran on whatever its power-on default happened to be,
+    // unmeasured and unmentioned anywhere in this codebase. Read the three
+    // threshold-family registers back BEFORE writing anything and print
+    // them: this is the one point in this firmware's boot where the
+    // untouched hardware default is still visible, since every boot after
+    // this line runs shows this function's own write instead. Same
+    // "do not trust a write, read it back and print both values" discipline
+    // pmic_raise_poweroff_threshold() (above) already uses for AXP2101 0x27.
+    uint8_t thgroupBefore = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP);
+    uint8_t thpeak = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THPEAK);
+    uint8_t thcal = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THCAL);
+    printf("FT3168 thresholds before write: THGROUP(0x80)=0x%02X THPEAK(0x81)=0x%02X THCAL(0x82)=0x%02X\r\n",
+           thgroupBefore, thpeak, thcal);
+
+    DEV_I2C_Write_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP, (uint8_t)FT3168_TOUCH_THRESHOLD);
+    uint8_t thgroupAfter = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP);
+    printf("FT3168 reg 0x80 (THGROUP): before=0x%02X target=0x%02X after=0x%02X\r\n",
+           thgroupBefore, (uint8_t)FT3168_TOUCH_THRESHOLD, thgroupAfter);
+    if (thgroupAfter != (uint8_t)FT3168_TOUCH_THRESHOLD) {
+        printf("FT3168 reg 0x80: WRITE DID NOT TAKE\r\n");
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -460,11 +535,16 @@ static inline bool touch_read_xy_to(uint16_t *x, uint16_t *y) {
 
 // Timeout-guarded equivalent of touch_set_active() (above), for use after
 // sensors_start(). Never call the plain touch_set_active() past that point.
+// No read-back-and-printf here, unlike touch_set_active(): this runs on
+// core1 after an i2c1 bus recovery, and core1 may never printf (see this
+// file's ownership-rule banner in sensors.h) - it just reasserts the same
+// threshold byte touch_set_active() already logged once at boot.
 static bool touch_set_active_to(void) {
     bool ok = true;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, 0x00, 0x00) && ok;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, REG_POWER_MODE, (uint8_t)FT3168_POWER_ACTIVE) && ok;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, FT3168_REG_PERIOD_ACTIVE, FT3168_PERIOD_MS) && ok;
+    ok = i2c1_write_reg_to(FT3168_I2C_ADDR, FT3168_REG_THGROUP, (uint8_t)FT3168_TOUCH_THRESHOLD) && ok;
     return ok;
 }
 
@@ -833,6 +913,10 @@ static volatile uint32_t g_diagRegFails;
 static volatile uint32_t g_diagDeviceModeReg;
 static volatile uint32_t g_diagPowerModeReg;
 static volatile uint32_t g_diagIntModeReg;
+static volatile uint32_t g_diagThGroupReg; // 0x80 readback - confirms FT3168_TOUCH_THRESHOLD is
+                                            // still what the chip is actually running, not the
+                                            // untouched power-on default (see touch_set_active()'s
+                                            // one-time boot printf for that).
 
 static void touch_diag_poll_core1(uint32_t nowMs) {
     static uint32_t lastPollMs = 0;
@@ -869,14 +953,16 @@ static void touch_diag_poll_core1(uint32_t nowMs) {
         lastRegMs = nowMs;
         g_diagRegPolls++;
 
-        uint8_t dm = 0, pm = 0, im = 0;
+        uint8_t dm = 0, pm = 0, im = 0, th = 0;
         bool ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, 0x00, &dm, 1);
         ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, REG_POWER_MODE, &pm, 1) && ok;
         ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, FT3168_REG_INT_MODE_CANDIDATE, &im, 1) && ok;
+        ok = i2c1_read_reg_n_to(FT3168_I2C_ADDR, FT3168_REG_THGROUP, &th, 1) && ok;
         if (ok) {
             g_diagDeviceModeReg = dm;
             g_diagPowerModeReg = pm;
             g_diagIntModeReg = im;
+            g_diagThGroupReg = th;
         } else {
             g_diagRegFails++;
         }
@@ -1521,6 +1607,7 @@ void sensors_debug_touch_poll_selftest(sensors_touch_diag_t *out) {
     out->deviceModeReg = g_diagDeviceModeReg;
     out->powerModeReg = g_diagPowerModeReg;
     out->intModeReg = g_diagIntModeReg;
+    out->thGroupReg = g_diagThGroupReg;
 #else
     out->polls = 0;
     out->ok = 0;
@@ -1537,6 +1624,7 @@ void sensors_debug_touch_poll_selftest(sensors_touch_diag_t *out) {
     out->deviceModeReg = 0;
     out->powerModeReg = 0;
     out->intModeReg = 0;
+    out->thGroupReg = 0;
 #endif
 }
 

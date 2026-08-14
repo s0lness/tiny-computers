@@ -84,14 +84,50 @@
 #define MIN_JUMP_ALLOW_PX   40.0f
 #define MAX_JUMP_PX         150.0f
 
-// Ink is never laid down on the strength of a single report. A stray reading
-// (a lone contact where there is no finger, or a position that jumped further
-// than a finger could travel) is believed only once a second report agrees
-// with it to within this distance. A real touch always produces a run of
-// agreeing reports, so the only thing this refuses is a one-off, which is
-// exactly what a stray dot is. The cost is one report of latency (~17ms) at
-// the start of a stroke, and none at all during it.
+// A position that jumped further than a finger could travel is believed to
+// be the finger's real new spot, rather than noise, only once a second
+// report agrees with it to within this distance - see the jump/glitch/split
+// handling below (the `confirmed` check under `st->fingerDown`). This no
+// longer has anything to do with starting a stroke; see CONFIRM_MS below for
+// that rule, which used to be a stricter form of this same idea and was
+// split off once measurement showed why it needed different tuning.
 #define CONFIRM_PX 25.0f
+
+// Stroke-start confirmation: a stroke starts only once contact has
+// persisted, not on the strength of one report. "Persisted" is satisfied by
+// EITHER of two independent signals, because they answer two different
+// things a single report cannot tell apart:
+//   - a second report lands at a different position: the finger visibly
+//     moved, so this is obviously real. Confirms immediately, no latency
+//     added beyond the one report it took to see it (the original rule,
+//     unchanged).
+//   - CONFIRM_MS elapses since the first report while contact keeps being
+//     seen at least once every LIFT_DEBOUNCE_MS: the finger did not move,
+//     but it also never genuinely went away, which is what a stray never
+//     manages. This is the new half.
+//
+// Why the new half exists, measured on hardware 2026-08-14
+// (TOUCH_POLL_SELFTEST, a continuous real drawing session): 401 candidate
+// stroke starts (pendingStart) produced 14 confirmed strokes
+// (strokeStarted) - a 3.5 percent success rate - while dropouts=798 in the
+// same window. The old rule required the SECOND report to arrive before the
+// FT3168 dropped contact even once; the instant a candidate saw a single
+// zero-finger read, sketch_tick's haveTouch==false branch threw it away as
+// a stray, with none of the grace an already-started stroke gets from
+// LIFT_DEBOUNCE_MS for the exact same phenomenon. Given how often this
+// controller drops out mid-touch (not just mid-stroke), that killed nearly
+// every real touch before it had a chance to move. A one-report blip that
+// genuinely never comes back is still rejected as a stray, just after
+// LIFT_DEBOUNCE_MS of grace instead of instantly - free, since nothing is
+// drawn until a stroke actually starts.
+//
+// THE TRADE: this believes more candidates than before. A stray that
+// happens to read nonzero on and off for the whole grace window can now be
+// confirmed where the old rule could not; TOUCH_POLL_SELFTEST's `strays`
+// counter (read alongside `pendingStart` and `strokeStarted`) is what proves
+// whether that actually happens in practice, not reasoning about it in
+// advance.
+#define CONFIRM_MS 40u
 
 // Touch-stall recovery timeout. Unlike the rest of this block, nothing in
 // this file actually reads it: the FT3168 stall watchdog it used to gate
@@ -256,6 +292,9 @@ typedef struct {
     bool bridging;
     bool pendingStart;
     int pendX, pendY;
+    uint32_t pendStartMs;    // when this candidate first armed - CONFIRM_MS is measured from here
+    uint32_t pendLastTouchMs; // most recent haveTouch sample seen while pending - the dropout-grace
+                              // clock (mirrors lastSampleMs's role for an already-started stroke)
     bool haveCand;
     int candX, candY;
     int lastReportX, lastReportY;
@@ -466,40 +505,50 @@ static void sketch_tick(const app_frame_t *f) {
             if (newReport) st->diagNewReport++;
 #endif
 
-            if (!newReport) {
-                // Nothing new from the controller: leave all stroke state be.
-            } else if (!st->fingerDown) {
-                // A stroke starts only once contact has persisted for two
-                // reports, so a one-report blip leaves nothing behind.
-                // What makes a stray a stray is that it does not persist, not
-                // that it is far away. Requiring the two reports to agree on
-                // position instead broke fast strokes: consecutive reports of
-                // a quick flick are further apart than the agreement radius,
-                // so the stroke kept failing to start and left isolated dots
-                // where it briefly succeeded. Persistence alone is the test.
+            if (!st->fingerDown) {
+                // See CONFIRM_MS's comment (top of file) for the full
+                // reasoning and the measured 401->14 numbers behind this.
+                // Unlike the mid-stroke branch below, this one runs on every
+                // haveTouch sample while a candidate is pending, not just
+                // newReport ones: the persisted check needs wall-clock time
+                // to pass even while the controller keeps repeating the same
+                // coordinate (haveTouch far outnumbers newReport on this
+                // controller - measured 88977 against 1399 in one session -
+                // so gating on newReport alone would rarely let a stationary
+                // or dropout-interrupted touch confirm at all).
                 if (!st->pendingStart) {
                     st->pendingStart = true;
                     st->pendX = x; st->pendY = y;
+                    st->pendStartMs = nowMs;
+                    st->pendLastTouchMs = nowMs;
 #if TOUCH_POLL_SELFTEST
                     st->diagPendingStart++;
 #endif
                 } else {
-                    st->pendingStart = false;
-                    st->fingerDown = true;
-                    st->haveCand = false;
-                    st->lastSampleMs = nowMs;
-                    // Begin at the first report and immediately extend to this
-                    // one, so no travel is lost to the confirmation.
-                    stroke_begin(st, gfx_fb, st->pendX, st->pendY, &dMinX, &dMinY, &dMaxX, &dMaxY);
-                    st->lastRawX = x; st->lastRawY = y;
-                    stroke_sample(st, gfx_fb, x, y, false, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                    st->pendLastTouchMs = nowMs;
+                    bool persisted = (nowMs - st->pendStartMs) >= CONFIRM_MS;
+                    if (newReport || persisted) {
+                        st->pendingStart = false;
+                        st->fingerDown = true;
+                        st->haveCand = false;
+                        st->lastSampleMs = nowMs;
+                        // Begin at the first report and immediately extend to
+                        // this one, so no travel is lost to the confirmation.
+                        stroke_begin(st, gfx_fb, st->pendX, st->pendY, &dMinX, &dMinY, &dMaxX, &dMaxY);
+                        st->lastRawX = x; st->lastRawY = y;
+                        stroke_sample(st, gfx_fb, x, y, false, &dMinX, &dMinY, &dMaxX, &dMaxY);
 #if TOUCH_POLL_SELFTEST
-                    st->diagStrokeStarted++;
+                        st->diagStrokeStarted++;
 #endif
-                    printf("stroke start (%d,%d) t=%lu\r\n",
-                           st->pendX, st->pendY, (unsigned long)nowMs);
+                        printf("stroke start (%d,%d) t=%lu (%s)\r\n",
+                               st->pendX, st->pendY, (unsigned long)nowMs,
+                               newReport ? "moved" : "persisted");
+                    }
+                    // else: still waiting - pendingStart stays armed, and the
+                    // haveTouch==false branch below is what can still give up
+                    // on it, after LIFT_DEBOUNCE_MS of no contact at all.
                 }
-            } else {
+            } else if (newReport) {
                 float jx = (float)(x - st->lastRawX), jy = (float)(y - st->lastRawY);
                 float dtMs = (float)(nowMs - st->lastSampleMs);
                 float allow = MAX_SPEED_PX_PER_MS * dtMs;
@@ -536,12 +585,26 @@ static void sketch_tick(const app_frame_t *f) {
                     st->glitches++;
                 }
             }
-        } else if (st->pendingStart && !st->fingerDown) {
-            // Contact appeared for a single report and vanished. Nothing was
-            // drawn, which is the whole point of waiting for confirmation.
-            st->pendingStart = false;
-            st->lastReportX = -1; st->lastReportY = -1;
-            st->strays++;
+        } else if (!st->fingerDown) {
+            if (st->pendingStart) {
+                // Contact dropped while still confirming. The FT3168 does
+                // this constantly, mid-stroke as much as mid-confirmation
+                // (see dropouts, and CONFIRM_MS's comment for the measured
+                // 798-dropout session that motivated this) - so a candidate
+                // now gets exactly the grace an already-started stroke gets
+                // from LIFT_DEBOUNCE_MS, instead of being thrown away the
+                // instant a single zero-finger read arrives. Nothing was
+                // drawn yet either way, which is what makes the wait free.
+                uint32_t nowMs = smp.tMs;
+                if (nowMs - st->pendLastTouchMs >= LIFT_DEBOUNCE_MS) {
+                    st->pendingStart = false;
+                    st->lastReportX = -1; st->lastReportY = -1;
+                    st->strays++;
+                }
+                // else: within the grace window - keep pendingStart armed.
+                // The next haveTouch sample (moved or merely persisted, per
+                // the branch above) is what actually confirms it.
+            }
         } else if (st->fingerDown) {
             // No contact reported. This is either a real lift or the controller
             // briefly losing a fast-moving finger, and the two are

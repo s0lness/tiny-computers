@@ -509,14 +509,14 @@ int main(void) {
             sensors_debug_touch_poll_selftest(&td);
             printf("touchdiag polls=%lu ok=%lu fail=%lu | INT pin low=%lu high=%lu last=%s | "
                    "fingers=%lu max=%lu xy=%lu,%lu | regs mode=0x%02lx power=0x%02lx intmode(0xA4)=0x%02lx "
-                   "regpolls=%lu regfails=%lu\r\n",
+                   "thgroup(0x80)=0x%02lx regpolls=%lu regfails=%lu\r\n",
                    (unsigned long)td.polls, (unsigned long)td.ok, (unsigned long)td.fail,
                    (unsigned long)td.intLowCount, (unsigned long)td.intHighCount,
                    td.intLastLevel ? "HIGH" : "LOW",
                    (unsigned long)td.fingers, (unsigned long)td.maxFingers,
                    (unsigned long)td.x, (unsigned long)td.y,
                    (unsigned long)td.deviceModeReg, (unsigned long)td.powerModeReg, (unsigned long)td.intModeReg,
-                   (unsigned long)td.regPolls, (unsigned long)td.regFails);
+                   (unsigned long)td.thGroupReg, (unsigned long)td.regPolls, (unsigned long)td.regFails);
 
             sensors_touch_pipeline_diag_t pd;
             sensors_debug_touch_pipeline(&pd);
