@@ -152,6 +152,18 @@ const args = [
   // (emu_abi.h's "tunables" section) has nothing to build controls from
   // without this.
   "-DSKETCH_LIVE_TUNE=1",
+  // Extra flags from the environment, whitespace separated. This exists for
+  // firmware that carries a compile-time LAYOUT VARIANT the owner is meant
+  // to judge rather than a knob to be tuned - apps/four.c's
+  // FOUR_FULL_HEIGHT, the first user - so that rendering the alternative is
+  //
+  //   EMU_EXTRA_DEFINES=-DFOUR_FULL_HEIGHT=0 bun run emulator/wasm/build.ts
+  //
+  // rather than editing a #define, building, capturing, and remembering to
+  // put it back. It is deliberately NOT the tunables mechanism (emu_abi.h):
+  // that one is for values a running module can change, and a layout that
+  // decides the size of every rectangle on screen is not one of those.
+  ...(process.env.EMU_EXTRA_DEFINES ?? "").split(/\s+/).filter(Boolean),
   ...EMU_EXPORTS.map((name) => `-Wl,--export=${name}`),
   ...INCLUDES.flatMap((dir) => ["-I", dir]),
   ...SOURCES,

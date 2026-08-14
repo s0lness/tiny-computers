@@ -25,23 +25,34 @@
  * Three redundant cues, all of them outside the ~75px her thumb hides:
  *
  *   - THE CHUTE. A capsule (a stadium: rounded ends, radius = half its own
- *     width, so it has no corners at all) 48px wide runs the WHOLE height
- *     of the screen, from above the board to below it, tinted in a pale
- *     wash of whoever is about to play. Her thumb hides ~75px of a 362px
- *     shape, so most of it is always visible, above and below her hand.
+ *     width, so it has no corners at all) 58px wide runs the WHOLE height
+ *     of the screen, tinted in a pale wash of whoever is about to play. Her
+ *     thumb hides ~75px of a 364px shape, so most of it is always visible,
+ *     above and below her hand.
+ *   - THE ARROW, at the head of the chute, pointing the way the piece will
+ *     fall, in that player's full colour. The owner's own replacement for
+ *     the waiting piece that used to sit there: "on fait disparaitre la
+ *     balle mais on peut remplacer par un highlight de la colonne avec une
+ *     fleche dans la direction ou ca va tomber."
  *   - THE LANDING RING. The lowest empty hole of that column is drawn as a
  *     thick ring in the player's full colour: the outline of the piece that
  *     is about to be there. This is literally "ou le plot va tomber", and
  *     it is almost always below her thumb, since pieces stack from the
  *     bottom.
- *   - THE WAITING PIECE. A filled disc in the player's colour sits at the
- *     top of the chute, riding the column she is on. Its COLOUR is also
- *     the only thing that says whose turn it is (see section 3).
  *
- * A full column is said with the same vocabulary rather than a new one:
- * the chute washes grey, there is no landing ring (nothing will land), and
- * the waiting piece goes hollow. Filled means it will happen, hollow means
- * it will not. No words are involved.
+ * THE RING AND THE ARROW ARE NOT THE SAME CUE, which is worth saying
+ * because keeping two things that mean one thing is two things to keep in
+ * step. The arrow answers WHICH COLUMN AND WHICH WAY, from a fixed place at
+ * the head of the chute; the ring answers WHICH HOLE, and it is the only
+ * one of the two that moves as the column fills. On a six-row board the
+ * landing hole is genuinely not obvious - it is wherever the stack happens
+ * to have reached - so dropping the ring would lose information the arrow
+ * never carried.
+ *
+ * A full column is said with the same vocabulary rather than a new one: the
+ * chute washes grey, there is no landing ring (nothing will land), and the
+ * arrow keeps its shape but loses its colour. Colour means it will happen,
+ * grey means it will not. No words are involved.
  *
  * Tracking is immediate: any accepted touch sample repaints the two
  * affected columns in the same tick that saw it, never on a later frame.
@@ -80,6 +91,24 @@
  * again the moment its piece landed. Two people passing one small puck do
  * not have that, so it is now the single most important thing on screen and
  * three things say it at once.
+ *
+ * THE ARROW INHERITED THAT JOB WHEN THE WAITING PIECE WENT, and this is the
+ * part of "on fait disparaitre la balle" that is easy to get wrong. The
+ * piece was doing TWO things: showing where the next piece would go, which
+ * the arrow now does, and being the one continuously-present turn cue. The
+ * other two are not continuous - the slab tint is deliberately near
+ * invisible per pixel, and the hand-off's colour sweep lasts HANDOFF_MS and
+ * is gone. Delete the piece without replacing the second job and the steady
+ * state is left with a tint alone, which is exactly what this file already
+ * argued was not enough back when there was a machine to watch.
+ *
+ * So the arrow is drawn in the PLAYER'S OWN SATURATED COLOUR, at a size
+ * that reads at arm's length (about 40px across), it sits at the head of
+ * the chute whether or not anybody is touching the glass, and it keeps the
+ * old waiting piece's slow bob so that it is the one thing moving on an
+ * otherwise still screen. Steady state, hand-off long faded, nobody
+ * touching: a coloured arrow and a tinted board. That is the frame
+ * feature-four.ts photographs and the owner judges.
  *
  * Who won: the four in a row BREATHE - each winning piece pulses in size
  * and blooms a ring outward, in the winner's colour, forever until touched
@@ -265,58 +294,164 @@
 /* =====================================================================
  * Geometry, in LANDSCAPE coordinates (LAND_W x LAND_H = 448 x 368).
  *
- * Cells are square (50x50) so that the 8px gutter between neighbouring
- * holes is the same horizontally and vertically; an uneven gutter is the
- * first thing that makes a board of circles look drawn by accident. Seven
- * 50px columns is 350px of board on a 448px canvas, which leaves 49px of
- * paper either side - deliberately airy, and costing nothing in reach,
- * because the TOUCH columns are not the drawn ones (col_from_x() clamps, so
- * the outer columns own the margin beside them and there is no dead x on
- * the whole canvas).
+ * THE BOARD IS FULL WIDTH, EDGE TO EDGE. The owner, after playing it: "je
+ * pense que j'aimerais qu'elle prenne absolument tout l'ecran en largeur,
+ * et faire un test pour prendre tout l'ecran en hauteur aussi."
  *
- * The board sits low, leaving HOPPER_CY's band clear at the top for the
- * waiting piece. The waiting piece is a full-size disc, not a token: it is
- * the piece that is about to fall, and it should look like the thing it is
- * about to become.
+ * "TOUT L'ECRAN" IS THE VISIBLE SCREEN, NOT THE FRAMEBUFFER, and that
+ * distinction is the whole reason this block does its arithmetic on SAFE_*
+ * rather than on LAND_W/LAND_H. The framebuffer is the panel's full
+ * 368x448 and the firmware addresses all of it, but the case hides a band
+ * along every edge - found from a photograph of the real device, after the
+ * sketchpad's own palette shipped with its outer row and columns running
+ * under the plastic. gfx.h's PANEL_BEZEL_MARGIN_PX is that band, in one
+ * shared place; this file uses it and does not keep a second opinion about
+ * it. See that constant's own comment for why the number is deliberately
+ * rough and where to correct it.
+ *
+ * THE EMULATOR CANNOT SHOW THIS. It has no bezel, so a layout that bleeds
+ * to the framebuffer's edge looks perfect in every screenshot in this
+ * repository and loses its edges in a child's hands. That asymmetry is
+ * worse here than it was for the palette: a colour cell losing three pixels
+ * of its corner is ugly, but a COLUMN losing part of its width is a hit
+ * target that cannot be reached, and the outermost columns are the two a
+ * thumb already has the most trouble with.
+ *
+ * So: seven columns share the VISIBLE width, which makes a column CELL_W
+ * (61px at a 10px margin) against a child's ~75px fingertip (AGENTS.md).
+ * The column under the thumb is now narrower than the thumb, by more than
+ * before. Nothing about that is new in kind, it is worse in degree, and it
+ * is the reason the highlight and the arrow matter MORE after this change
+ * rather than less.
+ *
+ * FULL HEIGHT IS A COMPILE-TIME VARIANT, because he asked for it as an
+ * experiment ("faire un test pour") rather than as a decision, and the two
+ * versions have to be looked at side by side. Build the other one with:
+ *
+ *   EMU_EXTRA_DEFINES=-DFOUR_FULL_HEIGHT=0 bun run emulator/wasm/build.ts
+ *
+ * and render both with tools/preview-four.ts.
+ *
+ * WHY FULL HEIGHT IS THE DEFAULT, AND IT IS NOT A TASTE ARGUMENT. The holes
+ * are circles, so the gutter between two of them is the cell pitch minus
+ * the hole's diameter, and it is only even if the cells are square. The
+ * visible area is 428 x 348 at a 10px margin:
+ *
+ *   variant           cells      hole r   gutter h / v
+ *   ----------------  ---------  -------  ------------
+ *   full height       61 x 58      25       11 / 8
+ *   with a strip      61 x 49      21       19 / 7
+ *
+ * 428/7 = 61.1 and 348/6 = 58 are nearly the same number, and 61 against 49
+ * is not, so full width very nearly forces full height: the moment the
+ * board stops filling the height, its holes stop looking evenly spaced and
+ * start looking like a grid that was stretched. The bezel narrowed both
+ * numbers without changing that conclusion.
+ *
+ * THE WAITING PIECE IS GONE and an ARROW does its job (section 3). That is
+ * what makes full height possible at all: the strip at the top of the panel
+ * existed to hold a 42px disc, and nothing needs to sit outside the board
+ * any more.
  * ================================================================== */
+#ifndef FOUR_FULL_HEIGHT
+#define FOUR_FULL_HEIGHT 1
+#endif
+
 #define COLS 7
 #define ROWS 6
-#define CELL 50
 
-#define BOARD_X0 49   // landscape x of column 0's left edge
-#define BOARD_Y0 56   // landscape y of row 0's top edge (row 0 is the TOP row)
+/* The visible canvas: everything below is measured against THIS, never
+ * against LAND_W/LAND_H. One edit to gfx.h's PANEL_BEZEL_MARGIN_PX moves
+ * the whole layout, cells, holes, arrow and all, because nothing here is a
+ * literal that was computed by hand from a particular margin. */
+#define SAFE_X0 PANEL_BEZEL_MARGIN_PX
+#define SAFE_X1 (LAND_W - PANEL_BEZEL_MARGIN_PX)
+#define SAFE_Y0 PANEL_BEZEL_MARGIN_PX
+#define SAFE_Y1 (LAND_H - PANEL_BEZEL_MARGIN_PX)
+#define SAFE_W  (SAFE_X1 - SAFE_X0)
+#define SAFE_H  (SAFE_Y1 - SAFE_Y0)
 
-#define HOLE_R   21.0f  // a hole, and therefore a piece: 42px across, 8px of gutter
+// 428 / 7 = 61 with 1px over at a 10px margin. The remainder is split
+// either side rather than dumped on the last column, so the board stays
+// centred in what can be seen and no single column is a pixel wider than
+// its neighbours.
+#define CELL_W   (SAFE_W / COLS)
+#define BOARD_X0 (SAFE_X0 + (SAFE_W - COLS * CELL_W) / 2)
 
-// The slab: the board's own body, a rounded lozenge with the holes punched
-// out of it. SLAB_PAD is its rim beyond the cell grid.
-#define SLAB_PAD 6
-#define SLAB_X0  (BOARD_X0 - SLAB_PAD)
-#define SLAB_X1  (BOARD_X0 + COLS * CELL + SLAB_PAD)
-#define SLAB_Y0  (BOARD_Y0 - SLAB_PAD)
-#define SLAB_Y1  (BOARD_Y0 + ROWS * CELL + SLAB_PAD)
+// The hole, and therefore the piece. Derived from the tighter of the two
+// cell dimensions so that the gutter is never negative whatever the margin
+// turns out to be, minus 4 for the gutter itself.
+#define HOLE_R ((float)((CELL_W < CELL_H ? CELL_W : CELL_H)) / 2.0f - 4.0f)
+
+#if FOUR_FULL_HEIGHT
+  // 348 / 6 = 58 exactly at a 10px margin.
+  #define CELL_H    (SAFE_H / ROWS)
+  #define BOARD_Y0  (SAFE_Y0 + (SAFE_H - ROWS * CELL_H) / 2)
+  // The slab fills the VISIBLE area, corners and all. Its rounded corners
+  // are inside what can be seen, which is what keeps decision 0009's
+  // "lozenge, not a rectangle" true of the object a child actually looks
+  // at rather than of a shape hidden under the case.
+  #define SLAB_X0   SAFE_X0
+  #define SLAB_X1   SAFE_X1
+  #define SLAB_Y0   SAFE_Y0
+  #define SLAB_Y1   SAFE_Y1
+  // The arrow lives in the top hole, since there is nothing above the board
+  // any more. Sized to nearly fill it: 2*18 + 6.5 = 42.5 across against a
+  // 50px hole. It is the turn cue now (section 3), so it is sized to be
+  // read at arm's length rather than to be tidy.
+  #define ARROW_ROW 0
+  #define ARROW_CY  ((float)BOARD_Y0 + (float)CELL_H / 2.0f)
+  #define ARROW_HALF_W 18.0f
+  #define ARROW_HALF_H 13.0f
+  #define ARROW_STROKE 6.5f
+#else
+  // The board sits below a strip that holds the arrow, the way it used to
+  // hold the waiting piece - but a chevron is far shorter than a disc, so
+  // the strip is 48px rather than the 56 the piece needed.
+  #define ARROW_BAND 48
+  #define SLAB_PAD   6
+  #define BOARD_Y0   (SAFE_Y0 + ARROW_BAND)
+  #define CELL_H     ((SAFE_Y1 - BOARD_Y0 - SLAB_PAD) / ROWS)
+  #define SLAB_X0    SAFE_X0
+  #define SLAB_X1    SAFE_X1
+  #define SLAB_Y0    (BOARD_Y0 - SLAB_PAD)
+  #define SLAB_Y1    (BOARD_Y0 + ROWS * CELL_H + SLAB_PAD)
+  // -1: the arrow is above the board, in a band of its own, so it can never
+  // share a hole with the landing ring.
+  #define ARROW_ROW  (-1)
+  #define ARROW_CY   ((float)SAFE_Y0 + (float)ARROW_BAND / 2.0f)
+  #define ARROW_HALF_W 20.0f
+  #define ARROW_HALF_H 14.0f
+  #define ARROW_STROKE 7.0f
+#endif
+
 #define SLAB_CX  ((SLAB_X0 + SLAB_X1) / 2.0f)
 #define SLAB_CY  ((SLAB_Y0 + SLAB_Y1) / 2.0f)
 #define SLAB_HW  ((SLAB_X1 - SLAB_X0) / 2.0f)
 #define SLAB_HH  ((SLAB_Y1 - SLAB_Y0) / 2.0f)
-#define SLAB_R   34.0f  // a third of the short side: a lozenge, not a filed square
+#define SLAB_R   34.0f  // a lozenge, not a filed square
 
-// The chute: the full-height highlight. A stadium, since its corner radius
-// equals its half-width.
-#define CHUTE_HW  24.0f
-#define CHUTE_Y0  3.0f
-#define CHUTE_Y1  365.0f
+// The chute: the highlight, running the whole VISIBLE height. A stadium,
+// since its corner radius equals its half-width. Kept 3px narrower than the
+// column either side so a hair of slab still shows, and the lit lane reads
+// as being INSIDE the board rather than as a bar laid over it.
+#define CHUTE_HW  ((float)CELL_W / 2.0f - 3.0f)
+#define CHUTE_Y0  ((float)SAFE_Y0 + 1.0f)
+#define CHUTE_Y1  ((float)SAFE_Y1 - 1.0f)
 #define CHUTE_CY  ((CHUTE_Y0 + CHUTE_Y1) / 2.0f)
 #define CHUTE_HH  ((CHUTE_Y1 - CHUTE_Y0) / 2.0f)
 
-#define HOPPER_CY 26.0f  // the waiting piece's resting centre, above the slab
+// Where a dropped piece enters from: one cell above the top row, so it
+// slides in from off the board (and, at full height, from off the panel)
+// rather than appearing in mid-air.
+#define FALL_START_Y (BOARD_Y0 + CELL_H / 2.0f - (float)CELL_H)
 
 // The landing ring's stroke. Thick enough to read as "a piece outline" at
 // arm's length rather than as a hairline circle.
-#define GHOST_STROKE 7.0f
+#define GHOST_STROKE (HOLE_R / 3.0f)
 
 // How far beyond a column's own cell any of this app's drawing may reach.
-// The span a dirty column is repainted through is CELL/2 + SPAN_PAD from
+// The span a dirty column is repainted through is CELL_W/2 + SPAN_PAD from
 // the column's centre (see span_for_cols), so every radius below must stay
 // inside that: the widest is the win halo at HALO_R_MAX.
 #define SPAN_PAD 8
@@ -326,8 +461,9 @@
  * ================================================================== */
 
 // Gravity, in px/ms^2, chosen from the drop it has to perform rather than
-// from physics: the longest fall on this board is HOPPER_CY to the bottom
-// row, ~305px, and 0.005 puts that at sqrt(2*305/0.005) = ~350ms - long
+// from physics: the longest fall on this board is FALL_START_Y to the
+// bottom row, ~366px at full height, and 0.005 puts that at
+// sqrt(2*366/0.005) = ~380ms - long
 // enough to watch the piece travel, short enough that a child who has
 // already decided is not waiting on an animation.
 #define GRAVITY 0.005f
@@ -374,11 +510,13 @@
 // (HOLE_R + PULSE_GROW = 26), or the ring spends the part of its life where
 // it is brightest hidden inside the disc it is supposed to be coming out of
 // - which is exactly what the first render showed, since the ring and the
-// swell share a phase. HALO_R_MAX must also stay inside the span a dirty
-// column is repainted through, CELL/2 + SPAN_PAD = 33, with room for the
-// anti-aliased edge.
-#define HALO_R_MIN 27.5f
-#define HALO_R_MAX 31.5f
+// swell share a phase. Both are derived from HOLE_R so that the two layout
+// variants (see the geometry block) cannot drift apart. HALO_R_MAX must
+// also stay inside the span a dirty column is repainted through,
+// CELL_W/2 + SPAN_PAD = 40, with room for the anti-aliased edge: at full
+// height that is 37 against 40.
+#define HALO_R_MIN (HOLE_R + PULSE_GROW + 1.5f)
+#define HALO_R_MAX (HALO_R_MIN + 4.5f)
 #define HALO_STROKE 3.0f
 
 // A full board with no winner: a beat of stillness (long enough to read as
@@ -428,30 +566,49 @@
  * p = 34/60 = 0.57, and the length of a gap is geometric: a gap survives G
  * milliseconds with probability p^(G/16.7).
  *
- *   grace   P(one gap outlasts it)   P(any gap does, over a 2s gesture)
- *   ------  ----------------------   ---------------------------------
- *   100ms   3.3e-2                   ~63%   unusable
- *   150ms   6.4e-3                   ~17%
- *   220ms   9.3e-4                   ~2.7%  (sketch.c's LIFT_DEBOUNCE_MS)
- *   260ms   2.6e-4                   ~0.8%
+ *   grace   P(one gap outlasts it)   P(any does, over 3s of holding still)
+ *   ------  ----------------------   ------------------------------------
+ *   100ms   3.3e-2                   ~77%   unusable
+ *   150ms   6.4e-3                   ~25%
+ *   220ms   9.3e-4                   ~4.0%  (sketch.c's LIFT_DEBOUNCE_MS)
+ *   260ms   1.4e-4                   ~0.6%
+ *   300ms   3.1e-5                   ~0.14%
+ *   400ms   1.4e-6                   ~0.006%
  *
- * (a 2s gesture contains about 29 gaps, since a gap begins on ~14.7 reports
- * per second at this rate.)
+ * (3 seconds of contact contains about 44 gaps, since a gap begins on
+ * ~14.7 reports per second at this rate. Three seconds is the case that
+ * matters: it is a player holding a thumb on the glass while deciding,
+ * which is the longest anyone is stationary and therefore the most exposed
+ * they ever are.)
  *
- * 260ms is chosen over sketch.c's 220ms because the two failures are not
- * equally bad. A false lift in the sketchpad splits one stroke into two,
- * which is a cosmetic defect in something she is still drawing. A false
- * lift here DROPS HER PIECE, in a column she may not have chosen yet, and
- * ends her turn: it is unrecoverable inside the rules of the game. The cost
- * of the extra 40ms is that the piece leaves her thumb about a quarter of a
- * second after she lifts, and the fall itself takes ~350ms, so what she
- * sees is a piece that starts moving as her hand clears it.
+ * 260ms was chosen first, over sketch.c's 220ms, because the two failures
+ * are not equally bad: a false lift in the sketchpad splits one stroke into
+ * two, a cosmetic defect in something still being drawn, where a false lift
+ * HERE drops a piece in a column nobody chose, ends that player's turn, and
+ * hands the puck over. Nothing in the rules of Connect Four can undo it.
+ *
+ * IT IS 300ms NOW, and the extra 40ms was bought with a measurement rather
+ * than a hunch: repro-touch-dropout-four-drop.ts's own 3-second-hold
+ * scenario failed one trial in 25, which is exactly the 0.6% the table
+ * predicts and NOT a bug in the state machine. A player thinking for a few
+ * seconds a dozen times a game would have met it. 300ms cuts that by four
+ * and a half times for 40ms of extra latency on a drop that is already
+ * followed by a ~380ms fall - so what a player sees is still a piece
+ * beginning to move as their hand clears the glass.
+ *
+ * IT CANNOT BE MADE ZERO. No grace value makes a Bernoulli process
+ * impossible, only rare; 400ms would buy another twenty-fold and start to
+ * feel like a delay. That is why the test asserts a RATE with a threshold
+ * derived from this table rather than demanding perfection: a working
+ * implementation sits near 100% and a broken one (believing the runtime's
+ * own touchReleased) sits near 0%, and the gate belongs between those, not
+ * at the top.
  *
  * This is the one number in this file that should be re-derived if the
  * measured dropout rate ever changes, and the table above is here so that
  * re-deriving it is arithmetic rather than taste.
  * ================================================================== */
-#define RELEASE_GRACE_MS 260
+#define RELEASE_GRACE_MS 300
 
 /* ---------------------------------------------------------------------
  * ARMING, and the stray problem, which is the dropout problem's mirror
@@ -550,6 +707,13 @@ static uint16_t col_wash_full(void) {
     return px_swap(0xB596);  // #B5B2B5: this column cannot take a piece
 }
 
+// The arrow over a column that cannot take a piece: the same shape, drained
+// of colour. Dark enough to still read as an arrow against the grey wash
+// behind it, which col_wash_full() is not.
+static uint16_t col_arrow_dead(void) {
+    return px_swap(0x8C71);  // #8C8E8C
+}
+
 // THE BOARD ITSELF CARRIES WHOSE TURN IT IS, warm grey for red and cool grey
 // for blue against the old neutral #DEDEDE. This is the peripheral-vision
 // third of section 6's turn cue and it is deliberately near-invisible pixel
@@ -619,15 +783,15 @@ static four_state_t *s_state;
 /* =====================================================================
  * Small helpers: geometry and the board.
  * ================================================================== */
-static float col_x(int c)  { return (float)(BOARD_X0 + CELL / 2 + c * CELL); }
-static float row_y(int r)  { return (float)(BOARD_Y0 + CELL / 2 + r * CELL); }
+static float col_x(int c)  { return (float)(BOARD_X0 + CELL_W / 2 + c * CELL_W); }
+static float row_y(int r)  { return (float)(BOARD_Y0) + (float)CELL_H / 2.0f + (float)(r * CELL_H); }
 
 // Which column a landscape x belongs to. Clamped rather than rejected, so
 // the paper margins either side of the board belong to the outer columns
 // and there is no x on the canvas that means nothing - the same "no dead
 // space a touch can fall into" rule menu.c's column_rect_land() follows.
 static int col_from_x(int lx) {
-    int c = (lx - BOARD_X0) / CELL;
+    int c = (lx - BOARD_X0) / CELL_W;
     if (lx < BOARD_X0) c = 0;              // integer division truncates toward
                                             // zero, so negatives need this
     if (c < 0) c = 0;
@@ -840,6 +1004,64 @@ static void fill_rrect(float cx, float cy, float halfW, float halfH, float corne
     }
 }
 
+// A round-capped stroke from (ax,ay) to (bx,by) of half-width r: the signed
+// distance to a segment, same construction as sketch.c's draw_capsule and
+// shapes.c's own capsule, with this file's clip and source-over blending.
+static void fill_capsule(float ax, float ay, float bx, float by, float r,
+                          uint16_t colorPx, int clipX0, int clipX1) {
+    if (r <= 0.0f) return;
+    float loX = (ax < bx ? ax : bx) - r - 1.0f, hiX = (ax > bx ? ax : bx) + r + 1.0f;
+    float loY = (ay < by ? ay : by) - r - 1.0f, hiY = (ay > by ? ay : by) + r + 1.0f;
+    int minX = (int)floorf(loX); if (minX < clipX0) minX = clipX0;
+    int maxX = (int)ceilf(hiX);  if (maxX > clipX1 - 1) maxX = clipX1 - 1;
+    int minY = (int)floorf(loY); if (minY < 0) minY = 0;
+    int maxY = (int)ceilf(hiY);  if (maxY > LAND_H - 1) maxY = LAND_H - 1;
+    if (minX > maxX || minY > maxY) return;
+
+    float abx = bx - ax, aby = by - ay;
+    float abLenSq = abx * abx + aby * aby;
+    float rOut = r + 0.5f, rIn = r - 0.5f;
+    float rOut2 = rOut * rOut, rIn2 = rIn > 0.0f ? rIn * rIn : -1.0f;
+
+    for (int y = minY; y <= maxY; y++) {
+        float py = (float)y + 0.5f;
+        for (int x = minX; x <= maxX; x++) {
+            float px = (float)x + 0.5f;
+            float t = 0.0f;
+            if (abLenSq > 0.0001f) {
+                t = ((px - ax) * abx + (py - ay) * aby) / abLenSq;
+                if (t < 0.0f) t = 0.0f; else if (t > 1.0f) t = 1.0f;
+            }
+            float dx = px - (ax + abx * t), dy = py - (ay + aby * t);
+            float d2 = dx * dx + dy * dy;
+            if (d2 >= rOut2) continue;
+            int a = 256;
+            if (d2 > rIn2) {
+                float cov = rOut - sqrtf(d2);
+                if (cov <= 0.0f) continue;
+                if (cov > 1.0f) cov = 1.0f;
+                a = (int)(cov * 256.0f);
+            }
+            blend_land(x, y, colorPx, a);
+        }
+    }
+}
+
+// A downward chevron: two round-capped strokes meeting at an apex below.
+// This is the arrow, and it is built this way rather than as a filled
+// triangle for decision 0009's sake - a triangle is three hard corners and
+// three dead-straight edges, which is the single most ruler-drawn shape
+// there is. Two capsules give it round ends, a round join at the apex (the
+// two caps overlap there), and an anti-aliased edge everywhere, so it reads
+// as drawn rather than as constructed. The apex sits at +halfH and the two
+// tails at -halfH, so the shape is centred on (cx, cy).
+static void fill_chevron(float cx, float cy, float halfW, float halfH, float stroke,
+                          uint16_t colorPx, int clipX0, int clipX1) {
+    if (halfW <= 0.0f || halfH <= 0.0f || stroke <= 0.0f) return;
+    fill_capsule(cx - halfW, cy - halfH, cx, cy + halfH, stroke, colorPx, clipX0, clipX1);
+    fill_capsule(cx + halfW, cy - halfH, cx, cy + halfH, stroke, colorPx, clipX0, clipX1);
+}
+
 /* =====================================================================
  * Rendering.
  *
@@ -911,10 +1133,16 @@ static uint8_t slab_player(const four_state_t *s) {
     return s->turn;
 }
 
-// Where the waiting piece sits, or -1 when there is none (nothing is
-// waiting during a fall, a celebration or a drain, and the ABSENCE of the
-// waiting piece is what says that a touch now means something else).
-static int waiting_col(const four_state_t *s) {
+// Which column the arrow sits over, or -1 when there is none. There is none
+// during a fall, a celebration or a drain, and that ABSENCE is what says a
+// touch means something else now (decision 0002: no modal state, and the
+// screen is what says so).
+//
+// Note that it is NOT -1 merely because nobody is touching the glass: the
+// arrow sits at parkCol and keeps saying whose turn it is. That is the
+// steady state, and after the hand-off has faded it is the ONLY thing left
+// saying it besides the slab tint - see section 3.
+static int arrow_col(const four_state_t *s) {
     if (s->phase != PH_PLAY) return -1;
     return s->armed ? s->hoverCol : s->parkCol;
 }
@@ -982,8 +1210,8 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     }
 
     for (int c = 0; c < COLS; c++) {
-        float dx0 = col_x(c) - (float)(CELL / 2 + SPAN_PAD);
-        float dx1 = col_x(c) + (float)(CELL / 2 + SPAN_PAD);
+        float dx0 = col_x(c) - (float)(CELL_W / 2 + SPAN_PAD);
+        float dx1 = col_x(c) + (float)(CELL_W / 2 + SPAN_PAD);
         if (dx1 < (float)lx0 || dx0 > (float)lx1) continue;
 
         float drainOff = s->phase == PH_DRAIN ? drain_offset(s, nowMs, c) : -1.0f;
@@ -1031,17 +1259,26 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     //    drawn last among the board's own elements so nothing covers it.
     if (hc >= 0 && s->phase != PH_DRAIN) {
         int lr = landing_row(s, hc);
-        if (lr >= 0) {
+        // NOT when the landing hole is the one the arrow is sitting in. At
+        // full height the arrow lives in row 0 (there is nowhere above the
+        // board to put it), so a column holding five pieces would have the
+        // ring and the chevron drawn concentrically in the same 50px hole,
+        // which is not two cues, it is one illegible one. The arrow is
+        // already IN the right hole in that case, so it says "here" by
+        // being there, and the ring has nothing left to add.
+        bool ringUnderArrow = (lr == ARROW_ROW && hc == arrow_col(s));
+        if (lr >= 0 && !ringUnderArrow) {
             fill_ring(col_x(hc), row_y(lr), HOLE_R, HOLE_R - GHOST_STROKE,
                       col_piece(hilite_player(s)), lx0, lx1, 256);
         }
     }
 
-    // 6. the waiting piece, at the top of the chute: filled when it will
-    //    fall, hollow when the column under it cannot take it.
-    int wc = waiting_col(s);
+    // 6. THE ARROW, at the head of the chute, pointing the way the piece
+    //    will fall. See section 3: this replaced the waiting piece, and it
+    //    inherited BOTH of that piece's jobs, not just the obvious one.
+    int wc = arrow_col(s);
     if (wc >= 0) {
-        float wy = HOPPER_CY;
+        float wy = ARROW_CY;
         float scale = 1.0f;
         if (ho >= 0.0f) {
             // The hand-off's pop: it does not appear, it ARRIVES. ease_out_back
@@ -1051,34 +1288,29 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
             //
             // Compressed into the first HANDOFF_POP_FRAC of the hand-off so
             // that it finishes while the chute behind it is still clearly lit
-            // (see that chute's own comment): the piece arriving and the
+            // (see that chute's own comment): the arrow arriving and the
             // colour sweep are one statement, and a pop that used the whole
             // window would spend its last third arriving over nothing.
             float u = ho / HANDOFF_POP_FRAC;
             scale = ease_out_back(u > 1.0f ? 1.0f : u);
         } else if (!s->armed) {
             // The idle invitation, afterwards: it is your turn, and you are
-            // the one this colour.
-            //
-            // It floats UP from its resting place and settles back, never
-            // below it. Two reasons, and the second is the load-bearing one:
-            // a piece that rises reads as offering itself, where one that
-            // sinks reads as falling; and the resting position already sits
-            // HOLE_R above the slab's top edge, so a downward bob would push
-            // the waiting piece's lower rim onto the board's rim at the
-            // bottom of every breath, which is untidy AND would make "nothing
-            // below the hopper moves while nobody is touching the glass"
-            // (feature-four.ts) an assertion about a hairline rather than
-            // about a comfortable margin.
+            // the one this colour. It floats UP and settles back, never
+            // below - a cue that rises reads as offering itself, where one
+            // that sinks reads as falling, which is the opposite of what an
+            // arrow already pointing down wants to say.
             float phase = fmodf((float)nowMs, BOB_MS) / BOB_MS * 6.2831853f;
             wy -= BOB_AMP * 0.5f * (1.0f - cosf(phase));
         }
-        uint8_t wp = hilite_player(s);
-        if (landing_row(s, wc) < 0) {
-            fill_ring(col_x(wc), wy, HOLE_R * scale, (HOLE_R - GHOST_STROKE) * scale, col_piece(wp), lx0, lx1, 256);
-        } else {
-            fill_disc(col_x(wc), wy, HOLE_R * scale, col_piece(wp), lx0, lx1, 256);
-        }
+        // A full column drains the arrow of colour rather than removing it.
+        // Keeping the SHAPE and dropping the COLOUR says "not here" without
+        // taking away the thing that says whose turn it is, and without the
+        // arrow blinking out and back as a thumb slides across a full
+        // column - which is the same vocabulary the grey wash under it uses.
+        bool dead = landing_row(s, wc) < 0;
+        fill_chevron(col_x(wc), wy, ARROW_HALF_W * scale, ARROW_HALF_H * scale,
+                     ARROW_STROKE * scale, dead ? col_arrow_dead() : col_piece(hilite_player(s)),
+                     lx0, lx1);
     }
 
     // 7. the falling piece, over everything, since it is passing in front of
@@ -1101,8 +1333,8 @@ static void mark(four_state_t *s, int col) {
 static void mark_all(four_state_t *s) { s->dirtyAll = true; }
 
 static void span_for_cols(int a, int b, int *lx0, int *lx1) {
-    *lx0 = BOARD_X0 + a * CELL - SPAN_PAD;
-    *lx1 = BOARD_X0 + (b + 1) * CELL + SPAN_PAD;
+    *lx0 = BOARD_X0 + a * CELL_W - SPAN_PAD;
+    *lx1 = BOARD_X0 + (b + 1) * CELL_W + SPAN_PAD;
     if (*lx0 < 0) *lx0 = 0;
     if (*lx1 > LAND_W) *lx1 = LAND_W;
 }
@@ -1141,7 +1373,7 @@ static void start_fall(four_state_t *s, uint32_t nowMs, int col, uint8_t player)
     s->fallCol = col;
     s->fallRow = landing_row(s, col);
     s->fallPlayer = player;
-    s->fallY = HOPPER_CY;
+    s->fallY = FALL_START_Y;
     s->fallV = 0.0f;
     s->bouncesLeft = BOUNCE_MAX;
     mark(s, col);
@@ -1155,12 +1387,27 @@ static void start_fall(four_state_t *s, uint32_t nowMs, int col, uint8_t player)
 // is the same neutral starting point for both of them, and it makes the
 // hand-off's pop happen at a place the eye already knows to look, every
 // single turn, rather than wherever the previous player happened to finish.
+// Where the arrow rests between gestures: the centre column, or the nearest
+// one to it that can still take a piece. The fallback matters because the
+// arrow is now the turn cue (section 3) and a greyed-out arrow over a full
+// column says "not here" rather than "your turn" - so the steady state must
+// never park on one. Scanned outward from the centre, so it also stays as
+// close to the middle as the board allows.
+static int park_col(const four_state_t *s) {
+    int mid = COLS / 2;
+    for (int d = 0; d < COLS; d++) {
+        if (mid - d >= 0 && landing_row(s, mid - d) >= 0) return mid - d;
+        if (mid + d < COLS && landing_row(s, mid + d) >= 0) return mid + d;
+    }
+    return mid; // every column full: the game is over anyway
+}
+
 static void hand_over_to(four_state_t *s, uint32_t nowMs, uint8_t player) {
     s->turn = player;
     s->turnStartMs = nowMs;
     s->phase = PH_PLAY;
     s->phaseStartMs = nowMs;
-    s->parkCol = COLS / 2;
+    s->parkCol = park_col(s);
     s->hoverCol = -1;
     s->contactSeen = false;
     s->armed = false;
@@ -1294,15 +1541,18 @@ static void gesture_tick(four_state_t *s, const app_frame_t *f) {
 
     if (!wasArmed || col < 0) { mark(s, col); return; }
 
-    s->parkCol = col;
     if (landing_row(s, col) < 0) {
         // A full column: the release does nothing at all, which is what the
-        // grey wash and the hollow waiting piece have been saying the whole
-        // time the thumb was over it. The turn does not change.
+        // grey wash and the greyed-out arrow have been saying the whole time
+        // the thumb was over it. The turn does not change, and parkCol is
+        // deliberately NOT moved here - parking the arrow on a full column
+        // would leave the steady state showing a grey arrow, i.e. no turn
+        // cue at all until somebody touched the glass again.
         mark(s, col);
         printf("four: release over a full column c=%d, ignored\r\n", col);
         return;
     }
+    s->parkCol = col;
     start_fall(s, f->nowMs, col, s->turn);
 }
 
