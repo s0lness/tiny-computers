@@ -86,7 +86,8 @@ void rt_halt(void) {
 // gfx_push() call, a handful of microseconds of PIO/DMA time, not
 // milliseconds; runtime_core.c's power-off gesture only calls this when the
 // requested percentage actually changed (see set_brightness_if_changed()
-// there), so across the whole 3.5s dim ramp this fires at most a few dozen
+// there), so across the whole 2s dim ramp (PWR_HOLD_DIM_START_MS 1500 to
+// PWR_HOLD_POWEROFF_MS 3500, runtime_core.c) this fires at most a few dozen
 // times, not once a frame.
 //
 // AMOLED_1IN8_SetBrightness() already takes a 0-100 percent and clamps it

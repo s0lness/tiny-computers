@@ -1,8 +1,9 @@
-// repro-poweroff-gesture: headless verification of the PWR-held-5s
-// power-off gesture (runtime_core.c's "the PWR-held-alone power-off
-// gesture" section) and, specifically, that the BOOT+PWR menu chord can
-// never trigger it, however long it is held. Run with:
+// repro-poweroff-gesture: headless verification of the PWR-held-alone
+// power-off gesture (runtime_core.c's section of the same name) and,
+// specifically, that the BOOT+PWR menu chord can never trigger it, however
+// long it is held. Run with:
 //
+//   bun run emulator/wasm/build.ts        # THIS FILE DOES NOT BUILD ANYTHING
 //   bun run emulator/wasm/tests/repro-poweroff-gesture.ts
 //
 // This loads the REAL firmware compiled to wasm (emulator/wasm/dist/emu.wasm,
@@ -14,7 +15,10 @@
 // PMIC to command), so this test cannot observe a real power cut. What it
 // CAN observe, and does, is the DECISION: runtime_core.c calls rt_log()
 // exactly once, right before sensors_request_poweroff(), the instant it
-// decides to power off ("poweroff: PWR held 5s alone..."). js_log forwards
+// decides to power off ("poweroff: PWR held 3500ms alone..." - that
+// firmware line formats PWR_HOLD_POWEROFF_MS in rather than spelling it,
+// so it cannot go stale the way this file's mirrored constants can).
+// js_log forwards
 // every rt_log() call to this test's own callback, so "did firmware decide
 // to power off" is checked by grepping the captured log lines, not by
 // inspecting any internal state. Whether the AXP2101 actually obeys that
@@ -28,8 +32,24 @@ import { join } from "node:path";
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const BTN_BOOT = 0;
 const BTN_PWR = 1;
+// Mirrors of runtime_core.c's constants. NOTHING CHECKS THAT THEY STILL
+// MATCH: this file loads a PREBUILT dist/emu.wasm and never compiles the
+// firmware, so changing PWR_HOLD_POWEROFF_MS in C and running this without
+// rebuilding checks the PREVIOUS binary against the NEW numbers - which is
+// exactly how the 5000 -> 3500 change first "failed", with two assertions
+// reporting a threshold nobody had compiled yet (see AGENTS.md, "A one-shot
+// build that is not checked will leave the PREVIOUS emu.wasm in place").
+// Rebuild first, always.
+//
+// Every margin below is derived from these three, never spelled as a
+// literal: when the threshold moved, the scenarios written around 4900 and
+// 5100 silently changed meaning ("just before" became "well after"), and a
+// test whose intent depends on arithmetic the reader has to redo is a test
+// that will lie again on the next change.
 const DIM_START_MS = 1500; // PWR_HOLD_DIM_START_MS, runtime_core.c
-const POWEROFF_MS = 5000; // PWR_HOLD_POWEROFF_MS, runtime_core.c
+const POWEROFF_MS = 3500; // PWR_HOLD_POWEROFF_MS, runtime_core.c
+const RECOVER_MS = 1500; // PWR_HOLD_RECOVER_MS, runtime_core.c
+const HARD_CEILING_MS = POWEROFF_MS + RECOVER_MS; // PWR_HOLD_HARD_CEILING_MS
 const POWEROFF_LOG_NEEDLE = "requesting power-off";
 
 let passCount = 0;
@@ -94,71 +114,78 @@ async function loadDevice() {
 type Device = Awaited<ReturnType<typeof loadDevice>>;
 
 async function main() {
-    console.log("=== reproduction + regression: the PWR-held-5s power-off gesture ===\n");
+    console.log(`=== reproduction + regression: the PWR-held-alone power-off gesture (threshold ${POWEROFF_MS}ms) ===\n`);
 
-    // ---- scenario 1: PWR held alone, past 5s -> must decide to power off --
+    // ---- scenario 1: PWR held past the threshold -> must decide to power
+    //      off --------------------------------------------------------------
     {
         const dev = await loadDevice();
         dev.tick(0);
         const mark = dev.logCount();
-        console.log("-- PWR held alone, 0ms -> 5100ms, no release --");
+        const holdTo = POWEROFF_MS + 100;
+        console.log(`-- PWR held alone, 0ms -> ${holdTo}ms, no release --`);
         dev.button(BTN_PWR, true);
-        for (let t = 0; t <= 5100; t += 50) dev.tick(t);
+        for (let t = 0; t <= holdTo; t += 50) dev.tick(t);
         check(
-            "PWR held alone for 5s decides to power off",
+            `PWR held alone for ${POWEROFF_MS}ms decides to power off`,
             dev.poweredOffSince(mark),
             "expected a log line containing " + JSON.stringify(POWEROFF_LOG_NEEDLE),
         );
     }
 
-    // ---- scenario 2: PWR held alone, released just BEFORE 5s -> must not -
+    // ---- scenario 2: PWR held alone, released just BEFORE the threshold ---
+    //      -> must not ------------------------------------------------------
     {
         const dev = await loadDevice();
         dev.tick(0);
         const mark = dev.logCount();
-        console.log("-- PWR held alone, 0ms -> 4900ms, then released --");
+        const releaseAt = POWEROFF_MS - 100;
+        console.log(`-- PWR held alone, 0ms -> ${releaseAt}ms, then released --`);
         dev.button(BTN_PWR, true);
-        for (let t = 0; t <= 4900; t += 50) dev.tick(t);
+        for (let t = 0; t <= releaseAt; t += 50) dev.tick(t);
         dev.button(BTN_PWR, false);
-        dev.tick(4950);
-        // Keep ticking well past where 5s-since-original-press would have
-        // landed, to prove the timer does not keep running after release.
-        dev.tick(6000);
+        dev.tick(releaseAt + 50);
+        // Keep ticking well past where the threshold since the original
+        // press would have landed, to prove the timer does not keep running
+        // after release.
+        dev.tick(HARD_CEILING_MS + 1000);
         check(
-            "releasing PWR at 4.9s never powers off, even past the 5s mark",
+            `releasing PWR at ${releaseAt}ms never powers off, even past the ${POWEROFF_MS}ms mark`,
             !dev.poweredOffSince(mark),
         );
     }
 
-    // ---- scenario 3: the menu chord, held for 8s total -> must NEVER ------
-    //      power off, however long it is held (the owner's requirement,
-    //      verbatim).
+    // ---- scenario 3: the menu chord, held well past every threshold in the
+    //      gesture -> must NEVER power off, however long it is held (the
+    //      owner's requirement, verbatim).
     {
         const dev = await loadDevice();
         dev.tick(0);
         const mark = dev.logCount();
-        console.log("-- BOOT+PWR chord held together for 8s (well past the 5s threshold) --");
+        const holdTo = HARD_CEILING_MS + 3000; // past the decision AND the
+                                                // hard ceiling, with room
+        console.log(`-- BOOT+PWR chord held together for ${holdTo}ms (well past the ${POWEROFF_MS}ms threshold) --`);
         dev.button(BTN_BOOT, true);
         dev.tick(0);
         dev.button(BTN_PWR, true);
         dev.tick(10);
         dev.buttonVerdict(BTN_PWR, true); // PMIC's own 1.5s long-press verdict
-        dev.tick(10 + 1500);
+        dev.tick(10 + DIM_START_MS);
         const openedMenu = dev.appCurrent() === -1;
-        for (let t = 1600; t <= 8000; t += 50) dev.tick(t);
+        for (let t = DIM_START_MS + 100; t <= holdTo; t += 50) dev.tick(t);
         dev.button(BTN_PWR, false);
-        dev.tick(8050);
+        dev.tick(holdTo + 50);
         dev.button(BTN_BOOT, false);
-        dev.tick(8100);
+        dev.tick(holdTo + 100);
         check("the chord opened the menu (sanity check this really is the chord)", openedMenu);
         check(
-            "the chord, held 8s, never decides to power off",
+            `the chord, held ${holdTo}ms, never decides to power off`,
             !dev.poweredOffSince(mark),
         );
     }
 
     // ---- scenario 4: BOOT touches the hold AFTER dimming has started, then
-    //      releases while PWR keeps being held past the original 5s mark ---
+    //      releases while PWR keeps being held past the threshold ----------
     //      -> must still never power off. This is the "tainted hold" design
     //      decision documented in runtime_core.c: a per-instant "is BOOT
     //      down right now" check would allow exactly this to power off.
@@ -166,15 +193,16 @@ async function main() {
         const dev = await loadDevice();
         dev.tick(0);
         const mark = dev.logCount();
-        console.log("-- PWR held alone past the dim start, BOOT touches it, BOOT released, PWR held to 6s --");
+        const holdTo = HARD_CEILING_MS + 1000;
+        console.log(`-- PWR held alone past the dim start, BOOT touches it, BOOT released, PWR held to ${holdTo}ms --`);
         dev.button(BTN_PWR, true);
         for (let t = 0; t <= DIM_START_MS + 200; t += 50) dev.tick(t); // into the ramp
         dev.button(BTN_BOOT, true);
         dev.tick(DIM_START_MS + 250);
         dev.button(BTN_BOOT, false); // let go of BOOT again, PWR still held
-        for (let t = DIM_START_MS + 300; t <= 6000; t += 50) dev.tick(t);
+        for (let t = DIM_START_MS + 300; t <= holdTo; t += 50) dev.tick(t);
         dev.button(BTN_PWR, false);
-        dev.tick(6050);
+        dev.tick(holdTo + 50);
         check(
             "a hold BOOT ever touched stays tainted for its whole duration, even after BOOT lets go",
             !dev.poweredOffSince(mark),
@@ -188,13 +216,10 @@ async function main() {
     //      the decision point is a perfect, deterministic reproduction of
     //      "the shutdown did not take": prove the panel is forced back to
     //      baseline within the recovery window rather than staying dark
-    //      forever. RECOVER_MS/HARD_CEILING_MS mirror runtime_core.c's own
-    //      PWR_HOLD_RECOVER_MS (1500ms) and PWR_HOLD_HARD_CEILING_MS
-    //      (POWEROFF_MS + RECOVER_MS); if those constants change there,
-    //      this test's margins should be revisited.
+    //      forever. RECOVER_MS/HARD_CEILING_MS are module-scope mirrors of
+    //      runtime_core.c's PWR_HOLD_RECOVER_MS and
+    //      PWR_HOLD_HARD_CEILING_MS - see their comment at the top.
     {
-        const RECOVER_MS = 1500;
-        const HARD_CEILING_MS = POWEROFF_MS + RECOVER_MS;
         const dev = await loadDevice();
         dev.tick(0);
         const mark = dev.logCount();
@@ -202,7 +227,7 @@ async function main() {
         dev.button(BTN_PWR, true);
         for (let t = 0; t <= HARD_CEILING_MS + 500; t += 50) dev.tick(t);
         check(
-            "still decides to power off at 5s (the write is attempted)",
+            `still decides to power off at ${POWEROFF_MS}ms (the write is attempted)`,
             dev.poweredOffSince(mark),
         );
         check(
@@ -229,7 +254,7 @@ async function main() {
         const dev = await loadDevice();
         dev.tick(0);
         const mark = dev.logCount();
-        console.log("-- PWR held past 5s, released shortly after (before the recovery window elapses) --");
+        console.log(`-- PWR held past ${POWEROFF_MS}ms, released shortly after (before the recovery window elapses) --`);
         dev.button(BTN_PWR, true);
         for (let t = 0; t <= POWEROFF_MS + 200; t += 50) dev.tick(t);
         const decided = dev.poweredOffSince(mark);
@@ -259,7 +284,9 @@ async function main() {
         dev.button(BTN_PWR, false);
         dev.buttonVerdict(BTN_PWR, false);
         dev.tick(150);
-        dev.tick(6000); // idle well past where 5s-since-press would land
+        dev.tick(HARD_CEILING_MS + 1000); // idle well past where the
+                                           // threshold since the press
+                                           // would have landed
         check("a short PWR tap never decides to power off", !dev.poweredOffSince(mark));
     }
 

@@ -57,10 +57,10 @@ static const app_t *app_for_index(int index) {
  *
  * A freestanding wasm32 build links with -nostdlib and no libc, so there is
  * no snprintf to call (see emulator/wasm/build.ts's notes on which C headers
- * actually exist for that target). The two rt_log() call sites below are
+ * actually exist for that target). The three rt_log() call sites below are
  * the only formatted diagnostics in this file; these are just enough for
- * "name (N us)" and "requested N bytes, M of K used", not a general
- * formatter.
+ * "name (N us)", "requested N bytes, M of K used" and the power-off
+ * gesture's "PWR held N ms alone", not a general formatter.
  */
 static char *fmt_append_str(char *out, const char *s) {
     while (*s) *out++ = *s++;
@@ -326,8 +326,10 @@ static int g_menuReturnApp = 0;
 
 /* ---- the PWR-held-alone power-off gesture --------------------------------
  *
- * The owner's requirement: holding PWR for 5 seconds powers the device off.
- * Five seconds does not exist in hardware - the AXP2101's OFFLEVEL field
+ * The owner's requirement: holding PWR powers the device off. The hold was
+ * five seconds until 2026-08-14 and is PWR_HOLD_POWEROFF_MS (3.5s) now -
+ * see that constant below for why only the END of the gesture moved.
+ * Neither number exists in hardware - the AXP2101's OFFLEVEL field
  * only offers 4/6/8/10s (sensors.h), and 10s of that is already spent as
  * the menu chord's safety backstop (pmic_raise_poweroff_threshold(),
  * sensors.c) - so this firmware measures the hold itself, in wall-clock
@@ -350,7 +352,8 @@ static int g_menuReturnApp = 0;
  * held right now". A per-instant check would let a child open the menu
  * (chord fires at 1.5s), keep gripping PWR out of habit while browsing,
  * happen to let go of BOOT alone, and have the device power off under her
- * mid-browse once wall-clock time since the ORIGINAL press reaches 5s -
+ * mid-browse once wall-clock time since the ORIGINAL press reaches
+ * PWR_HOLD_POWEROFF_MS -
  * technically still "BOOT not held" at that instant, but not what "the
  * chord must never power off, however long it is held" is asking for.
  * Tainting the whole hold closes that gap: once BOOT has touched this hold
@@ -361,7 +364,8 @@ static int g_menuReturnApp = 0;
  * end: the screen dims continuously while PWR is held alone, starting at
  * 1.5s (the same instant the PMIC's own long-press verdict would fire, so
  * there is only one threshold to learn, not two unrelated ones) and
- * reaching black exactly at 5s, when power-off is requested. Releasing PWR
+ * reaching black exactly at PWR_HOLD_POWEROFF_MS, when power-off is
+ * requested. Releasing PWR
  * at any point restores full brightness immediately. This adds NOTHING to
  * any app's screen - decision 0002 section 4b forbids exactly that - it is
  * the panel's own brightness changing, the same physical property real
@@ -414,7 +418,12 @@ static int g_menuReturnApp = 0;
  * believes" is deliberate, not an optimisation left for later.
  */
 #define PWR_HOLD_DIM_START_MS       1500u
-#define PWR_HOLD_POWEROFF_MS        5000u
+// 3500, down from 5000 on 2026-08-14: the owner asked for the whole gesture
+// to take 1.5s less. The dim START deliberately does not move, because 1500
+// is not a taste number: it is where the PMIC's own long-press verdict lands,
+// so the fade begins exactly when the hardware agrees a long press is
+// happening. What shortens is the ramp between them, from 3.5s to 2s.
+#define PWR_HOLD_POWEROFF_MS        3500u
 // How long to wait, after the panel reaches black and a shutdown command
 // has been sent, before concluding it did not take. The AXP2101 cutting its
 // own rails should be near-instant if it happens at all; 1.5s is generous
@@ -524,7 +533,21 @@ static void poweroff_gesture_tick(uint32_t nowMs, uint8_t key) {
         set_brightness_if_changed(0);
         if (!g_pwrPoweroffSent) {
             g_pwrPoweroffSent = true;
-            rt_log("poweroff: PWR held 5s alone (BOOT never held during this hold), requesting power-off");
+            // The threshold is FORMATTED IN, not spelled out in the string.
+            // This line read "PWR held 5s alone" for as long as it took
+            // someone to notice, after PWR_HOLD_POWEROFF_MS moved to 3500 -
+            // and this is the one line an incident like the owner's
+            // (sensors_request_poweroff() silently doing nothing, see
+            // "WHEN SHUTDOWN DOES NOTHING" above) actually gets read from.
+            // A diagnostic that misreports the threshold it just crossed is
+            // worse than one that never mentioned it.
+            char msg[112];
+            char *p = msg;
+            p = fmt_append_str(p, "poweroff: PWR held ");
+            p = fmt_append_u32(p, PWR_HOLD_POWEROFF_MS);
+            p = fmt_append_str(p, "ms alone (BOOT never held during this hold), requesting power-off");
+            *p = '\0';
+            rt_log(msg);
             sensors_request_poweroff();
         }
     }

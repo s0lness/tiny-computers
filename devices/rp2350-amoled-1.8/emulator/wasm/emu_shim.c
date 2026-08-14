@@ -329,7 +329,7 @@ void sensors_set_finger_down(bool down) {
  * emu_abi.h's "keeping the emulator honest" rule (the worked example in
  * that file's header comment is literally this bit). The board's mask
  * widened once a real consumer needed the release edge - runtime_core.c's
- * PWR-held-5s power-off gesture has to know when a hold ENDS - so this file
+ * PWR-held-alone power-off gesture has to know when a hold ENDS - so this file
  * changes to match, same rule, opposite direction: the emulator must not be
  * MORE generous than hardware, and now hardware itself delivers this, so
  * withholding it here would make the emulator LESS capable than the board

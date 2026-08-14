@@ -1040,7 +1040,8 @@ static void imu_poll_core1(uint32_t nowMs) {
  * reaching g_keyEvent - see sensors.h's PWR key section, "KEY_RELEASE WAS
  * DELETED FROM THIS FILE EARLIER, AND IS BACK", for the full story of why
  * that was correct then and is not correct now. Widened to `0x0F` because
- * runtime_core.c's power-off gesture (hold PWR alone for 5s) has to know
+ * runtime_core.c's power-off gesture (hold PWR alone, for
+ * PWR_HOLD_POWEROFF_MS) has to know
  * when a hold ENDS, and the release edge is the only signal that says so;
  * KEY_LONG is a one-shot verdict at 1.5s, not a level, and cannot stand in
  * for it.

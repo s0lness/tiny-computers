@@ -31,7 +31,7 @@
 // taking a raw hex mask: see tools/README-devlink.md's KEY section for that
 // reasoning.
 //
-// DEVLINK_KEY_RELEASE added alongside the PWR-held-5s power-off gesture
+// DEVLINK_KEY_RELEASE added alongside the PWR-held-alone power-off gesture
 // (runtime_core.c): that gesture needs to know when a hold ENDS, which
 // KEY_PRESS/KEY_LONG/KEY_SHORT cannot express on their own, and there was no
 // way to complete (or cancel) an injected hold without it - see

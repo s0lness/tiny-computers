@@ -105,13 +105,15 @@ void sensors_set_finger_down(bool down);
  * hardware. That reasoning was correct at the time and nobody made a
  * mistake deleting it.
  *
- * The requirement changed: the owner's power-off gesture (hold PWR alone
- * for 5 seconds) has to be timed in firmware, because 5 seconds does not
- * exist as an OFFLEVEL value (4/6/8/10s only, see above), and timing a hold
+ * The requirement changed: the owner's power-off gesture (hold PWR alone,
+ * for PWR_HOLD_POWEROFF_MS - five seconds originally, 3.5 since
+ * 2026-08-14) has to be timed in firmware, because neither number
+ * exists as an OFFLEVEL value (4/6/8/10s only, see above), and timing a hold
  * needs to know when it ENDS, not just when it started or how long the PMIC
  * decided it had already been. KEY_PRESS alone cannot answer "is PWR still
  * down right now", and re-deriving that from KEY_LONG (a one-shot verdict
- * at 1.5s, not a level) does not cover the 1.5s-5s window at all. So the
+ * at 1.5s, not a level) does not cover the window between that verdict and
+ * the power-off threshold at all. So the
  * mask widened again (pmic_poll_core1()'s `s1 & 0x0E` became `s1 & 0x0F`)
  * and the macro is reinstated to name the bit that mask now lets through.
  * See runtime_core.c's "the PWR-held-alone power-off gesture" section for
@@ -136,7 +138,7 @@ uint8_t sensors_key_take(void);
 // once. devlink.c's own KEY command names all four, including RELEASE
 // (see tools/README-devlink.md): without it, `KEY PRESS` alone started a
 // hold that devlink had no way to end, which is exactly what made the
-// PWR-held-5s power-off gesture (runtime_core.c) hard to reproduce safely
+// PWR-held-alone power-off gesture (runtime_core.c) hard to reproduce safely
 // by injection until this was added.
 //
 // Core0-owned end to end, like sensors_inject_erase() above, but for a
@@ -198,7 +200,7 @@ void sensors_inject_key(uint8_t bits);
  *
  * Core0-owned request, core1-owned execution, the same pattern
  * g_fingerDownShared (sensors.c) already uses: the DECISION - has PWR been
- * held 5 seconds alone, per runtime_core.c's gesture logic - is made by a
+ * held PWR_HOLD_POWEROFF_MS alone, per runtime_core.c's gesture logic - is made by a
  * portable, hardware-blind file that must never touch i2c1 even if it
  * wanted to, but the i2c write that actually cuts power must come from
  * core1 like every other transaction on this bus (see the ownership rule
