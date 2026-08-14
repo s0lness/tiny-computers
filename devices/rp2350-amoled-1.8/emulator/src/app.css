@@ -254,6 +254,42 @@
 }
 .tilt-slider { width: 64px; }
 
+/* ---------- toolbox: the device's own buttons and sensors, next to tilt
+   (owner feedback: these belong with the other physical-manipulation
+   controls, not in the sidebar). Built generically per declared button/
+   sensor (see main.ts's buildChrome), same kbd-chip look already used for
+   the keyboard-shortcut legend elsewhere, now made clickable: the letter
+   IS the control, no separate label needed. ---------- */
+.toolbox-group { display: flex; align-items: center; gap: 3px; }
+.toolbox-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 5px;
+  font: inherit; font-size: 11px; font-weight: 700;
+  border-radius: 4px;
+  background: var(--chip-bg); color: var(--chip-text);
+  border: 1px solid var(--border);
+  cursor: pointer; user-select: none;
+}
+.toolbox-btn:hover { border-color: var(--accent); }
+/* Same two-stage read as the bezel's own dev-btn (pressed vs. a completed
+   long-press verdict): pressed is a light accent fill, long is solid, so a
+   PWR hold reads the same way here as it does on the puck itself. */
+.toolbox-btn.pressed { background: var(--accent-bg); color: var(--accent-dark); border-color: var(--accent); }
+.toolbox-btn.long { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+
+/* Sensor toolbox reuses sensors.ts's own .sensor-btn (a generic control,
+   not rebuilt here): restyled flat and text-only here, same quiet register
+   as .chrome-btn (deck controls, capture actions) rather than the
+   sidebar's filled pill, so it sits quietly in this row instead of
+   standing out as the one coloured button among B/P/menu. */
+#sensorToolbox .sensor-btn {
+  background: none; border: none; color: var(--muted);
+  padding: 4px 7px; font-size: 11px; border-radius: var(--radius-control);
+}
+#sensorToolbox .sensor-btn:hover { background: var(--row-hover); color: var(--ink-soft); }
+
+#btnChord[disabled] { opacity: .4; cursor: default; }
+
 .diag-strip {
   font-size: 10.5px;
   color: var(--faint);
@@ -262,7 +298,15 @@
 }
 
 /* ---------- sidebar ---------- */
-.side.controls { width: var(--sidebar-w); overflow-y: auto; padding: 14px 12px; }
+/* flex column, not a flat block: everything above the console keeps
+   exactly the height its own content needs (flex's default, no grow), and
+   the console pane (flex:1 below) is the one section that soaks up
+   whatever is left. The deliberate trade: nothing above it shrinks or
+   loses space to make room, a short window still scrolls the sidebar as a
+   whole exactly as it already could before this, but a normal window now
+   hands the console real, usable height instead of a fixed 100px that was
+   too short to read regardless of how tall the window was. */
+.side.controls { width: var(--sidebar-w); overflow-y: auto; padding: 14px 12px; display: flex; flex-direction: column; }
 .side.controls h3:first-child { margin-top: 0; }
 .side.controls h3 { margin: 16px 0 6px; }
 
@@ -299,6 +343,7 @@
    secondary controls (rotation, contact size), not primary navigation. */
 .segtog.seg-sm button { padding: 3px 8px; font-size: 11px; }
 
+.field-label { font-size: 11px; font-weight: 600; color: var(--ink-soft); margin-bottom: 4px; }
 .contact-row { display: flex; align-items: center; gap: 5px; margin-bottom: 6px; }
 .mm-input { width: 44px; padding: 3px 5px; font-size: 11px; }
 .contact-row .unit { font-size: 11px; color: var(--muted); }
@@ -314,7 +359,13 @@
 .app-strip-btn.active { background: var(--accent); color: #fff; }
 
 .console-pane {
-  height: 100px;
+  /* Owner feedback: too short to read. flex:1 (see .side.controls) makes
+     this the one section that grows to fill whatever height is left in the
+     sidebar; 180px is only a floor for a short window (below that, the
+     sidebar's own overflow-y:auto takes over, same fallback it already had
+     before this), not the usual case. */
+  flex: 1 1 auto;
+  min-height: 180px;
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);

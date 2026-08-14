@@ -13,7 +13,7 @@ import { readPushes, pixelReaderFor, blitRect, blitAll, type PixelReader } from 
 import { PushOverlay } from "./overlay";
 import { TouchOverlay, CONTACT_PRESETS, DEFAULT_PX_PER_MM } from "./touchoverlay";
 import { mapClientPoint } from "./rotate";
-import { makeDraggable, wireButton, createButtonElement, applyRotation, type WiredButton } from "./device";
+import { makeDraggable, wireButton, createButtonElement, applyRotation, type WiredButton, type ButtonEvents } from "./device";
 import { buildSensorControls } from "./sensors";
 import { buildAppStrip, type AppStripControl } from "./appstrip";
 import { ShortcutRegistry, assignShortcut } from "./shortcuts";
@@ -35,6 +35,26 @@ function errMsg(err: unknown): string {
 }
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+}
+
+// ---- mute icon: the control must show which state it is in ----
+// Owner feedback: toggling mute changed nothing on screen, so a control
+// that looks identical either way is a guess, not a toggle. Same
+// stroke/size/viewBox as index.html's original speaker icon (feather's
+// "volume-2"/"volume-x" pair), swapped wholesale rather than trying to
+// morph one path into the other.
+const ICON_UNMUTED = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M4 9v6h4l5 5V4L8 9H4z" />
+  <path d="M16 8.5a4.5 4.5 0 0 1 0 7" />
+  <path d="M19 6a8 8 0 0 1 0 12" />
+</svg>`;
+const ICON_MUTED = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <path d="M4 9v6h4l5 5V4L8 9H4z" />
+  <line x1="23" y1="9" x2="17" y2="15" />
+  <line x1="17" y1="9" x2="23" y2="15" />
+</svg>`;
+function setMuteIcon(btn: HTMLElement, muted: boolean): void {
+  btn.innerHTML = muted ? ICON_MUTED : ICON_UNMUTED;
 }
 
 // ---- DOM ----
@@ -117,6 +137,12 @@ let wiredButtons: WiredButton[] = [];
 // WiredButton a real pointer/keyboard press already drives, rather than
 // reimplementing button state a second time for scripted gestures.
 let wiredButtonById = new Map<string, WiredButton>();
+// The bezel DOM element for each declared button, id-keyed same as
+// wiredButtonById. Only needed for performChord's visual flash of PWR
+// below, which deliberately does NOT go through PWR's own WiredButton (see
+// performChord's comment on why) and so needs a raw element to add/remove
+// a class on.
+let buttonElById = new Map<string, HTMLElement>();
 let buttonKeyById = new Map<string, string>();
 let appStripControl: AppStripControl | null = null;
 let lastAppIndex = 0;
@@ -264,26 +290,34 @@ function buildChrome(d: DeviceDescriptor): void {
   bezelEl.querySelectorAll(".dev-btn").forEach((el) => el.remove());
   wiredButtons = [];
   wiredButtonById = new Map();
+  buttonElById = new Map();
   buttonKeyById = new Map();
   shortcuts.clear();
   const usedKeys = new Set<string>();
-  const shortcutListEl = $("#buttonShortcuts");
-  shortcutListEl.innerHTML = "";
+  // Owner feedback: the device's own buttons belong with the other
+  // physical-manipulation controls (tilt, rotate) at the bottom, not in
+  // the sidebar. The bezel button stays too (it is the one place button
+  // POSITION is shown, real geometry per emu_abi.h, not decoration); this
+  // is a second, always-reachable way to press the same button, built the
+  // same generic way (nothing here names "boot" or "pwr"), and pressing
+  // either one drives the exact same emu_button() call. The sidebar's old
+  // text-only shortcut legend is gone: the toolbox chip IS the legend now,
+  // it shows its own key and does something when clicked.
+  const buttonToolboxEl = $("#buttonToolbox");
+  buttonToolboxEl.innerHTML = "";
 
   const buttons = d.buttons || [];
   buttons.forEach((btn, index) => {
     const el = createButtonElement(btn.edge, btn.at, bezelEl.clientWidth, bezelEl.clientHeight);
     el.title = `${btn.label} (${btn.edge} @ ${(btn.at * 100).toFixed(0)}%)`;
     bezelEl.appendChild(el);
-    const wired = wireButton(
-      el,
-      {
-        onDown: () => emuButtonDown(index),
-        onUp: () => emuButtonUp(index),
-        onVerdict: (isLong) => emuButtonVerdict(index, isLong),
-      },
-      btn.longPressMs
-    );
+    buttonElById.set(btn.id, el);
+    const events: ButtonEvents = {
+      onDown: () => emuButtonDown(index),
+      onUp: () => emuButtonUp(index),
+      onVerdict: (isLong) => emuButtonVerdict(index, isLong),
+    };
+    const wired = wireButton(el, events, btn.longPressMs);
     wiredButtons.push(wired);
     wiredButtonById.set(btn.id, wired);
 
@@ -298,15 +332,24 @@ function buildChrome(d: DeviceDescriptor): void {
       buttonKeyById.set(btn.id, key);
     }
 
-    const row = document.createElement("div");
-    row.className = "shortcut-row";
-    row.title = `${btn.edge} @ ${(btn.at * 100).toFixed(0)}%${btn.longPressMs ? `, hold ${btn.longPressMs}ms = long` : ""}`;
-    row.innerHTML = `<span class="kbd">${key ? key.toUpperCase() : "-"}</span> ${escapeHtml(btn.label)}`;
-    shortcutListEl.appendChild(row);
+    // The toolbox chip: a second WiredButton on its own element, same
+    // events, same longPressMs, so a hold started here fires the exact
+    // same real button-down/verdict/up sequence as the bezel and shows the
+    // same pressed/long feedback, just at toolbar scale.
+    const chip = document.createElement("button");
+    chip.className = "toolbox-btn";
+    chip.textContent = key ? key.toUpperCase() : btn.label.slice(0, 1).toUpperCase();
+    chip.title = `${btn.label}${btn.longPressMs ? ` (hold ${btn.longPressMs}ms = long)` : ""}`;
+    wireButton(chip, events, btn.longPressMs);
+    buttonToolboxEl.appendChild(chip);
   });
 
   if (emu) {
-    buildSensorControls($("#sensorControls"), d.sensors || [], emu, shortcuts, usedKeys, (t) => consoleLog.push(t), (sensor) => {
+    // Same relocation, same reasoning, as the button toolbox above: the
+    // sidebar's #sensorControls is gone, buildSensorControls now fills the
+    // toolbox instead. Nothing here changed about what it builds (still
+    // one control per declared "event" sensor, still generic).
+    buildSensorControls($("#sensorToolbox"), d.sensors || [], emu, shortcuts, usedKeys, (t) => consoleLog.push(t), (sensor) => {
       // The one place a sensor click drives something visible beyond the
       // firmware event itself: "shake" gets the same puck motion a real
       // window shake produces, since there is no window motion behind a
@@ -331,6 +374,7 @@ function buildChrome(d: DeviceDescriptor): void {
   touchOverlay.pxPerMm = derivePxPerMm(d);
   refreshContactInfo();
   buildGestures(d);
+  updateChordButton(d);
   centerDeviceOnce();
 }
 
@@ -472,6 +516,72 @@ function buildGestures(d: DeviceDescriptor): void {
     det.appendChild(body);
     wrap.appendChild(det);
   }
+}
+
+// ---- the BOOT+PWR chord: opens/closes the app menu -----------------------
+//
+// Owner feedback: a one-press control for "press PWR and BOOT at the same
+// time", the gesture that opens the real device's app menu. This firmware
+// build's own device descriptor declares the "menu" gesture (see
+// buildGestures above) but not yet a machine-readable "script" for it (that
+// would mean editing emu_shim.c/emu_abi.h and rebuilding the wasm module,
+// not this page's call while another agent is mid-edit on firmware/ - see
+// scriptButtonIds's comment), so this does NOT go through runGestureScript.
+// It drives the wasm ABI directly, and NOT by holding both buttons down for
+// a real 1.5s the way a person would with two fingers: tools/dev.ts's own
+// CHORD command (the same gesture, injected at the real device over serial)
+// composes it from exactly three primitives - "hold BOOT, deliver PWR's
+// long-press verdict, release BOOT one tick later" - and emu_shim.c's
+// emu_button()/emu_button_verdict() confirm why: PWR's long/short verdict
+// is its own discrete event (KEY_LONG), never bundled with a level toggle
+// (unlike BOOT, a plain GPIO). Reproducing that with PWR's own WiredButton
+// (bezel or toolbox) would be wrong twice over: it would ALSO emit a level
+// toggle PWR never sends on a real chord, and it would need a real 1.5s
+// wait (PWR's declared longPressMs) for its internal timer to fire the
+// verdict, when the actual gesture is "deliver the verdict", not "wait for
+// one". So BOOT goes through its real WiredButton (a plain level, exactly
+// what inject_boot(true) does), and PWR's verdict is delivered directly
+// through the same emuButtonVerdict() helper the bezel and toolbox already
+// use - same ABI calls tools/dev.ts's CHORD produces on real hardware, none
+// of the "hold for real time" approximation a two-separate-presses version
+// would need.
+const CHORD_RELEASE_DELAY_MS = 50; // "one tick later": comfortably longer
+                                    // than one requestAnimationFrame (~16ms
+                                    // at 60Hz), never a real 1.5s wait.
+let chordInFlight = false;
+
+async function performChord(): Promise<void> {
+  if (!emu || !device || chordInFlight) return;
+  const bootIndex = (device.buttons || []).findIndex((b) => b.id === "boot");
+  const pwrIndex = (device.buttons || []).findIndex((b) => b.id === "pwr");
+  const bootWired = wiredButtonById.get("boot");
+  if (bootIndex < 0 || pwrIndex < 0 || !bootWired) {
+    consoleLog.push("chord: this build does not declare both a \"boot\" and a \"pwr\" button");
+    return;
+  }
+  chordInFlight = true;
+  const chordBtn = $<HTMLButtonElement>("#btnChord");
+  chordBtn.disabled = true;
+  const pwrEl = buttonElById.get("pwr");
+  consoleLog.push("chord: BOOT+PWR (app menu)");
+  try {
+    bootWired.down(); // real level, same as a bezel/toolbox BOOT press
+    pwrEl?.classList.add("pressed", "long"); // visual only: PWR's verdict below carries no level to react to
+    emuButtonVerdict(pwrIndex, true); // PWR's long-press verdict, delivered directly
+    await sleep(CHORD_RELEASE_DELAY_MS);
+    bootWired.up();
+  } finally {
+    pwrEl?.classList.remove("pressed", "long");
+    chordBtn.disabled = false;
+    chordInFlight = false;
+  }
+}
+
+function updateChordButton(d: DeviceDescriptor): void {
+  const btn = $<HTMLButtonElement>("#btnChord");
+  const has = (d.buttons || []).some((b) => b.id === "boot") && (d.buttons || []).some((b) => b.id === "pwr");
+  btn.disabled = !has;
+  btn.title = has ? "BOOT+PWR chord: opens/closes the app menu" : "this build does not declare both a \"boot\" and a \"pwr\" button";
 }
 
 // ---- centre the puck over the stage, once, on first load ----------------
@@ -922,8 +1032,14 @@ function wireStaticUI(): void {
 
   $<HTMLButtonElement>("#btnMute").addEventListener("click", (e) => {
     const muted = soundPlayer.toggleMute();
-    (e.currentTarget as HTMLElement).classList.toggle("active", muted);
-    (e.currentTarget as HTMLElement).title = muted ? "sound muted, click to unmute" : "mute";
+    const el = e.currentTarget as HTMLElement;
+    el.classList.toggle("active", muted);
+    el.title = muted ? "sound muted, click to unmute" : "mute";
+    setMuteIcon(el, muted);
+  });
+
+  $<HTMLButtonElement>("#btnChord").addEventListener("click", () => {
+    void performChord();
   });
 
   $<HTMLInputElement>("#overlayOn").addEventListener("change", (e) => {
