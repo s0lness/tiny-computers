@@ -1528,15 +1528,121 @@ static void paint_marker_row(int y, int rowIdx, float fillDeg1) {
     if (rightLo <= rightHi) paint_marker_bar(y, rightLo, rightHi, dyCenter, loDeg, hiDeg);
 }
 
-// Paints lap 1's own full-width ink/track for landscape row y, then lap 2's
-// own cut marker ON TOP for the same row if it has one to draw. The order
-// matters: the marker must land on top of freshly-painted ink, not the
-// other way round, so it stays visible.
+/* ---------------------------------------------------------------------
+ * ROUNDED ENDS, AND THE HEAD'S OUTLINE
+ *
+ * Owner, 2026-08-14: "i'd like both ends of the coil to be rounded, like a
+ * half circle", then, on seeing an earlier attempt that ringed each cap
+ * completely: "non tu faisais des ronds tout outlinés, je veux que seul the
+ * outward part of the half circle be outlined".
+ *
+ * So two separate things, and it matters that they are separate:
+ *
+ * 1. BOTH ends of lap 1's ink get a rounded end. A disc of radius CAP_R
+ *    centred on the ring's midline, intersected with the ring's own radial
+ *    band, IS that rounded end: CAP_R is exactly half the ring's thickness,
+ *    so the disc spans the band and nothing more. No cap can bulge outside
+ *    the ring, by construction rather than by margin-tuning, which is the
+ *    thing that went wrong the last two times this file drew caps.
+ *
+ * 2. Only lap 2's HEAD is outlined, and only on its OUTWARD side. Lap 2
+ *    retraces ground lap 1 already inked, so its head sits on black and
+ *    would otherwise be invisible; a white crescent hugging the leading
+ *    edge of its cap is what makes the cut end of the hose readable. The
+ *    trailing side needs nothing: there, the ink simply continues.
+ *
+ * This replaces the straight radial cut mark. Same job, following the cap's
+ * curve instead of slicing across it.
+ * ------------------------------------------------------------------- */
+
+#define CAP_R            (RING_THICK_PX / 2)                  // 16, exactly half the band
+#define RING_MID_R       ((RING_OUTER_R + RING_INNER_R) / 2)  // 157
+#define CAP_HALF_DEG     (((float)CAP_R / (float)RING_MID_R) * TIMER_RAD2DEG) // ~5.84
+#define HEAD_OUTLINE_PX  3   // THE KNOB for the head's crescent weight
+
+// Fills [dxLo, dxHi] on this row with c, clipped to the ring's own band so a
+// caller never has to know where the hole is.
+static void fill_band_run(int y, int rowIdx, int dxLo, int dxHi, uint16_t c) {
+    int hwOuter = s_hwOuter[rowIdx];
+    int hwInner = s_hwInner[rowIdx];
+    if (hwOuter <= 0) return;
+    if (dxLo < -hwOuter) dxLo = -hwOuter;
+    if (dxHi > hwOuter) dxHi = hwOuter;
+    if (dxLo > dxHi) return;
+
+    if (hwInner <= 0) {
+        gfx_fill_rect_land(RING_CX + dxLo, y, dxHi - dxLo + 1, 1, c);
+        return;
+    }
+    int lLo = dxLo, lHi = (dxHi < -hwInner) ? dxHi : -hwInner;
+    if (lLo <= lHi) gfx_fill_rect_land(RING_CX + lLo, y, lHi - lLo + 1, 1, c);
+    int rLo = (dxLo > hwInner) ? dxLo : hwInner, rHi = dxHi;
+    if (rLo <= rHi) gfx_fill_rect_land(RING_CX + rLo, y, rHi - rLo + 1, 1, c);
+}
+
+// The cap centre for angle deg, in the same (dx, dyCenter) frame every other
+// painter here uses: phi = atan2f(dx, -dyCenter), so dx = R sin, dy = -R cos.
+static void cap_centre(float deg, float *dxCap, float *dyCap) {
+    float a = deg * TIMER_DEG2RAD;
+    *dxCap = (float)RING_MID_R * sinf(a);
+    *dyCap = -(float)RING_MID_R * cosf(a);
+}
+
+// One row of a filled rounded end at angle deg.
+static void paint_cap_row(int y, int rowIdx, float deg, uint16_t c) {
+    float dxCap, dyCap;
+    cap_centre(deg, &dxCap, &dyCap);
+    float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R;
+    float dv = dyCenter - dyCap;
+    float rr = (float)(CAP_R * CAP_R) - dv * dv;
+    if (rr <= 0.0f) return;
+    float half = sqrtf(rr);
+    fill_band_run(y, rowIdx, (int)floorf(dxCap - half), (int)ceilf(dxCap + half), c);
+}
+
+// One row of the head's outward crescent: the outer HEAD_OUTLINE_PX of the
+// cap's disc, kept only where the pixel lies AHEAD of the head's own angle.
+// Per pixel rather than by runs: the crescent is at most a few hundred
+// pixels in total, and the angular test is what makes it a crescent rather
+// than a full ring, which is the whole point of the owner's correction.
+static void paint_head_outline_row(int y, int rowIdx, float deg) {
+    int hwOuter = s_hwOuter[rowIdx];
+    int hwInner = s_hwInner[rowIdx];
+    if (hwOuter <= 0) return;
+    float dxCap, dyCap;
+    cap_centre(deg, &dxCap, &dyCap);
+    float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R;
+    float dv = dyCenter - dyCap;
+    float outer2 = (float)(CAP_R * CAP_R);
+    float innerR = (float)(CAP_R - HEAD_OUTLINE_PX);
+    float inner2 = innerR * innerR;
+    if (dv * dv >= outer2) return;
+    float half = sqrtf(outer2 - dv * dv);
+    int lo = (int)floorf(dxCap - half), hi = (int)ceilf(dxCap + half);
+    for (int dx = lo; dx <= hi; dx++) {
+        int adx = dx < 0 ? -dx : dx;
+        if (adx > hwOuter) continue;
+        if (hwInner > 0 && adx < hwInner) continue;
+        float du = ((float)dx + 0.5f) - dxCap;
+        float d2 = du * du + dv * dv;
+        if (d2 > outer2 || d2 < inner2) continue;
+        if (phi_deg_for_col(dx, dyCenter) < deg) continue; // trailing side: ink continues
+        gfx_fill_rect_land(RING_CX + dx, y, 1, 1, PX_WHITE);
+    }
+}
+
+// Paints lap 1's own full-width ink/track for landscape row y, then its two
+// rounded ends, then lap 2's head crescent ON TOP. The order matters: each
+// layer must land on the one below it, not the other way round.
 static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
     int rowIdx = y - (RING_CY - RING_OUTER_R);
     if (rowIdx < 0 || rowIdx >= RING_ROWS) return;
     paint_band_row(y, rowIdx, fillDeg[0]);
-    paint_marker_row(y, rowIdx, fillDeg[1]);
+    if (fillDeg[0] > 0.0f) {
+        paint_cap_row(y, rowIdx, 0.0f, PX_BLACK);
+        paint_cap_row(y, rowIdx, fillDeg[0], PX_BLACK);
+    }
+    if (fillDeg[1] > 0.0f) paint_head_outline_row(y, rowIdx, fillDeg[1]);
 }
 
 // Paints the coil's full bounding box at fillDeg[0]/fillDeg[1] - lap 1's
@@ -1634,7 +1740,13 @@ static void update_ring_to(timer_state_t *s, const float newFillDeg[LAPS_MAX]) {
         float oldDeg = s->lastFillDeg[b], newDeg = clamped[b];
         float fromDeg = newDeg < oldDeg ? newDeg : oldDeg;
         float toDeg = newDeg < oldDeg ? oldDeg : newDeg;
-        float margin = (b == 0) ? 0.0f : MARKER_HALF_DEG;
+        // Both bands now bulge past their own angle by exactly one cap's
+        // angular half-width: band 0 through its rounded end, band 1 through
+        // the head crescent. CAP_HALF_DEG is that half-width EXACTLY (a
+        // known radius over a known radius), not an approximation of an
+        // emergent bulge, which is what made the previous two cap attempts
+        // leave residue behind a moving end.
+        float margin = CAP_HALF_DEG;
         float sweepFromDeg = fromDeg - margin;
         float sweepToDeg = toDeg + margin;
         if (sweepFromDeg < 0.0f) sweepFromDeg = 0.0f;
