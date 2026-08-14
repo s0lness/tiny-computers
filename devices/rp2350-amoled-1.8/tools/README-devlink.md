@@ -132,6 +132,7 @@ giving up the shared console's usefulness to a human.
 | `MOVE <x> <y>` | `OK` (or `ERR args`) |
 | `UP` | `OK` |
 | `TAP <x> <y>` | `OK` (internally: DOWN then UP) |
+| a *held* contact | no command of its own: see "Holding a finger still" below |
 | `ERASE` | `OK` |
 | `KEY PRESS` / `KEY LONG` / `KEY SHORT` / `KEY RELEASE` | `OK` (or `ERR args` if the name is not one of the four) |
 | `BOOT DOWN` / `BOOT UP` / `BOOT CLICK` | `OK` (or `ERR args`) |
@@ -257,6 +258,118 @@ feels right in the browser is a hypothesis about the real controller, not a
 result. Only `TUNE` against the real device, under a real finger, can
 promote it to one.
 
+### Holding a finger still
+
+There is no `HOLD` command, and there should not be one. Firmware never
+sees "a finger is down"; it sees samples arriving in a queue
+(`firmware/runtime/sensors.h`). A single `DOWN` is one sample and then
+silence, which `sketch.c`'s `LIFT_DEBOUNCE_MS` reads as a lift 220ms later.
+**A held contact is the same coordinate reported again, and again, for as
+long as the finger is there**, so a hold is a paced stream of `MOVE`s at one
+point, produced host-side by `tools/touchstream.ts` and sent by
+`bun tools/dev.ts hold <x> <y> <ms>`.
+
+Until this existed, no gesture whose meaning is its duration could be driven
+from a host at all: the sketchpad's palette (`LONG_PRESS_MS` = 550ms of
+still contact), Connect Four's sustained press and release, the menu's
+launch-on-release.
+
+**Two realism profiles, clean by default.** `hold` and `draw` both take
+`--real`, which runs the gesture through the emulator's own `TouchSim` under
+`TOUCHSIM_HARDWARE_MEASURED` - the profile measured on this panel, dropouts
+at 34/s and position-jitter episodes of 80-250px (see
+`emulator/src/constants.ts` for the session behind each number). Clean input
+answers "does this gesture work at all" and answers it the same way twice;
+`--real` answers "does it survive this panel", which is the question every
+broken palette round has actually turned on. `--real` is seeded (`--seed`,
+default 1), so a failure replays exactly. The defect model is *imported*,
+not reimplemented: two implementations of "what this panel does" agree only
+on the day the second is written (decision 0008).
+
+**What a stream of reports cannot reproduce.** The real FT3168 repeats one
+coordinate about sixty times before producing a new one, because core1
+re-reads it at roughly 1.4kHz while the controller itself refreshes at
+~60Hz (measured: `haveTouch` 88977 against `newReport` 1399 in one session).
+Injection cannot: every report is one command down a 115200-baud line, and
+`INJECT_Q_CAP` is **8** deep with a silent drop-on-full policy
+(`sensors.c`). So this reports at the rate the controller *refreshes* (60Hz),
+which is the same simplification `TouchSim` makes - the emulator and the
+board therefore see the same stream, which is what the differential harness
+needs. One consequence to keep in mind when reading a `--real` run: 34
+dropouts per second land as a fraction of 60 reports rather than as isolated
+losses inside a dense stream, so contact is reported absent more often than
+the panel really does it. Harsher on that one axis, identical to what the
+gate tests against.
+
+**An `OK` means dispatched, not delivered.** `sensors_inject_touch()` drops
+silently when its 8-deep ring is full, so "43 acked" is a statement about
+the wire. This is also why `draw` no longer fires its points as fast as the
+link allows: `devlink_poll()` dispatches every line queued on the port in
+one call, so an unpaced burst of more than 8 points loses the excess with no
+error anywhere.
+
+**Pacing is measured, not assumed.** Each run prints the gaps it actually
+achieved. This matters on Windows specifically: the OS timer resolution is
+15.6ms, so `Bun.sleep(16)` returns after ~31ms (measured here: median
+30.8ms), and a 60Hz stream paced with a timer runs at 32Hz. `dev.ts` paces
+with `setImmediate` instead, which is not a timer, and lands within 0.15ms
+of target (median 16.67ms, max 16.79ms) while still yielding often enough
+for each write to reach the wire. Against the real board this holds up: 45
+reports, gap median 16.7ms, max 17.9ms.
+
+**`hold --shot <out.png>` photographs the screen mid-gesture.** The screens
+worth capturing this way exist *only* while contact is held - the palette,
+Connect Four's held column - so the capture has to happen before the lift,
+and two separate `bun tools/dev.ts` invocations cannot do it (the contact is
+long gone by the time the second process has opened the port). `SHOT` is
+written in the same breath as the last touch report, before any
+acknowledgement is read back; draining the acks first was measured costing
+87ms of the window, which was enough to lose the picture. The reply then
+blocks `devlink_poll()` for a few hundred milliseconds, so no report can be
+injected during it and the contact does end - but the framebuffer is walked
+at the instant the command is dispatched, before the main loop gets another
+turn, so what lands in the PNG is the frame that was on the glass while the
+finger was still down.
+
+**Injected contact cannot be held indefinitely, and the reason is worth
+knowing.** Measured on the real board (2026-08-15): a hold on the sketchpad
+opens the palette on schedule and then the palette resolves itself about
+245ms later, every time, at every report rate tried from 15Hz to 150Hz.
+That is an artefact of injection, not a bug a thumb would hit. Under a real
+finger `Touch_INT_PIN` stays low, so core1 pushes nothing but contact
+samples. Under injection the controller is idle, `INT` is high, and core1
+pushes a zero-finger idle heartbeat **every 5ms**
+(`TOUCH_IDLE_HEARTBEAT_MS`) which is indistinguishable from a dropout; as
+soon as the injected contact stream cannot keep `PALETTE_LIFT_GRACE_MS`
+(80ms) fed - which it cannot through the palette's own opening animation -
+those heartbeats resolve the gesture as a lift. Practical consequence: a
+gesture that must stay held for longer than a couple of hundred milliseconds
+past a heavy repaint cannot be driven this way today. Deepening
+`INJECT_Q_CAP` or suppressing the idle heartbeat while injected contact is
+live would fix it; both are firmware changes, neither was made here.
+
+**What the first held capture actually showed**
+(`capture/palette-on-device.png`, `hold 184 224 785 --shot`, 2026-08-15).
+The palette's real pixels, at last, instead of a sentence describing them.
+Measured off the decoded image, the balloons in each row **abut with no gap
+at all**: row 0 runs `x 12-127` then `128-239`, row 2 runs `12-127`,
+`128-239`, `240-354`. `PALETTE_CELL_GAP_PX` is 8, and none of it is visible
+between neighbours; with a 26px corner radius the touching pairs read as one
+merged blob through the middle of each row. That is the overlap the owner
+has been reporting, and it is in the shipped pixels, not in his description
+of them.
+
+**Only seven of the nine cells appear, and that is `SHOT`'s fault, not the
+palette's.** `SHOT` derives its grey from the stored pixel's *green* channel
+alone (see this file's own formula), so yellow (`0xFFE0`) and green
+(`0x07E0`) both come out at 252 - the exact value of the white paper they
+sit on. Cells 2 and 3 are therefore invisible in the capture, and every
+other cell's grey matches `palette_color()` exactly (red and blue and purple
+to 0, orange to 140, pink to 104, brown to 68), which is also what confirms
+the capture is faithful. **A colour palette cannot be judged whole from a
+`SHOT`**; geometry yes, colour no. For colour, `tools/cam.py` photographs
+the physical panel.
+
 ### SHOT
 
 Requests a screenshot. The panel is neutral grey throughout (white paper,
@@ -325,6 +438,19 @@ for - nothing new to implement host-side. `runtime.c`'s profiler line
 carries a cumulative `shot drops=N` counter (via `devlink_dropped_shots()`)
 so a truncated `SHOT` is never confused with a dead board even by someone
 just watching the console, not running `tools/dev.ts` at all.
+
+**Which screens this budget actually costs you, measured.** The sketchpad's
+open palette sits right on the boundary: its nine balloons with anti-aliased
+rounded corners come to about 6400 RLE bytes (roughly 3200 runs, seven per
+scanline), and captures of it land at 98-99 percent about half the time,
+losing the last handful of rows. A blank page is 900. So the limit is not
+screen *area*, it is how many runs the screen breaks into, and the practical
+rule is that a screen built out of shapes and gradients may not photograph
+whole while a screen built out of ink on paper always will. `tools/dev.ts`
+now says so out loud instead of throwing: a truncated capture is written
+with the missing rows as mid-grey and reported as `[TRUNCATED]` with the
+percentage that arrived, because two thirds of a screen answers more
+questions than an exception does.
 
 ### KEY, BOOT and CHORD
 
@@ -481,7 +607,12 @@ bun tools/dev.ts shot out.png
 bun tools/dev.ts app
 bun tools/dev.ts switch 0
 bun tools/dev.ts tap 184 224
+bun tools/dev.ts hold 184 224 700
+bun tools/dev.ts hold 184 224 785 --shot palette.png
+bun tools/dev.ts hold 184 224 700 --real --seed 7
+bun tools/dev.ts hold 184 224 700 --dry            # print the reports, send nothing
 bun tools/dev.ts draw 20,20 60,40 100,30 140,60
+bun tools/dev.ts draw 20,20 140,60 --ms 400 --real
 bun tools/dev.ts erase
 bun tools/dev.ts key short
 bun tools/dev.ts boot click
@@ -634,13 +765,21 @@ faith.
 
 - All six subcommands (`ping`, `shot`, `app`, `switch`, `tap`, `erase`,
   `draw`) have been run against real hardware (see "Bring-up notes" above).
-  `draw` was only checked for a clean `DOWN`/`MOVE`/`MOVE`/`UP` round trip
-  against the running stopwatch app, which does not react to touch visually;
-  it was not checked against the sketchpad, so a real stroke's visual result
-  (as opposed to the reply sequence) is still unverified.
-- `draw` paces `MOVE` commands 20ms apart; real touch reports arrive at
-  roughly 58Hz (~17ms) per the runtime's profiling notes, so this is in the
-  right ballpark but not tuned against a real stroke.
+  `draw` was originally only checked for a clean `DOWN`/`MOVE`/`MOVE`/`UP`
+  round trip against the running stopwatch app, which does not react to
+  touch visually. **No longer**: `draw 60,80 300,180 120,320` against the
+  sketchpad now produces one continuous, correctly tapered stroke through
+  all three points, verified by a `shot` of the result (2026-08-15), so the
+  visual result is checked and not just the reply sequence.
+- `draw` used to pace `MOVE` commands with `Bun.sleep(20)`, one per listed
+  point, waiting for each `OK` in between. On Windows that actually ran at
+  roughly 32Hz (the 15.6ms timer floor rounds a 20ms sleep up to ~31ms) plus
+  a round trip per point, and the path was never resampled, so a four-point
+  stroke reached the board as four reports at an irregular cadence - nothing
+  like a finger, and the most likely reason an injected stroke and a real
+  one diverged in the differential harness on every run. It now resamples
+  the path at the report rate and paces with `setImmediate`; see "Holding a
+  finger still" above.
 - Injected samples are merged into the real touch stream by timestamp, with
   ties broken toward the injected one; see `sensors.c`'s injection-ring
   comment. Driving `devlink` and a real finger at once no longer corrupts
