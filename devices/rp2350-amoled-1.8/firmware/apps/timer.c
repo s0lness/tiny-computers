@@ -21,45 +21,200 @@
 // faded." Both rounds were implemented as dots first (see git history for
 // that version, including a per-dot interpolation scheme).
 //
-// THIS FILE NOW IMPLEMENTS THE OWNER'S OWN "OR MAYBE... A FULL CIRCLE"
+// THIS FILE THEN IMPLEMENTED THE OWNER'S OWN "OR MAYBE... A FULL CIRCLE"
 // ALTERNATIVE INSTEAD, after review: a continuous annulus, track in light
 // grey, filled arc in black, Apple-activity-ring style. The crumbling dot
 // was a patch over quantisation that never fully went away: even
 // interpolated, it was still one distinguished element standing in for a
 // continuous quantity, redrawn in discrete steps. An arc has nothing to
 // quantise; it moves because the angle is a continuous function of what is
-// left, recomputed fresh every frame (see current_fill_deg() for exactly
-// what that function is now - it stopped being plain proportional-to-time
-// on 2026-08-13, see TICK_COUNT's comment, but it is still continuous, not
-// stepped). It also answers the "hard to see big dots vs small
-// dots" complaint more directly than grey-as-primary-cue did: a thick black
-// arc against a light grey track is the strongest contrast this white-
-// paper-black-ink panel can produce, and it reads as ONE shape rather than
-// as a comparison across 65 marks. What the dots gave that a bare circle
-// would not (see the old rejection of "just a full circle": "a full circle
-// can only ever show ONE number... does not show the step size") went, for
-// one iteration, to 12 small tick marks at the 5-minute positions outside
-// the ring; the owner then asked for those gone too, on the same reasoning
-// Apple's own activity rings follow: the exact value is already written
-// large in the middle of the ring, so a graduation nobody needs to count
-// adds no information and only breaks the ring's contour. So the ring ends
-// up as exactly two things: the grey track (see TRACK_GRAY) and the black
-// arc on top of it (see "Rounded caps" below) - nothing else.
+// left, recomputed fresh every frame. It also answers the "hard to see big
+// dots vs small dots" complaint more directly than grey-as-primary-cue did:
+// a thick black arc against a light grey track is the strongest contrast
+// this white-paper-black-ink panel can produce, and it reads as ONE shape
+// rather than as a comparison across 65 marks. What the dots gave that a
+// bare circle would not (see the old rejection of "just a full circle": "a
+// full circle can only ever show ONE number... does not show the step
+// size") went, for one iteration, to 12 small tick marks at the 5-minute
+// positions outside the ring; the owner then asked for those gone too, on
+// the same reasoning Apple's own activity rings follow: the exact value is
+// already written large in the middle of the ring, so a graduation nobody
+// needs to count adds no information and only breaks the ring's contour.
 //
-// A dot is still a RECTANGLE shape, not a pixel shape: gfx rotates
-// rectangles, not pixels (gfx.h). The ring is drawn as a stack of 1px-tall
-// horizontal bars, each one a call to gfx_fill_rect_land, same technique
-// the old dots used and the same one firmware/apps/shapes.c now offers
-// (shapes_fill_half_width_table): this file uses that table builder for its
+// A dot, and every shape in this file, is a stack of RECTANGLE rows, not
+// pixels: gfx rotates rectangles, not pixels (gfx.h). The ring is drawn as
+// a stack of 1px-tall horizontal bars, each one a call to
+// gfx_fill_rect_land, the technique the old dots used and the one
+// firmware/apps/shapes.c offers as shapes_fill_half_width_table /
+// shapes_draw_annulus_row: this file uses the table builder for its
 // outer/inner half-width tables rather than re-deriving the sqrtf loop, but
-// NOT shapes_draw_annulus_row, because that draws one row in ONE colour and
-// almost every row here is split between the black arc and the grey track;
-// the angular clipping that split needs (see "Angle, and where it gets
-// fiddly" below) has no other caller yet, so it stays in this file rather
-// than being pushed into shapes.c speculatively.
+// NOT shapes_draw_annulus_row itself, because that draws one row in ONE
+// colour and almost every row here is split between a black arc and a grey
+// track; the angular clipping that split needs (see "Angle, and where it
+// gets fiddly" below) has no other caller yet, so it stays in this file
+// rather than being pushed into shapes.c speculatively.
 //
 // Digits are digits.c's, shared with chrono rather than redrawn here (see
 // digits.h): same numerals, same two hard-won corrections, one copy.
+//
+// =========================================================================
+// CORRECTED 2026-08-14: THE COIL.
+// =========================================================================
+//
+// Everything above this line is the ring's own history and stays true of
+// the ring's LOOK (a continuous black arc over a grey track, rounded caps,
+// no tick marks). What changed on this date is what the arc MEANS and how
+// many of it there are - the tiered step table the next section used to
+// describe (5s/30s/1m, "half the arc must mean half the time" retired
+// deliberately) is gone, replaced by the coil below. That whole tiered
+// section is kept, unedited, immediately after this one: it is the record
+// of a real, deliberate design (and the reason it was later reversed is
+// worth keeping alongside it), not dead prose to delete.
+//
+// THE PROBLEM WITH THE TIERED RING. Three different step sizes at three
+// different radii meant the same finger movement meant three different
+// things depending on where on the dial it happened - fast (5s) for the
+// first 24 slots, medium (30s) for the next 16, slow (1m) for the rest. An
+// adult reading the digits could compensate. A child who cannot yet read
+// MM:SS, and who is learning what this object does entirely through her
+// hands, cannot: dragging the same distance sometimes buys two seconds,
+// sometimes two minutes, and there is nothing on the dial itself - no knee,
+// no visible boundary - that says which zone a finger is in. That
+// unpredictability, not the numbers themselves, is the owner's complaint,
+// and it is what THE COIL exists to remove.
+//
+// THE OWNER'S DESIGN, taken as given rather than reinterpreted (his own
+// words, lightly reformatted):
+//
+//   - the step is 5 seconds, EVERYWHERE. no tiers, no knees.
+//   - pointing directly still works and is the fast gesture, landing in
+//     the right neighbourhood.
+//   - dragging past the top of the dial adds a revolution, dragging back
+//     past it removes one. total = laps*(lap length) + (angle within the
+//     current lap) - "a modulo". the mechanism is continuous unwrapped
+//     angle tracking across the twelve o'clock branch cut, not the raw
+//     angle.
+//   - the laps must be visually countable: each revolution is its OWN
+//     concentric band, separated by a visible outline (Apple activity
+//     rings: two laps means you plainly see two rings, not one thicker
+//     one), winding INWARD (lap 1 outermost, lap 2 just inside it, ...) so
+//     the dial's outer diameter never grows and it reads as something being
+//     coiled.
+//   - setting and running still share one mapping (this file already had
+//     that property for the tiered ring - see current_fill_deg()'s old
+//     header comment, retained below - and it is preserved here for the
+//     same reason: a drag and a countdown that could ever visibly disagree
+//     about where the arc belongs is unusable, not just inconsistent).
+//   - stopping must not force a reset: "if I stop the timer I should be
+//     able to directly edit the time without clearing." Pausing then
+//     dragging edits from the paused value.
+//
+// The lap length and lap count themselves went through two revisions the
+// same week (ten minutes/six laps, then thirty minutes/two laps - see the
+// second dated section below, "30 MINUTES A LAP, TWO LAPS"): what is
+// listed above is what stayed constant across both, the actual mechanism.
+//
+// THE STEP TABLE COLLAPSES TO ONE LINE. TICK_STEP_S = 5, always. seconds =
+// ticks*5 and ticks = seconds/5 are now exact linear inverses of each
+// other, no piecewise cases, no boundary to get subtly wrong at 2:00 or
+// 10:00 - see seconds_for_ticks()/tick_index_for_seconds() below, which
+// used to be the two most complicated functions in this file and are now
+// each one line.
+//
+// POINT VS DRAG, AND THE BRANCH CUT. A tap ("point directly") sets the
+// SUB-LAP position to the tapped angle while preserving however many laps
+// are already wound - it never resets the lap count, so tapping near the
+// dial while deep into a lap nudges the value within that lap, it does not
+// throw a completed lap away. A continuing drag instead accumulates the
+// UNWRAPPED angular delta frame to frame, exactly the mechanism the owner
+// named: crossing twelve o'clock going one way adds a lap, going the other
+// removes one, because the delta computed across that crossing is a small
+// forward (or backward) nudge, not a wraparound one - see point_touch()/
+// drag_touch() below, and this file's "Angle, and where it gets fiddly"
+// section, which the coil inherits unchanged (the branch cut problem it
+// already solved for reading a single angle is the same problem
+// drag_touch's delta-unwrap solves for reading a CHANGE in angle). That
+// branch cut bit this project once already (see the ring-shrink-residue
+// history further down) - repro-ring-shrink-residue.ts is kept and
+// extended, not replaced, and a dedicated new test drives a drag through
+// twelve o'clock forward and back and checks the landed total exactly.
+//
+// TRUE ZERO IS NOW REACHABLE BY TOUCH, ON PURPOSE - A DELIBERATE CHANGE.
+// The tiered ring's ring_tick_for_touch() could never return a tick of
+// exactly zero from a drag (see its own retained comment below): with a
+// single absolute angle-to-slot snapshot, a full revolution of slots had no
+// slot left over to mean "zero", so "zero" was reserved for the untouched
+// default alone. The coil's mechanism is different in kind - a drag is a
+// RELATIVE accumulator, not a snapshot - so zero is just the natural floor
+// of that accumulator: dragging backward past it holds at zero with no dead
+// zone, and dragging forward immediately resumes from there. This is not an
+// oversight carried over from the old design; it is a consequence of the
+// new one, and it is more intuitive (a scrollbar-style hard stop) than the
+// old asymmetry was.
+//
+// PAUSE, THEN EDIT. TS_PAUSED gained exactly one new touch reaction: a
+// touch on the ring converts the frozen paused value into a fresh SETTING
+// session (see the TS_PAUSED branch in timer_tick()) - the lap count and
+// sub-lap position both carry over from the instant of pausing, then the
+// same point/drag mechanism above edits it live. PWR still resumes an
+// untouched pause without any of this firing. The state machine gains no
+// new state for this: SETTING already means "not committed yet", which is
+// exactly what a value someone is actively correcting is.
+//
+// =========================================================================
+// CORRECTED 2026-08-14 (LATER THE SAME DAY): 30 MINUTES A LAP, TWO LAPS,
+// A WIDER BAND.
+// =========================================================================
+//
+// Owner, direct quote, after seeing the first coil (ten minutes a lap, six
+// laps, six thin bands): "let's make a round trip 30min and a double trip
+// 60min and double the width of the coil." Three changes, all mechanical
+// consequences of the SAME design (nothing about point-vs-drag, the branch
+// cut, "setting and running share one mapping", or pause-then-edit changes
+// - only how many laps there are and how much of the panel each one gets):
+//
+//   - TICKS_PER_LAP: 10 minutes' worth of the flat 5s step (120) -> 30
+//     minutes' worth (360).
+//   - LAPS_MAX: 6 -> 2, since 2 laps * 30 minutes is still the same 60
+//     minute ceiling the owner specified from the start.
+//   - the band itself: twice as thick, because two bands need to fit where
+//     six used to - see "Ring geometry: the coil" below for the reworked
+//     derivation, which lands (by a genuine coincidence of the arithmetic,
+//     not forced) on the exact outer radius and margins the ORIGINAL
+//     single ring had, before there were bands at all.
+//
+// TWO CONSEQUENCES OF THE NEW NUMBERS, HANDLED DELIBERATELY:
+//
+// First, six o'clock is now 15:00, not 5:00 (a 30-minute lap's own half-
+// turn). The owner's earlier worked example ("touching the bottom sets 5
+// minutes") was specific to a 10-minute lap and no longer holds at 30 - he
+// said so explicitly when giving the new numbers, so this is an accepted,
+// known consequence, not a silently broken promise. This file's own tests
+// check 15:00, not 5:00 - see repro-timer-coil.ts.
+//
+// Second, and this is the one requiring judgement rather than arithmetic:
+// TICKS_PER_LAP going from 120 to 360 makes each tick's own ARC LENGTH
+// roughly a third of what it was for a similar-radius lap, because three
+// times as many ticks now share the same circumference. At this file's new
+// RING_OUTER_R (173, see the geometry section below), one tick is
+// 2*pi*173/360 = ~3.0 pixels of arc - within the same order of magnitude
+// the owner's own estimate ("roughly 2.6 pixels") landed on, and well
+// under anything a fingertip can aim at directly. POINTING therefore still
+// lands in the right NEIGHBOURHOOD (see sub_lap_ticks_for_angle, unchanged
+// in mechanism) but cannot reliably land on one specific 5-second tick by
+// itself any more; WINDING - continuing to drag - is what actually resolves
+// the exact value, exactly as the owner said. See drag_touch()'s own
+// comment, "FINE-GRAINED DRAG: NO JITTER AT REST, NO RUNAWAY WHEN FAST",
+// for what this file does about it and the honest limit of what software
+// alone can guarantee here.
+//
+// SHAKE TO CLEAR, ADDED THE SAME DAY. Owner, direct quote: "also i should
+// be able to shake to clear while i'm still in edit mode there." See
+// timer_tick()'s own shake-clear branch, and g_timerApp's wantsShake
+// comment at the bottom of this file, for the full reasoning (why SETTING
+// and PAUSED both qualify as "edit mode" but RUNNING deliberately does
+// not, and why this can never double-fire with the alarm's own,
+// pre-existing shake dismissal).
 #include <math.h>
 #include <stdio.h>
 
@@ -71,7 +226,18 @@
 #include "sound.h"
 
 /* ---------------------------------------------------------------------
- * Tick geometry and the seconds-per-tick mapping.
+ * Tick geometry and the seconds-per-tick mapping - SUPERSEDED 2026-08-14,
+ * kept verbatim as the record of a real, deliberate design this project
+ * shipped and then reversed. See this file's header, "CORRECTED
+ * 2026-08-14: THE COIL", for why: the owner's brief for the redesign is
+ * "the step is 5 seconds, everywhere. no tiers, no knees" - the opposite of
+ * what this section built. The code this section used to justify
+ * (FINE_TICKS/MID_TICKS/COARSE_TICKS and the piecewise
+ * seconds_for_ticks()/tick_index_for_seconds() below them) has been
+ * removed; only the comment stays, because the REASONING here (the
+ * fingertip-size arithmetic, the "last two minutes stretch and slow"
+ * upside) was real and might matter again if a future step scheme is ever
+ * considered.
  *
  * Owner requirement (2026-08-13): "the timer must be settable in
  * increments of 5 seconds." A flat 5s step collides with the old 60-minute
@@ -97,99 +263,171 @@
  * seconds-per-degree of arc NON-UNIFORM across the dial, which the very
  * first version of this file explicitly rejected ("half the arc must mean
  * half the time"). That rule is retired by this instruction, not violated
- * by accident - see current_fill_deg()'s header comment for the mechanical
- * change this forces (the angle must now be driven by STEP INDEX, not by
- * remaining seconds) and why. The owner accepted the price knowing what it
- * buys: the last two minutes occupy 24/90 = ~27%, about a quarter, of the
- * ring, while being only 120/3600 = ~3.3%, about three percent, of the
- * maximum - a countdown that visibly slows and stretches its ending, which
- * reads as more useful than one that thins out linearly and vanishes,
- * because the end is the part anyone is actually watching. That upside was
- * not the design goal (the goal was reaching 5s resolution on a 75px
- * finger without shrinking the cap); it is a side effect worth knowing
+ * by accident - the last two minutes occupy 24/90 = ~27%, about a quarter,
+ * of the ring, while being only 120/3600 = ~3.3%, about three percent, of
+ * the maximum - a countdown that visibly slows and stretches its ending,
+ * which reads as more useful than one that thins out linearly and
+ * vanishes, because the end is the part anyone is actually watching. That
+ * upside was not the design goal (the goal was reaching 5s resolution on a
+ * 75px finger without shrinking the cap); it is a side effect worth knowing
  * about before "fixing" the non-uniformity back out.
  *
- * This no longer sizes anything about the RING (that used to be dots spaced
- * around it; the ring is now a continuous arc, sized only by
- * RING_OUTER_R/RING_INNER_R below). What TICK_COUNT still does is size the
- * SNAP: dragging still lands on one of 90 discrete values, per the brief's
- * "snap to sensible steps... so a small imprecise finger still lands
- * somewhere round" - the arc's angle is now driven directly by which of
- * those 90 slots is current (see current_fill_deg), not by the seconds
- * that slot happens to represent.
+ * WHY IT WAS REVERSED: the coil's flat 5s-everywhere step buys back exactly
+ * the "same finger movement means different things in different places"
+ * problem this section's own three tiers created, at the cost of the
+ * "stretched ending" upside above - a trade the owner made explicitly, see
+ * this file's header.
  * ------------------------------------------------------------------- */
-#define FINE_TICKS      24
-#define FINE_STEP_S     5
-#define FINE_SPAN_S     (FINE_TICKS * FINE_STEP_S)               // 120 (2:00)
-#define MID_TICKS       16
-#define MID_STEP_S      30
-#define MID_SPAN_S      (MID_TICKS * MID_STEP_S)                 // 480 (8:00 more)
-#define COARSE_TICKS    50
-#define COARSE_STEP_S   60
-#define COARSE_SPAN_S   (COARSE_TICKS * COARSE_STEP_S)           // 3000 (50:00 more)
-#define TICK_COUNT      (FINE_TICKS + MID_TICKS + COARSE_TICKS)  // 90
-#define TIMER_MAX_SECONDS (FINE_SPAN_S + MID_SPAN_S + COARSE_SPAN_S) // 3600, i.e. 60 minutes
+
+/* ---------------------------------------------------------------------
+ * Tick geometry: the coil. One flat step, everywhere.
+ *
+ * TICK_STEP_S = 5, unconditionally - see this file's header for why the
+ * three-tier table above no longer applies.
+ *
+ * TICKS_PER_LAP is 30 minutes' worth of that flat step (1800s / 5s = 360) -
+ * SUPERSEDED FROM 120 (10 minutes) on 2026-08-14, same day, per the
+ * owner's "let's make a round trip 30min" - the lap length is specified
+ * directly by the owner both times, not derived, so there is no
+ * independent arithmetic to check here beyond TICKS_PER_LAP*TICK_STEP_S
+ * landing on exactly 1800.
+ *
+ * LAPS_MAX = 2 - SUPERSEDED FROM 6, same correction: "a double trip 60min"
+ * means two 30-minute laps, not six 10-minute ones. 2 laps * 30 minutes is
+ * still the owner's original 60-minute ceiling exactly (MAX_TICKS and
+ * TIMER_MAX_SECONDS both still come out whole, same "the numbers happen to
+ * land exactly" property the original 90-tick table and the first coil
+ * both had).
+ *
+ * Per-step arc length: TICKS_PER_LAP steps around a circle of circumference
+ * 2*pi*RING_OUTER_R (173, see the ring-geometry section below) is
+ * 2*pi*173/360 = ~3.0px per step. This is a THIRD of what a 120-tick lap
+ * at a similar radius would give (three times as many ticks sharing the
+ * same circumference) - well under a fingertip's own resolving power, and
+ * close to (a little more generous than) the owner's own estimate of
+ * "roughly 2.6 pixels". See this file's header, "Second, and this is the
+ * one requiring judgement", and drag_touch()'s own comment for what this
+ * means for dragging in practice and what this file does about it.
+ * ------------------------------------------------------------------- */
+#define TICK_STEP_S       5
+#define TICKS_PER_LAP     360                               // 30:00 / 5s
+#define LAPS_MAX          2
+#define MAX_TICKS         (TICKS_PER_LAP * LAPS_MAX)        // 720, i.e. 60:00
+#define TIMER_MAX_SECONDS (MAX_TICKS * TICK_STEP_S)         // 3600, 60 minutes
 
 // Ring centre, in LANDSCAPE coordinates (448 wide x 368 tall). Centred on
-// the canvas, same as the dot version.
+// the canvas, same as every earlier version of this file (the coil's
+// centre does not move; only what surrounds it does).
 #define RING_CX      224   // LAND_W / 2
 #define RING_CY      184   // LAND_H / 2
 
 /* ---------------------------------------------------------------------
- * The ring: an annulus (track + arc), sized against the same three limits
- * the dot version was solved against, now for an outer and inner radius
- * instead of a dot-centre radius and a dot diameter:
+ * Ring geometry: the coil.
  *
- *   1. edge clearance: RING_OUTER_R must stay under 184 (RING_CY, the
- *      distance to the top/bottom canvas edge, the tighter of the two:
- *      LAND_H is 368, LAND_W is 448).
- *   2. digit clearance: RING_INNER_R must clear the MM:SS digit block's
- *      half-diagonal, ~145.0px (see DIGIT_BLOCK_W below for that number's
- *      own derivation, unchanged from the dot version since the digits
- *      themselves did not move).
- *   3. no third "arc spacing" limit this time: that one existed only to
- *      keep 65 discrete dots from merging into a band. A continuous ring
- *      has no adjacent marks to merge, so it does not apply.
+ * Two bands, wound inward (lap 1 outermost, lap 2 innermost - see this
+ * file's header for why inward, not outward: the outer diameter must never
+ * grow), each its own annulus (a light grey track under a black arc,
+ * exactly the single ring's own look, just two of them), separated by a
+ * visible white gap so "at two laps you see two rings" per the owner's
+ * Apple-activity-rings reference.
  *
- * RING_RADIUS = 165 is kept as the ring's midline, the same centre-line the
- * dot version used, so the ring sits in the same place on screen; the
- * thickness is new. RING_HALF_THICK = 8 (16px thick, "a thick black arc...
- * the strongest contrast this panel can produce" per the brief) was checked
- * against both limits:
- *   edge:   165 + 8 = 173, vs the 184 limit -> 11px margin.
- *   digit:  165 - 8 = 157, vs the 145.0 half-diagonal -> 12px margin.
- * Both margins are smaller than the dot version's (14px/15px) because this
- * ring is thicker than the old dot diameter (16px vs 10px), which is the
- * point: more ink, less spare room, still comfortably clear on both sides.
+ * WORKED FROM THE PANEL, NOT GUESSED, same two limits every earlier version
+ * of this ring was solved against (RING_CY, LAND_H/2, is the tighter canvas
+ * half-dimension; the digit block's half-diagonal is the other):
+ *
+ *   EDGE LIMIT:   RING_CY = 184 (unchanged - LAND_W is 448, LAND_H is 368,
+ *                 the latter's half is the binding one).
+ *   DIGIT LIMIT:  ~145.0px (DIGIT_BLOCK_W/DIGIT_H's half-diagonal - see the
+ *                 digit-layout section below for DIGIT_BLOCK_W's own
+ *                 derivation, unchanged since the digits themselves did not
+ *                 move: sqrt(132^2 + 60^2) = sqrt(21024) = 144.997, i.e.
+ *                 145.0).
+ *
+ * SUPERSEDED FROM SIX BANDS, same day: "double the width of the coil" plus
+ * dropping from six laps to two frees up real room, and the owner's
+ * instruction is to spend it, not bank it as extra margin.
+ *
+ * BAND_THICK_PX = 6, BAND_GAP_PX = 4 - both DOUBLE the six-band coil's own
+ * 3px/2px (the owner's literal instruction, "double the width of the coil
+ * band"; the gap is scaled by the same factor to keep the same visual
+ * proportion between ink and separation that the six-band version already
+ * settled on, rather than picking a new, unrelated gap value). Two bands
+ * plus one gap between them is 2*6 + 1*4 = 16px of total radial span.
+ *
+ * RING_OUTER_R = 173: the outer edge of band 0 (lap 1), and therefore the
+ * whole coil's outer edge, forever - "the dial's outer diameter never
+ * grows" per the owner's brief. Checked against the edge limit:
+ * 184 - 173 = 11px margin.
+ *
+ * RING_INNER_R = 157: the inner edge of band 1 (lap 2, innermost),
+ * RING_OUTER_R minus both bands' thickness and the one gap between them
+ * (173 - 2*6 - 1*4 = 173 - 12 - 4 = 157). Checked against the digit limit:
+ * 157 - 145.0 = 12px margin.
+ *
+ * NEITHER NUMBER WAS CHOSEN TO MATCH THE ORIGINAL SINGLE RING - the outer
+ * radius and both margins (11px edge, 12px digit) come out EXACTLY equal
+ * to the single ring's own RING_OUTER_R/RING_INNER_R/margins from before
+ * there were bands at all. That is a genuine coincidence of the arithmetic
+ * (16px of total span for two 6px bands + one 4px gap is the same total
+ * span the single ring's own 16px-thick band occupied, RING_HALF_THICK*2),
+ * worth stating plainly rather than passing off as deliberate: this
+ * derivation was run the same way as the six-band version (place
+ * BAND_THICK_PX/BAND_GAP_PX first, size RING_OUTER_R against the edge
+ * limit next, read off the digit margin last) and it happens to land back
+ * on numbers this device already shipped and measured once before, which
+ * is a reasonable, independent point in this file's favour, not a target
+ * that was aimed at.
+ *
+ * "keep the innermost band legible": no longer the tight case it was for
+ * six 3px bands (that flag is superseded along with the six-band geometry
+ * it described) - 6px is comfortably thicker than anything else on this
+ * panel drawn as a stack of 1px rows except the original 16px ring itself,
+ * and the 4px gap between the two bands is wide enough to read as a real
+ * boundary rather than a hairline at a glance.
+ *
+ * band_outer_r(b)/band_inner_r(b)/band_centerline_r(b), b = 0 (outermost,
+ * lap 1) .. LAPS_MAX-1 (innermost, lap 2): the per-band radii every other
+ * function in this file reads. Functions, not a table, because they are
+ * pure arithmetic on a compile-time stride (BAND_STRIDE_PX) and every
+ * caller already has its own reasons to loop over bands, so a
+ * precomputed table would just be these same three lines evaluated once
+ * per band into an array nobody re-reads more than a handful of times per
+ * call.
  * ------------------------------------------------------------------- */
-#define RING_RADIUS      165
-#define RING_HALF_THICK  8
-#define RING_OUTER_R     (RING_RADIUS + RING_HALF_THICK) // 173
-#define RING_INNER_R     (RING_RADIUS - RING_HALF_THICK) // 157
-#define RING_ROWS        (2 * RING_OUTER_R)               // 346
+#define BAND_THICK_PX      6
+#define BAND_GAP_PX        4
+#define BAND_STRIDE_PX     (BAND_THICK_PX + BAND_GAP_PX)          // 10
+#define RING_OUTER_R       173
+#define RING_INNER_R       (RING_OUTER_R - LAPS_MAX * BAND_THICK_PX - (LAPS_MAX - 1) * BAND_GAP_PX) // 157
+#define RING_ROWS          (2 * RING_OUTER_R)                      // 346
+#define BAND_HALF_THICK_PX (BAND_THICK_PX / 2)                     // 3, exact (BAND_THICK_PX is even)
+
+static inline float band_outer_r(int band) {
+    return (float)RING_OUTER_R - (float)band * (float)BAND_STRIDE_PX;
+}
+static inline float band_inner_r(int band) {
+    return band_outer_r(band) - (float)BAND_THICK_PX;
+}
+static inline float band_centerline_r(int band) {
+    return band_outer_r(band) - (float)BAND_HALF_THICK_PX;
+}
 
 // Track (the always-visible full ring under the arc) and tick marks: light
 // grey, not black, so the black arc is the one thing the eye reads as "how
 // much is left" and the track/marks read as calm background structure.
 // gray_to_px (gfx.h) takes 0=black..255=white, so this grey's "ink" is
 // (255-TRACK_GRAY)/255. 178 is about 30% ink: picked by building and
-// looking at the emulator output (see this app's build/run instructions),
-// carried over unchanged from the dot version's elapsed-dot grey, which was
-// already checked against the owner's "clearly present but clearly
-// secondary" ask.
+// looking at the emulator output, carried over unchanged from the dot
+// version's elapsed-dot grey (and now the single-ring version's, and the
+// coil's - one shared constant across all three, still the same "clearly
+// present but clearly secondary" grey each time it was checked).
 #define TRACK_GRAY       178
 
-// No tick marks/graduations outside the ring. An earlier version of this
-// file had 12 small squares at the 5-minute positions (dots could not be
-// drawn as literal radial lines - gfx only draws axis-aligned rectangles in
-// landscape space - so they were small squares instead); the owner asked
-// for them gone: the exact value is already written large in the middle of
-// the ring, so a graduation adds no information it does not already give,
-// and only breaks the ring's contour. Apple's activity rings, the reference
-// for this design, have no ticks either, for the same reason. This also
-// removes the last piece of the "counting the units" idea the original 65
-// dots were built around (see this file's header comment): continuous
-// motion plus an exact numeral now does that job instead of discrete marks.
+// No tick marks/graduations outside the ring, in either band alike: the
+// exact value is already written large in the middle of the coil, so a
+// graduation adds no information it does not already give - unchanged
+// reasoning from the single-ring version (see its own retained note
+// further up this file's history).
 
 #define TIMER_PI       3.14159265358979323846f
 #define TIMER_HALF_PI  (TIMER_PI / 2.0f)
@@ -206,8 +444,8 @@
  * expose them, and a shared layout header for two apps is a bigger call
  * than this task (see the owner's brief). If chrono.c's metrics ever
  * change, this block has to change with it by hand; that duplication is
- * accepted on purpose, not missed. Unchanged by the dots-to-ring rewrite:
- * the digits are pixel-identical to before.
+ * accepted on purpose, not missed. Unchanged by the dots-to-ring-to-coil
+ * rewrites: the digits are pixel-identical to before, every time.
  *
  * MM:SS is 4 digits, not chrono's 6, and one colon, not two, so the block
  * is narrower than chrono's; everything else (digit size, gap, colon
@@ -276,19 +514,29 @@
  *        PAUSED   darker grey ("frozen")
  *      ALARM does not draw digits at all; see below.
  *
- *   2. The RING'S SHAPE does not distinguish SETTING from RUNNING/PAUSED,
- *      on purpose, same as the dot version before it: a freshly-dragged
- *      SETTING arc and a freshly-started RUNNING arc at the same value look
- *      identical, and that is fine because the digit colour already answers
- *      "which state is this" unambiguously. What the ring DOES show, in
- *      every non-alarm state alike, is one continuous fact: how far around
- *      the dial's TICK_COUNT positions the current value sits (see
- *      current_fill_deg - since 2026-08-13 this is a tick-index fraction,
- *      not a plain remaining-seconds/TIMER_MAX_SECONDS fraction), as the
- *      fraction of the circle the black arc covers. RUNNING and PAUSED
- *      differ from each other only in whether that arc is currently moving;
- *      a single snapshot of the ring cannot tell them apart either, which is again
- *      why the digit colour exists.
+ *   2. The COIL'S SHAPE does not distinguish SETTING from RUNNING/PAUSED,
+ *      on purpose, same as every earlier version of this file: a freshly-
+ *      dragged SETTING coil and a freshly-started RUNNING coil at the same
+ *      value look identical, and that is fine because the digit colour
+ *      already answers "which state is this" unambiguously. What the coil
+ *      DOES show, in every non-alarm state alike, is one continuous fact
+ *      per band: how far around that band's own 360 degrees the current
+ *      value has wound it (see compute_band_fill_degs - each band's own
+ *      fraction of TICKS_PER_LAP, not a fraction of the whole 60-minute
+ *      range). RUNNING and PAUSED differ from each other only in whether
+ *      those arcs are currently moving; a single snapshot cannot tell them
+ *      apart either, which is again why the digit colour exists.
+ *
+ *      TS_PAUSED gained two new reactions on 2026-08-14, both scoped to
+ *      "the dial is editable": a TOUCH converts it into TS_SETTING,
+ *      pre-loaded from the paused value - see this file's header, "PAUSE,
+ *      THEN EDIT" - and a SHAKE clears it straight to 00:00 - see
+ *      timer_tick()'s shake-clear branch and g_timerApp's wantsShake
+ *      comment at the bottom of this file. Everything above still holds
+ *      once either happens: the touch reaction works BY becoming SETTING,
+ *      not by PAUSED growing a third visual language of its own, and the
+ *      shake reaction is the exact same clear-to-zero-and-become-SETTING
+ *      shape handle_alarm()'s own dismissal already uses.
  *
  * ALARM is unambiguous by construction: it is the only state that flashes
  * the entire panel, which nothing else ever does.
@@ -303,26 +551,49 @@ typedef enum {
 typedef struct {
     timer_state_e state;
 
-    int setTicks;          // 0..TICK_COUNT, chosen by dragging in SETTING
+    // 0..MAX_TICKS. Doubles as "the value currently being edited" while
+    // SETTING and "the value that was committed" once RUNNING/PAUSED -
+    // exactly the role this field always had, only its range and per-tick
+    // meaning changed (0..90 piecewise -> 0..720 flat 5s) with the coil.
+    int setTicks;
     int remainingSeconds;  // the real countdown, RUNNING/PAUSED only
     uint32_t lastDecMs;    // f->nowMs anchor for the once-per-second decrement
 
-    // The last non-zero setTicks this session had, before a dismissal
-    // zeroed setTicks itself - see handle_alarm()'s "Corrected 2026-08-13"
-    // comment. BOOT, pressed while SETTING is showing a fresh 00:00, recalls
-    // this so "again" is still one press, without the alarm's own dial
-    // having to stay non-zero to make that possible.
+    // The last non-zero setTicks this session had, before a dismissal or a
+    // shake-clear zeroed setTicks itself - see handle_alarm()'s "Corrected
+    // 2026-08-13" comment and timer_tick()'s shake-clear branch. BOOT,
+    // pressed while SETTING is showing a fresh 00:00, recalls this so
+    // "again" is still one press, without the dial having to stay non-zero
+    // to make that possible.
     int lastSetTicks;
 
-    float lastFillDeg;      // arc angle currently painted, 0..360, whatever the state
+    // Continuous drag state, new for the coil - see point_touch()/
+    // drag_touch()'s own comments and this file's header, "POINT VS DRAG,
+    // AND THE BRANCH CUT". dragAccumTicks is the float accumulator a drag's
+    // per-frame unwrapped deltas add into, initialised to setTicks by the
+    // point_touch() that starts (or restarts) every touch context;
+    // lastTouchAngleDeg is the previous frame's raw touch angle, the
+    // reference drag_touch()'s unwrap needs. Both are meaningless outside
+    // an active SETTING touch and are always re-initialised by the next
+    // point_touch() before drag_touch() ever reads them - see timer_tick()'s
+    // TS_SETTING branch, which never calls drag_touch() on the same frame
+    // as a point_touch().
+    float dragAccumTicks;
+    float lastTouchAngleDeg;
+
+    // One arc angle per band (0..360 each), the coil's generalisation of
+    // the single ring's lastFillDeg - see paint_ring_row()/update_ring_to().
+    float lastFillDeg[LAPS_MAX];
     int lastDigitSeconds;   // seconds value currently painted in the MM:SS cells
 
     // True (fractional) remaining seconds, captured the instant PAUSED is
     // entered. PAUSED must not keep deriving this from f->nowMs the way
     // RUNNING does: nowMs keeps advancing while paused but lastDecMs does
     // not, so that formula would run away the longer the pause lasts. This
-    // is what lets PAUSED show the frozen arc angle rather than either
-    // resetting it or corrupting it.
+    // is what lets PAUSED show the frozen arc angles rather than either
+    // resetting them or corrupting them, and it is also the value pause-
+    // then-edit converts into an initial setTicks - see the TS_PAUSED
+    // branch in timer_tick().
     float pausedTrueRemaining;
 
     uint32_t alarmStartMs;
@@ -336,94 +607,69 @@ typedef struct {
 static timer_state_t *s_state;
 
 /* ---------------------------------------------------------------------
- * Seconds <-> ticks. Piecewise, three tiers this time (5s/30s/1m, see
- * TICK_COUNT's comment above for the table and why). Used to turn a tick
- * count (from a drag, or from BOOT's recalled setTicks) into the seconds
- * value the digits show. NOT used to derive the ring's angle any more -
- * see tick_index_for_seconds()/current_fill_deg() just below for the
- * inverse direction, which the angle now goes through instead.
+ * Seconds <-> ticks. Flat 5s step, everywhere - see this file's header for
+ * why this collapsed from a three-tier table into one line each. Used to
+ * turn a tick count (from a drag, or from BOOT's recalled setTicks) into
+ * the seconds value the digits show, and back.
  * ------------------------------------------------------------------- */
 static int seconds_for_ticks(int ticks) {
     if (ticks <= 0) return 0;
-    if (ticks > TICK_COUNT) ticks = TICK_COUNT;
-    if (ticks <= FINE_TICKS) return ticks * FINE_STEP_S;
-    if (ticks <= FINE_TICKS + MID_TICKS)
-        return FINE_SPAN_S + (ticks - FINE_TICKS) * MID_STEP_S;
-    return FINE_SPAN_S + MID_SPAN_S + (ticks - FINE_TICKS - MID_TICKS) * COARSE_STEP_S;
+    if (ticks > MAX_TICKS) ticks = MAX_TICKS;
+    return ticks * TICK_STEP_S;
 }
 
-/* ---------------------------------------------------------------------
- * Seconds -> continuous tick index: the exact inverse of seconds_for_ticks
- * above, but continuous (float) rather than snapped to a whole tick, on the
- * SAME three-tier scale. This is now the only path from "a remaining-
- * seconds value" to "an angle on the ring" - see current_fill_deg().
- *
- * Why this exists at all: with a uniform step, remainSec/TIMER_MAX_SECONDS
- * and tickIndex/TICK_COUNT are the same curve, so it never mattered which
- * one drove the arc. With the tiered table above they are NOT the same
- * curve any more (a second spent in the 5s tier moves the arc six times as
- * far, in degrees, as a second spent in the 1m tier). SETTING's drag
- * reads an angle and picks a TICK via ring_tick_for_touch(), so the arc
- * must be drawn from that same tick scale or the ring visibly fills to a
- * different place than the finger dragged to - unusable, not just
- * inconsistent. RUNNING's countdown, by contrast, only ever has a seconds
- * value (remainingSeconds, decremented once a second, plus a fractional
- * remainder from running_true_remaining()); this function is what lets
- * RUNNING put that seconds value back onto the tick scale SETTING used, so
- * the two states share one mapping instead of quietly disagreeing at every
- * boundary.
- *
- * Exact at every tick boundary by construction (each branch is the direct
- * algebraic inverse of the matching branch in seconds_for_ticks), so
- * SETTING's own use of it (remainSec = seconds_for_ticks(setTicks), fed
- * back in here) returns exactly setTicks, modulo float rounding too small
- * to move a pixel - see current_fill_deg()'s comment for why SETTING calls
- * through this rather than using setTicks directly.
- * ------------------------------------------------------------------- */
 static float tick_index_for_seconds(float sec) {
     if (sec <= 0.0f) return 0.0f;
     if (sec > (float)TIMER_MAX_SECONDS) sec = (float)TIMER_MAX_SECONDS;
-    if (sec <= (float)FINE_SPAN_S) {
-        return sec / (float)FINE_STEP_S;
-    }
-    if (sec <= (float)(FINE_SPAN_S + MID_SPAN_S)) {
-        return (float)FINE_TICKS + (sec - (float)FINE_SPAN_S) / (float)MID_STEP_S;
-    }
-    return (float)(FINE_TICKS + MID_TICKS) +
-           (sec - (float)(FINE_SPAN_S + MID_SPAN_S)) / (float)COARSE_STEP_S;
+    return sec / (float)TICK_STEP_S;
 }
 
 /* ---------------------------------------------------------------------
- * The ring: track + arc, drawn as a stack of horizontal bars.
+ * The coil: LAPS_MAX concentric annuli (track + arc each), drawn as stacks
+ * of horizontal bars, same technique the single ring used - see this
+ * file's header comment.
  *
- * s_hwOuter/s_hwInner are built once, lazily, via shapes.h's table builder
- * (see this file's header comment on why shapes_draw_annulus_row itself is
- * not reused). Same convention as menu.c's chrono icon: row 0 is the ring's
- * topmost pixel row, row RING_ROWS-1 its bottommost, both tables share the
- * same RING_ROWS-tall grid so hwOuter[row] and hwInner[row] describe the
- * same physical row.
+ * s_hwOuter[b]/s_hwInner[b] are one outer/inner half-width table PER BAND,
+ * built once, lazily, via shapes.h's table builder, all sharing the SAME
+ * RING_ROWS-tall grid (centred on RING_OUTER_R, the outermost band's own
+ * radius - see shapes_fill_half_width_table's "centred at rows/2.0"
+ * contract): row 0 is the coil's topmost possible pixel row (band 0's own
+ * top), row RING_ROWS-1 its bottommost, and EVERY band's tables are indexed
+ * against that one shared grid rather than each having its own - a row that
+ * is outside a given (smaller) band's own radius just reads 0 from that
+ * band's table, which paint_band_row already treats as "this band does not
+ * reach this row".
  * ------------------------------------------------------------------- */
-static int16_t s_hwOuter[RING_ROWS];
-static int16_t s_hwInner[RING_ROWS];
+static int16_t s_hwOuter[LAPS_MAX][RING_ROWS];
+static int16_t s_hwInner[LAPS_MAX][RING_ROWS];
 static bool s_ringTablesReady = false;
 
 static void ensure_ring_tables(void) {
     if (s_ringTablesReady) return;
-    shapes_fill_half_width_table(s_hwOuter, RING_ROWS, (float)RING_OUTER_R);
-    shapes_fill_half_width_table(s_hwInner, RING_ROWS, (float)RING_INNER_R);
+    for (int b = 0; b < LAPS_MAX; b++) {
+        shapes_fill_half_width_table(s_hwOuter[b], RING_ROWS, band_outer_r(b));
+        shapes_fill_half_width_table(s_hwInner[b], RING_ROWS, band_inner_r(b));
+    }
     s_ringTablesReady = true;
 }
 
 /* ---------------------------------------------------------------------
- * Angle, and where it gets fiddly.
+ * Angle, and where it gets fiddly. Unchanged from the single ring - the
+ * coil reuses this section's functions exactly as written, per band,
+ * because the branch-cut problem they solve (reading ONE angle honestly at
+ * dx=0/dy>0) is identical for a coil band and for the single ring that used
+ * to be the only one. See this file's header, "POINT VS DRAG, AND THE
+ * BRANCH CUT", for the SECOND, related but distinct branch-cut problem the
+ * coil newly has to solve (reading a CHANGE in angle across that same cut,
+ * for drag_touch()'s lap-crossing) - that one is new code, further down.
  *
  * Convention, kept from the dot version: 0 degrees is 12 o'clock, increasing
  * CLOCKWISE (matching the screen, not math convention - see the derivation
  * this replaces for why: landscape y increases downward, which flips the
- * usual counterclockwise-positive sense). The arc always starts at 0 and
- * covers [0, fillDeg), so unlike an arbitrary start+sweep there is no
- * generic wraparound to handle: the only question per pixel is whether its
- * own clockwise-from-12 angle is less than fillDeg.
+ * usual counterclockwise-positive sense). Each band's own arc always starts
+ * at 0 and covers [0, fillDeg), so unlike an arbitrary start+sweep there is
+ * no generic wraparound to handle: the only question per pixel is whether
+ * its own clockwise-from-12 angle is less than that band's fillDeg.
  *
  * phi_deg_at() computes that angle via atan2f(dx, -dy): a "compass bearing"
  * form (0 = north/up, clockwise positive) whose branch cut sits at dx=0,
@@ -432,7 +678,7 @@ static void ensure_ring_tables(void) {
  * inside the ring's usable area). Every caller below excludes the dx=0
  * column from its two generic bars and handles that one column directly
  * with a hardcoded angle (0 above centre, 180 below), so the branch cut is
- * never evaluated through this function at all - see paint_ring_row.
+ * never evaluated through this function at all - see paint_band_row.
  * ------------------------------------------------------------------- */
 static float phi_deg_at(float dx, float dyCenter) {
     float raw = atan2f(dx, -dyCenter) * TIMER_RAD2DEG;
@@ -446,12 +692,14 @@ static float phi_deg_for_col(int dx, float dyCenter) {
 }
 
 // Paints one bar (dxLo..dxHi inclusive, both the same sign - see
-// paint_ring_row for why dx=0 is never in here) black up to fillDeg and grey
+// paint_band_row for why dx=0 is never in here) black up to fillDeg and grey
 // track beyond it. phi(dx) is monotonic across any such bar (atan2f(dx,-dy)
 // is monotonic in dx whenever dx never crosses 0, which is exactly the
 // condition every caller guarantees), so there is at most one colour
 // transition in the whole bar and a binary search finds it in a handful of
-// atan2f calls instead of testing every pixel.
+// atan2f calls instead of testing every pixel. Unchanged from the single
+// ring: this function does not know or care which band it is painting, it
+// only ever sees a dx range, a dyCenter and a fillDeg.
 static void paint_ring_bar(int y, int dxLo, int dxHi, float dyCenter, float fillDeg) {
     float phiLo = phi_deg_for_col(dxLo, dyCenter);
     float phiHi = phi_deg_for_col(dxHi, dyCenter);
@@ -477,19 +725,20 @@ static void paint_ring_bar(int y, int dxLo, int dxHi, float dyCenter, float fill
     gfx_fill_rect_land(RING_CX + hi, y, dxHi - hi + 1, 1, cHi);
 }
 
-// Paints one full landscape row of the ring at fillDeg. Splits into up to
-// two bars (left, right) plus the single dx=0 column on rows with no hole
-// (the caps at the very top/bottom of the ring, where hwInner is 0): that
-// column is handled with a direct, hardcoded angle (0 straight up, 180
-// straight down) rather than through phi_deg_at(), because dx=0/dy>0 is
-// exactly that function's branch cut (see the header comment above it).
-static void paint_ring_row(int y, float fillDeg) {
-    int rowIdx = y - (RING_CY - RING_OUTER_R);
-    if (rowIdx < 0 || rowIdx >= RING_ROWS) return;
-    int hwOuter = s_hwOuter[rowIdx];
-    int hwInner = s_hwInner[rowIdx];
+// Paints band `band`'s own portion of landscape row y (rowIdx = y's index
+// into the shared RING_ROWS grid), at that band's own fillDeg. Splits into
+// up to two bars (left, right) plus the single dx=0 column on rows with no
+// hole for THIS band (its own caps, where hwInner is 0): the single-ring
+// version's paint_ring_row body, unchanged in substance, just parameterised
+// over which band's tables and fillDeg to read. Bands whose hwOuter is 0 at
+// this row (the row is outside that band's own radius) are skipped - the
+// whole reason LAPS_MAX independent per-band tables exist rather than one
+// shared one.
+static void paint_band_row(int y, int rowIdx, int band, float fillDeg) {
+    int hwOuter = s_hwOuter[band][rowIdx];
+    int hwInner = s_hwInner[band][rowIdx];
     if (hwOuter <= 0) return;
-    float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R; // == (y+0.5) - RING_CY
+    float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R; // shared grid: same formula for every band
 
     if (hwInner <= 0) {
         float phi0 = dyCenter < 0.0f ? 0.0f : 180.0f;
@@ -506,141 +755,133 @@ static void paint_ring_row(int y, float fillDeg) {
     if (rightLo <= rightHi) paint_ring_bar(y, rightLo, rightHi, dyCenter, fillDeg);
 }
 
+// Paints every band's portion of landscape row y, at each band's own
+// fillDeg (fillDeg[0] = outermost/lap 1 .. fillDeg[LAPS_MAX-1] =
+// innermost/last lap). The white gap between bands is never written by
+// this function (only each band's own [hwInner, hwOuter] shell is): it is
+// established once, correctly, by the runtime clearing the framebuffer to
+// white before enter() (app.h), and stays correct forever because the
+// coil's geometry is static - no band ever changes size, only its own
+// arc's fillDeg does - so nothing ever needs to repaint the gap.
+static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
+    int rowIdx = y - (RING_CY - RING_OUTER_R);
+    if (rowIdx < 0 || rowIdx >= RING_ROWS) return;
+    for (int b = 0; b < LAPS_MAX; b++) paint_band_row(y, rowIdx, b, fillDeg[b]);
+}
+
 /* ---------------------------------------------------------------------
  * Rounded caps. Owner feedback, with an Apple Watch activity-ring
  * screenshot as the reference: the arc's ends must be ROUNDED, not the
- * sharp radial cuts paint_ring_row/paint_ring_bar produce on their own. A
- * square-cut end reads as a pie slice with a wedge removed; a rounded end
- * reads as a solid band laid on a track, which matters more in monochrome
- * than it would in colour, since the cap shape is one of the few cues
- * available at all.
+ * sharp radial cuts paint_band_row/paint_ring_bar produce on their own -
+ * unchanged reasoning from the single ring, now applied per band, and
+ * genuinely visible again now that BAND_HALF_THICK_PX is back to a real
+ * radius (3px) rather than the cramped six-band coil's 1.5px.
  *
- * A rounded cap is a filled disc, radius RING_HALF_THICK (so its diameter
- * equals the ring's stroke thickness), centred on the CENTRELINE radius
- * (RING_RADIUS, midway between inner and outer) at the cap's angle - not on
- * the inner or outer edge, which would make it bulge off the track on one
- * side. Two caps: one fixed at 0 degrees (the arc always starts at 12
- * o'clock) and one at the current fillDeg (the moving tip). Built from
- * shapes.h's table builder plus shapes_draw_annulus_row with hwInner=0,
- * which is exactly a filled-disc row (see shapes_draw_annulus_row's own
- * comment: hwInner<=0 draws one full-width bar), rather than a third way to
- * rasterise a circle in this file.
+ * A rounded cap is a filled disc, radius BAND_HALF_THICK_PX, centred on
+ * that band's own CENTRELINE radius (band_centerline_r(band), midway
+ * between that band's inner and outer edge) at the cap's angle. Two caps
+ * per band with a nonzero fillDeg: one fixed at 0 degrees (every band's arc
+ * always starts at 12 o'clock) and one at that band's current fillDeg (its
+ * own moving tip). Built from shapes.h's table builder plus
+ * shapes_draw_annulus_row with hwInner=0, exactly a filled-disc row (see
+ * shapes_draw_annulus_row's own comment), same as the single ring - one
+ * table, s_capHw, shared by every band, because every band has the
+ * identical BAND_HALF_THICK_PX; only the CENTRE the table is stamped
+ * around differs per band and per angle (cap_center()).
  * ------------------------------------------------------------------- */
-static int16_t s_capHw[2 * RING_HALF_THICK];
+#define CAP_TABLE_ROWS (2 * BAND_HALF_THICK_PX) // 6, exact - BAND_HALF_THICK_PX is a
+                                                 // whole number this time (BAND_THICK_PX
+                                                 // is even), so unlike the six-band
+                                                 // coil's cramped 1.5px half-thickness
+                                                 // this needs no headroom row for a
+                                                 // float ceil() the preprocessor cannot
+                                                 // do - same exact sizing the ORIGINAL
+                                                 // single ring used for its own
+                                                 // 2*RING_HALF_THICK.
+static int16_t s_capHw[CAP_TABLE_ROWS];
 static bool s_capTableReady = false;
 
 static void ensure_cap_table(void) {
     if (s_capTableReady) return;
-    shapes_fill_half_width_table(s_capHw, 2 * RING_HALF_THICK, (float)RING_HALF_THICK);
+    shapes_fill_half_width_table(s_capHw, CAP_TABLE_ROWS, (float)BAND_HALF_THICK_PX);
     s_capTableReady = true;
 }
 
-static void cap_center(float deg, int *cx, int *cy) {
+static void cap_center(int band, float deg, int *cx, int *cy) {
     float mathAngle = (deg - 90.0f) * TIMER_DEG2RAD;
-    *cx = RING_CX + (int)lroundf((float)RING_RADIUS * cosf(mathAngle));
-    *cy = RING_CY + (int)lroundf((float)RING_RADIUS * sinf(mathAngle));
+    float r = band_centerline_r(band);
+    *cx = RING_CX + (int)lroundf(r * cosf(mathAngle));
+    *cy = RING_CY + (int)lroundf(r * sinf(mathAngle));
 }
 
-static void draw_cap(float deg) {
+static void draw_cap(int band, float deg) {
     ensure_cap_table();
     int cx, cy;
-    cap_center(deg, &cx, &cy);
-    for (int row = 0; row < 2 * RING_HALF_THICK; row++) {
-        int y = cy - RING_HALF_THICK + row;
+    cap_center(band, deg, &cx, &cy);
+    for (int row = 0; row < CAP_TABLE_ROWS; row++) {
+        int y = cy - CAP_TABLE_ROWS / 2 + row;
         shapes_draw_annulus_row(cx, y, s_capHw[row], 0, PX_BLACK);
     }
 }
 
-// Both caps, or none: with no arc (fillDeg == 0, only reachable via a full
-// SETTING redraw at the untouched default - see ring_tick_for_touch's
-// comment on why a drag can never bring setTicks back to exactly 0) there
-// is nothing to round the end of. As fillDeg shrinks toward 0 the two caps
-// (fixed at 0 degrees, moving at fillDeg) draw closer together: past
-// roughly 5.6 degrees apart (2*RING_HALF_THICK's worth of arc length at
-// RING_RADIUS) they start to overlap into one rounded blob rather than two
-// separate discs joined by a bar. That is correct and is the point: a
-// nearly-finished timer still shows a visible rounded nub near 12 o'clock
-// instead of thinning into an invisible sliver, which is what a sharp-cut
-// arc would have done. Checked by looking at the emulator output as the
-// countdown's final tick played out: one FINE_STEP_S (5s) step is 360/90 =
-// 4 degrees of arc, already inside the ~5.6deg overlap zone, while the tick
-// before it (8 degrees) is not - see this app's build/run instructions for
-// how to reproduce that capture.
-static void draw_arc_caps(float fillDeg) {
+// Both caps for one band, or none: with no arc for that band (fillDeg <= 0,
+// meaning that lap has not been reached yet) there is nothing to round the
+// end of. Same "both or none" rule the single ring used, per band.
+static void draw_arc_caps(int band, float fillDeg) {
     if (fillDeg <= 0.0f) return;
-    draw_cap(0.0f);
-    draw_cap(fillDeg);
+    draw_cap(band, 0.0f);
+    draw_cap(band, fillDeg);
 }
 
-// How far a cap's disc reaches, in DEGREES as seen from the ring's own
-// centre, past its exact centre angle. Bug found on real hardware: the
-// owner dragged the ring up near its max, then a second drag snapped it
-// down to a much smaller value, and the framebuffer (not just the panel -
-// checked with a USB dump, see the app's build/run instructions) kept a
-// trail of black one-pixel-tall dashes in the band the arc used to cover.
-//
-// Root cause was NOT the swept row range being too small for a big jump -
-// ring_sweep_row_range's own bound is exact for any single fromDeg/toDeg
-// pair, single jump or not (checked by brute force against every pixel the
-// real angle range touches, see the regression test). It is that the
-// MOVING cap is a real disc, not a point: draw_cap paints it a few degrees
-// wide on BOTH sides of its exact angle, on purpose, for the rounded-end
-// look (see this section's header comment). update_ring_to's very next
-// call computes its swept row range from the EXACT old/new angles, with no
-// allowance for the previous call's cap having physically painted a little
-// past the "old" edge. Once the arc has moved on, nothing ever sweeps that
-// sliver again: for a shrinking arc every future call's angle range only
-// gets smaller, so a sliver left past the old edge is stuck there for
-// good. Growing (dragging up, or any case where the far side of the old
-// cap is already inside the solid arc anyway) does not show it, which is
-// why this went unnoticed until a drag specifically shrank the value.
-//
-// The fix: update_ring_to pads the angle range it hands to
-// ring_sweep_row_range by this margin on both ends, so the previous call's
-// cap - wherever it was - is always inside the next call's sweep and gets
-// correctly reclassified against the new fillDeg.
-//
-// The margin itself: a disc of radius RING_HALF_THICK centred at distance
-// RING_RADIUS from the ring's origin subtends, at most, asin(RING_HALF_THICK
-// / RING_RADIUS) as seen from that origin (the standard tangent-line bound
-// for a circle of radius r at distance D: max half-angle = asin(r/D)) -
-// asin(8/165) ~= 2.78 degrees. Not computed at runtime: asinf is not in
-// this project's emulator ABI (emu_abi.h documents the exact math imports
-// a firmware may use, and asinf is not one of them - see
-// emulator/wasm/shim/math.h's header comment on why the gap is left visible
-// rather than silently added to), and there is no need to: RING_HALF_THICK
-// and RING_RADIUS are fixed compile-time constants, so this is one more
-// number computed once by reasoning, the same as RING_OUTER_R/RING_INNER_R
-// above. Rounded up to 3.5 degrees for headroom against this file's various
-// pixel roundings (lroundf in cap_center, the int row/column math
-// throughout) - verified sufficient (and that smaller values are not) by
-// brute-force simulation of the whole incremental path against a full
-// from-scratch redraw, both monotonic shrinks and long random walks; see
-// the regression test.
-#define CAP_SWEEP_MARGIN_DEG 3.5f
-
-// The track (whatever the arc is not currently covering) is the complement
-// of the arc within one continuous annulus, painted by the same
-// paint_ring_row calls that paint the arc: it is never "less than a full
-// ring" on its own, so unlike the arc it has no free-standing end that
-// needs a cap of its own - its two apparent "ends" are exactly where the
-// arc's two caps already sit, already rounded by draw_arc_caps.
-static void paint_ring_full(float fillDeg) {
+// Paints every band at its own fillDeg across the coil's full bounding box,
+// plus every band's caps. Used for enter() and every state transition - see
+// redraw_full().
+static void paint_ring_full(const float fillDeg[LAPS_MAX]) {
     int yTop = RING_CY - RING_OUTER_R;
     int yBot = RING_CY + RING_OUTER_R - 1;
     for (int y = yTop; y <= yBot; y++) paint_ring_row(y, fillDeg);
-    draw_arc_caps(fillDeg);
+    for (int b = 0; b < LAPS_MAX; b++) draw_arc_caps(b, fillDeg[b]);
 }
 
-// Bounding landscape row range [*yLo, *yHi] that could contain any pixel
-// whose angle lies in [fromDeg, toDeg] (fromDeg <= toDeg): the two edges of
-// that angular wedge at both radii, PLUS any of the four axis angles
-// (0/90/180/270, where the ring's dy is at its extreme for a given radius)
-// that fall inside the wedge, since the wedge can bulge past a straight
-// line between its two edges at those points. Used to bound the work an
-// incremental update does to the rows that could actually have changed,
-// rather than repainting all RING_ROWS every time (see update_ring_to).
-static void ring_sweep_row_range(float fromDeg, float toDeg, int *yLo, int *yHi) {
+// How far a cap's disc reaches, in DEGREES as seen from the ring's own
+// centre, past its exact centre angle - unchanged mechanism from the single
+// ring (see its own retained history below for the real hardware bug this
+// exists to prevent: a shrinking arc's moving cap paints a little past its
+// exact edge on purpose, for the rounded-end look, and an incremental
+// repaint that does not account for that overshoot leaves a stuck sliver of
+// stale ink behind it).
+//
+// RECOMPUTED for this file's current geometry (BAND_HALF_THICK_PX=3,
+// smallest radius at the innermost band, b=1: band_centerline_r(1) =
+// 173 - 1*10 - 3 = 160). Same tangent-line bound as before, max half-angle
+// = asin(BAND_HALF_THICK_PX / radius), evaluated at the SMALLEST radius on
+// purpose (asin grows as radius shrinks for a fixed half-thickness, so the
+// innermost band is every band's worst case, and one shared conservative
+// constant for all bands is simpler and safer than one per band for a
+// quantity this cheap to over-provision): asin(3/160) = asin(0.01875) =
+// 1.074 degrees. Not computed at runtime, same reason as before - asinf is
+// not in this project's emulator ABI (see emulator/wasm/shim/math.h's
+// header comment) - so this is again one more number computed once by
+// reasoning. Rounded up to 1.5 degrees (roughly 1.4x the analytic value,
+// close to the original single ring's own 1.26x headroom now that the
+// band is a comparable thickness again). Verified sufficient by this
+// file's own regression test (repro-ring-shrink-residue.ts, extended for
+// the coil - see that file), which drives the same drag-up-then-down and
+// smooth-countdown scenarios the single ring's version did, now scanning
+// both bands.
+#define CAP_SWEEP_MARGIN_DEG 1.5f
+
+// Bounding landscape row range [*yLo, *yHi] that could contain any pixel,
+// AT THE GIVEN BAND'S OWN RADII, whose angle lies in [fromDeg, toDeg]
+// (fromDeg <= toDeg): the two edges of that angular wedge at both radii,
+// PLUS any of the four axis angles (0/90/180/270, where dy is at its
+// extreme for a given radius) that fall inside the wedge, since the wedge
+// can bulge past a straight line between its two edges at those points.
+// Generalised from the single ring's own version only by taking outerR/
+// innerR as parameters instead of reading the single pair of file-scope
+// constants it used to - the geometry and the reasoning are otherwise
+// identical, band by band.
+static void ring_sweep_row_range(float fromDeg, float toDeg, float outerR, float innerR, int *yLo, int *yHi) {
     float minDy = 1e9f, maxDy = -1e9f;
     float sampleDegs[6];
     int n = 0;
@@ -653,8 +894,8 @@ static void ring_sweep_row_range(float fromDeg, float toDeg, int *yLo, int *yHi)
     for (int i = 0; i < n; i++) {
         float mathAngle = (sampleDegs[i] - 90.0f) * TIMER_DEG2RAD;
         float s = sinf(mathAngle);
-        float dyOuter = (float)RING_OUTER_R * s;
-        float dyInner = (float)RING_INNER_R * s;
+        float dyOuter = outerR * s;
+        float dyInner = innerR * s;
         if (dyOuter < minDy) minDy = dyOuter;
         if (dyOuter > maxDy) maxDy = dyOuter;
         if (dyInner < minDy) minDy = dyInner;
@@ -668,81 +909,120 @@ static void ring_sweep_row_range(float fromDeg, float toDeg, int *yLo, int *yHi)
     *yHi = hi > rangeHi ? rangeHi : hi;
 }
 
-// Moves the ring from its last-painted angle (s->lastFillDeg) to newFillDeg,
-// touching only the rows the swept wedge could have changed and pushing
-// just that bounding rect. Used for BOTH SETTING's drag (each snap can jump
-// either direction, or a long way if the finger jumps to a new spot) and
-// RUNNING's per-frame shrink (always a small step, since it is driven by
-// real elapsed time): the row-range bound in ring_sweep_row_range handles
-// both the same way, correctness does not depend on the jump being small,
-// only the SIZE of the work does.
+// Moves the coil from its last-painted per-band angles (s->lastFillDeg[]) to
+// newFillDeg[], touching only the rows any CHANGED band's swept wedge could
+// have touched, redrawing every band's own caps that are either changed or
+// merely at risk (their own cap sits inside the union of rows this call is
+// about to repaint anyway - see the loop below), and pushing one rectangle
+// covering all of it. Used for BOTH SETTING's point/drag (a point preserves
+// every band but the current one; a drag can, and does at a lap boundary,
+// move both bands' fillDeg in the same call - see drag_touch()) and
+// RUNNING's per-frame shrink (ordinarily one band, the one currently
+// unwinding, except exactly at the lap boundary where the band that just
+// finished emptying and the band that becomes newly active both move by a
+// hair in the same call): the row-range bound handles all of these the same
+// way, same as the single ring's own version - correctness does not depend
+// on how many bands changed or how far, only the SIZE of the work does.
 //
-// The angle range handed to ring_sweep_row_range is padded by
-// CAP_SWEEP_MARGIN_DEG on both ends before it becomes a row range - see
-// that constant's comment for the bug this fixes: the PREVIOUS call's
-// moving cap is a disc, not a point, and paints a little past its exact
-// angle on purpose (the rounded-end look). Without the pad, a sweep whose
-// edge lands exactly on the old angle leaves that overshoot stranded
-// outside the row range forever, since a shrinking arc's future sweeps
-// only ever get smaller. The padded angle is used ONLY to size the row
-// range, never passed to paint_ring_row itself, which still classifies
-// every pixel it touches against the real newFillDeg - so this costs a
-// few extra rows of otherwise-correct repainting, not a correctness
-// change to what gets painted.
-//
-// Both caps are redrawn on every call, not only when the swept range
-// happens to reach them: ring_sweep_row_range bounds where the ARC EDGE
-// could have moved, but the fixed start cap (always at 0 degrees) never
-// moves and so is never "inside" that swept range by the same logic, yet a
-// sweep near a small fillDeg (the last minute or so of a countdown, see
-// draw_arc_caps) sits right on top of it and would overwrite its rounded
-// pixels with a sharp cut if the cap were not put back afterward. Redrawing
-// both unconditionally costs two small discs (2*RING_HALF_THICK rows each)
-// every call, which is cheap next to the row-range work already being done,
-// and is simpler to get right than proving the sweep already covers them.
-static void update_ring_to(timer_state_t *s, float newFillDeg) {
-    if (newFillDeg < 0.0f) newFillDeg = 0.0f;
-    if (newFillDeg > 360.0f) newFillDeg = 360.0f;
-    float oldFillDeg = s->lastFillDeg;
-    if (newFillDeg == oldFillDeg) return;
-
-    float fromDeg = newFillDeg < oldFillDeg ? newFillDeg : oldFillDeg;
-    float toDeg = newFillDeg < oldFillDeg ? oldFillDeg : newFillDeg;
-
-    float sweepFromDeg = fromDeg - CAP_SWEEP_MARGIN_DEG;
-    float sweepToDeg = toDeg + CAP_SWEEP_MARGIN_DEG;
-    if (sweepFromDeg < 0.0f) sweepFromDeg = 0.0f;
-    if (sweepToDeg > 360.0f) sweepToDeg = 360.0f;
-
-    int yLo, yHi;
-    ring_sweep_row_range(sweepFromDeg, sweepToDeg, &yLo, &yHi);
-    for (int y = yLo; y <= yHi; y++) paint_ring_row(y, newFillDeg);
-    draw_arc_caps(newFillDeg);
-
-    // Grow the push rect to cover both caps too, in case a cap sits outside
-    // the swept row range (typically the fixed start cap, while the moving
-    // tip is elsewhere on the dial).
-    if (newFillDeg > 0.0f) {
-        int cx0, cy0, cx1, cy1;
-        cap_center(0.0f, &cx0, &cy0);
-        cap_center(newFillDeg, &cx1, &cy1);
-        int capYLo = (cy0 < cy1 ? cy0 : cy1) - RING_HALF_THICK;
-        int capYHi = (cy0 > cy1 ? cy0 : cy1) + RING_HALF_THICK - 1;
-        if (capYLo < yLo) yLo = capYLo;
-        if (capYHi > yHi) yHi = capYHi;
+// WHY EVERY AT-RISK BAND'S CAPS ARE REDRAWN, NOT JUST THE CHANGED ONES'
+// OWN: because bands are concentric, a single landscape row can carry ink
+// from BOTH bands at once (near RING_CY, where |dy| is small, both bands'
+// own hwOuter/hwInner tables are still nonzero). A sweep triggered by band
+// X's change repaints every band's plain bars at the rows it touches
+// (paint_ring_row always loops over all LAPS_MAX bands per row, not just
+// the one that moved), which is correct ink for the OTHER band wherever its
+// own fillDeg did not move - EXCEPT at the specific rows where its own
+// rounded cap used to sit, which a plain bar repaint would flatten back to
+// a sharp cut. So after painting the swept rows, every band whose own
+// cap-row-span intersects [yLo, yHi] - changed or not - gets its caps
+// redrawn on top, the direct per-band generalisation of the single ring's
+// "both caps redrawn on every call... simpler to get right than proving the
+// sweep already covers them". This costs nothing extra in push-rectangle
+// size when the band's cap was already inside [yLo, yHi] (the whole reason
+// it is "at risk"); it only grows the push rectangle for the rarer case of
+// a band's FIXED start cap sitting outside the current sweep, the same case
+// the single ring's own version already had to grow the rectangle for.
+static void update_ring_to(timer_state_t *s, const float newFillDeg[LAPS_MAX]) {
+    float clamped[LAPS_MAX];
+    bool changed[LAPS_MAX];
+    bool anyChanged = false;
+    for (int b = 0; b < LAPS_MAX; b++) {
+        float nd = newFillDeg[b];
+        if (nd < 0.0f) nd = 0.0f;
+        if (nd > 360.0f) nd = 360.0f;
+        clamped[b] = nd;
+        changed[b] = (nd != s->lastFillDeg[b]);
+        if (changed[b]) anyChanged = true;
     }
-    gfx_push_land(RING_CX - RING_OUTER_R, yLo, 2 * RING_OUTER_R, yHi - yLo + 1);
-    s->lastFillDeg = newFillDeg;
+    if (!anyChanged) return;
+
+    int yLo = RING_CY + RING_OUTER_R; // widened below; starts inverted/empty
+    int yHi = RING_CY - RING_OUTER_R;
+
+    for (int b = 0; b < LAPS_MAX; b++) {
+        if (!changed[b]) continue;
+        float oldDeg = s->lastFillDeg[b], newDeg = clamped[b];
+        float fromDeg = newDeg < oldDeg ? newDeg : oldDeg;
+        float toDeg = newDeg < oldDeg ? oldDeg : newDeg;
+        float sweepFromDeg = fromDeg - CAP_SWEEP_MARGIN_DEG;
+        float sweepToDeg = toDeg + CAP_SWEEP_MARGIN_DEG;
+        if (sweepFromDeg < 0.0f) sweepFromDeg = 0.0f;
+        if (sweepToDeg > 360.0f) sweepToDeg = 360.0f;
+        int by0, by1;
+        ring_sweep_row_range(sweepFromDeg, sweepToDeg, band_outer_r(b), band_inner_r(b), &by0, &by1);
+        if (by0 < yLo) yLo = by0;
+        if (by1 > yHi) yHi = by1;
+    }
+
+    for (int y = yLo; y <= yHi; y++) paint_ring_row(y, clamped);
+
+    for (int b = 0; b < LAPS_MAX; b++) {
+        if (clamped[b] <= 0.0f) continue; // nothing drawn for this band, nothing to protect
+        bool atRisk = changed[b];
+        int cx0, cy0, cx1, cy1;
+        cap_center(b, 0.0f, &cx0, &cy0);
+        cap_center(b, clamped[b], &cx1, &cy1);
+        int capLo = (cy0 < cy1 ? cy0 : cy1) - CAP_TABLE_ROWS / 2;
+        int capHi = (cy0 > cy1 ? cy0 : cy1) + CAP_TABLE_ROWS / 2 - 1;
+        if (!atRisk) atRisk = !(capHi < yLo || capLo > yHi);
+        if (!atRisk) continue;
+        draw_arc_caps(b, clamped[b]);
+        if (capLo < yLo) yLo = capLo;
+        if (capHi > yHi) yHi = capHi;
+    }
+
+    // Width is 2*RING_OUTER_R + 1, not 2*RING_OUTER_R: a bar's dx range is
+    // [-hwOuter, +hwOuter] inclusive, and hwOuter reaches exactly
+    // RING_OUTER_R at the rows nearest the coil's own vertical centre
+    // (shapes_fill_half_width_table's dy is never exactly 0 - the nearest
+    // row centres are +-0.5 - so sqrt(RING_OUTER_R^2 - 0.25) still rounds
+    // up to RING_OUTER_R itself). A width of 2*RING_OUTER_R covers dx in
+    // [-RING_OUTER_R, RING_OUTER_R - 1] and silently drops the single
+    // rightmost column, which the no-pixel-outside-pushed-rectangles
+    // invariant (this task's own test, emulator/docs/findings-app-fuzzing.md
+    // section 2) caught directly: band 0's outermost column really does
+    // flip colour on an incremental update and really was landing outside
+    // this rectangle before the +1.
+    gfx_push_land(RING_CX - RING_OUTER_R, yLo, 2 * RING_OUTER_R + 1, yHi - yLo + 1);
+    for (int b = 0; b < LAPS_MAX; b++) s->lastFillDeg[b] = clamped[b];
 }
 
-// Touch angle to tick count. f->touchX/Y arrive in PANEL (portrait)
-// coordinates (app.h), not landscape ones: gfx only rotates rectangles, not
-// points (gfx.h's note on gfx_land_rect), so a landscape app reading a touch
-// position has to invert that mapping itself. gfx_land_rect's corner math
-// says landscape (lx, ly) -> panel (PANEL_W-1-ly, lx); inverted, panel
-// (px, py) -> landscape (lx=py, ly=PANEL_W-1-px). Done once here rather than
-// once per digit, since only the ring cares where the finger is.
-static int ring_tick_for_touch(int touchPanelX, int touchPanelY) {
+/* ---------------------------------------------------------------------
+ * Touch: raw angle, point, drag. f->touchX/Y arrive in PANEL (portrait)
+ * coordinates (app.h), not landscape ones: gfx only rotates rectangles, not
+ * points (gfx.h's note on gfx_land_rect), so a landscape app reading a touch
+ * position has to invert that mapping itself. gfx_land_rect's corner math
+ * says landscape (lx, ly) -> panel (PANEL_W-1-ly, lx); inverted, panel
+ * (px, py) -> landscape (lx=py, ly=PANEL_W-1-px). Unchanged from the single
+ * ring's own ring_tick_for_touch, which this replaces.
+ * ------------------------------------------------------------------- */
+
+// Continuous touch angle, 0..360, 0 at 12 o'clock, clockwise - same
+// convention and derivation as the single ring's ring_tick_for_touch, minus
+// that function's final snap-to-slot step: the coil needs the RAW angle for
+// two different reasons (an absolute point, and a delta for a drag), so
+// snapping happens in the two callers below instead of in here.
+static float raw_touch_angle_deg(int touchPanelX, int touchPanelY) {
     int lx = touchPanelY;
     int ly = PANEL_W - 1 - touchPanelX;
 
@@ -751,17 +1031,153 @@ static int ring_tick_for_touch(int touchPanelX, int touchPanelY) {
     float norm = atan2f(dy, dx) + TIMER_HALF_PI; // 0 at 12 o'clock
     if (norm < 0.0f) norm += 2.0f * TIMER_PI;
     if (norm >= 2.0f * TIMER_PI) norm -= 2.0f * TIMER_PI;
+    return norm * TIMER_RAD2DEG;
+}
 
-    int slot = (int)(norm / (2.0f * TIMER_PI / (float)TICK_COUNT));
+// The sub-lap tick (0..TICKS_PER_LAP-1) a direct "point" touch at this
+// angle selects: the nearest of TICKS_PER_LAP equal slots around the dial,
+// rounded (not floored - a tap should land on whichever slot it is
+// genuinely closer to, not always the one clockwise-behind it), wrapping
+// TICKS_PER_LAP itself back to 0 (an angle essentially AT 12 o'clock
+// selects the START of a lap, not an out-of-range slot inside it - unlike
+// the single ring, the coil has no "true zero must stay unreachable"
+// constraint to preserve here; see this file's header, "TRUE ZERO IS NOW
+// REACHABLE BY TOUCH", for why that old constraint does not carry over).
+//
+// AT TICKS_PER_LAP=360, THIS IS A ONE-DEGREE-PER-TICK MAPPING: a tap can
+// select any of 360 slots, but two adjacent slots are only ~3px of arc
+// apart at this file's RING_OUTER_R (see this file's header, "Second, and
+// this is the one requiring judgement") - a real fingertip cannot reliably
+// choose one 3px slot over its neighbour. That is expected, not a bug: a
+// point is described as landing "in the right neighbourhood", and it is
+// drag_touch(), immediately below, that actually resolves the exact 5-
+// second step from there.
+static int sub_lap_ticks_for_angle(float angleDeg) {
+    int slot = (int)lroundf(angleDeg / 360.0f * (float)TICKS_PER_LAP);
+    if (slot >= TICKS_PER_LAP) slot -= TICKS_PER_LAP;
     if (slot < 0) slot = 0;
-    if (slot >= TICK_COUNT) slot = TICK_COUNT - 1;
-    // slot+1, not slot: a full revolution of TICK_COUNT equal slots has no
-    // slot that means "zero", so a drag can set 1..TICK_COUNT ticks (5s to
-    // 60min) but never back down to exactly zero. That is deliberate rather
-    // than a gap in the mapping: true zero is only ever the untouched
-    // default, which removes the ambiguity a dial with a true-zero position
-    // would have between "zero" and "one full lap".
-    return slot + 1;
+    return slot;
+}
+
+// "Point directly": the fast gesture. Sets the position WITHIN the current
+// lap to match the tapped angle, preserving however many laps are already
+// wound - see this file's header for why the lap is preserved rather than
+// reset (a tap while deep into a lap nudges the value within that lap; to
+// change which lap, drag past twelve o'clock instead, see drag_touch()
+// below). From zero (lap 0), tapping six o'clock (180 degrees, half a
+// turn) sets exactly half of TICKS_PER_LAP's worth of time - AT THIS
+// FILE'S CURRENT 30-minute lap length that is 15:00, not the 5:00 a
+// 10-minute lap gave; see this file's header, "First, six o'clock is now
+// 15:00, not 5:00", for why that changed and is accepted.
+//
+// Called on every fresh touch context: a genuine f->touchPressed, AND the
+// one frame TS_PAUSED converts into TS_SETTING (see timer_tick()) - both
+// are "start a new pointing/dragging gesture from wherever the value
+// currently sits", the only difference being where that starting value
+// came from (an existing setTicks either way; TS_PAUSED's touch branch just
+// writes the paused value into setTicks a few lines before calling this).
+static void point_touch(timer_state_t *s, int touchX, int touchY) {
+    float angle = raw_touch_angle_deg(touchX, touchY);
+    int lap = s->setTicks / TICKS_PER_LAP; // integer division; see below for lap==LAPS_MAX
+    int newTotal = lap * TICKS_PER_LAP + sub_lap_ticks_for_angle(angle);
+    // lap can be exactly LAPS_MAX only when setTicks is exactly MAX_TICKS
+    // (720/360 = 2): there is no lap beyond the last one to preserve a
+    // position within, so newTotal comes out >= MAX_TICKS regardless of the
+    // tapped angle and the clamp below holds it at the ceiling - tapping
+    // the coil while already at 60:00 stays at 60:00, whichever angle is
+    // tapped. Reads as the ceiling behaving like a ceiling, not as a bug.
+    if (newTotal > MAX_TICKS) newTotal = MAX_TICKS;
+    if (newTotal < 0) newTotal = 0;
+    s->setTicks = newTotal;
+    s->dragAccumTicks = (float)newTotal;
+    s->lastTouchAngleDeg = angle;
+}
+
+// FINE-GRAINED DRAG: NO JITTER AT REST, NO RUNAWAY WHEN FAST.
+//
+// Continues an active drag: reads THIS frame's raw angle, unwraps its delta
+// against the LAST frame's angle across the twelve o'clock branch cut (a
+// jump of more than 180 degrees either direction is treated as having gone
+// the SHORT way around instead, exactly the standard technique for
+// integrating an angle continuously through its own wraparound), and
+// accumulates the result into dragAccumTicks - see this file's header,
+// "POINT VS DRAG, AND THE BRANCH CUT", for why this, not a fresh angle-to-
+// slot snapshot every frame, is what actually implements "dragging past
+// twelve o'clock adds a lap". dragAccumTicks is clamped to [0, MAX_TICKS]
+// as it goes, not only once at the end, so pushing past either limit and
+// then reversing resumes immediately with no dead zone (NO RUNAWAY: a fast
+// drag that overshoots the ceiling or floor never has to "travel back" the
+// overshoot before the displayed value starts moving again).
+//
+// NO JITTER AT REST is the harder half, and new with TICKS_PER_LAP=360 (one
+// tick is now only ~3px of arc, a THIRD of the six-band coil's own ~9px -
+// see this file's header, "Second, and this is the one requiring
+// judgement"). dragAccumTicks itself already cannot jitter from a truly
+// unmoving finger: raw_touch_angle_deg() is a pure function of the reported
+// touch pixel, so two identical samples produce delta == 0.0 exactly, and
+// nothing accumulates. The real risk is the DISPLAYED tick (setTicks,
+// which drives both the digits and the arc) flickering between two
+// adjacent values if the touch CONTROLLER itself reports a slightly
+// different pixel between two consecutive samples for a physically still
+// finger - ordinary sensor noise, not a code bug, and something this
+// emulator cannot reproduce (its touch is mouse-driven and pixel-exact, so
+// there is no noise here to test against; see emu_abi.h's own "input
+// device defects" caveat). Rather than snap the DISPLAY at the naive
+// halfway point between two ticks (round-to-nearest), this commits a new
+// displayed tick only once the accumulator has moved
+// DRAG_COMMIT_HYSTERESIS_TICKS past that halfway point - a Schmitt-
+// trigger-style dead band around each commit boundary, on the OUTPUT side
+// only. This never blocks or slows genuine motion: dragAccumTicks keeps
+// accumulating every real delta exactly regardless of the hysteresis, so a
+// deliberate drag that keeps moving in one direction always eventually
+// clears the wider threshold and the display catches all the way up (via
+// lroundf(dragAccumTicks), not a single-step increment) the moment it
+// does. It only adds reluctance for a value that is hovering near a
+// boundary rather than committing to either side of it.
+//
+// THE HONEST LIMIT. DRAG_COMMIT_HYSTERESIS_TICKS = 0.3 was sized against
+// this file's own geometry, not against a measurement of the real touch
+// controller's noise floor (no such measurement exists yet): one raw pixel
+// of touch-coordinate noise at RING_OUTER_R (173) is roughly 1/173 radian,
+// about 0.33 degrees - close to a FULL tick's own width at this ratio. A
+// single pixel of real controller noise is therefore already comparable in
+// size to one tick, and no purely software dead band placed after the fact
+// can fully absorb noise of that same order without also eating genuine
+// slow motion by the same amount. What this hysteresis DOES guarantee: a
+// perfectly still finger (identical reported pixel every frame, which is
+// what this emulator's own mouse-driven touch always produces) never
+// flickers, because delta is exactly zero and nothing ever approaches a
+// commit boundary in the first place. What it does NOT guarantee, because
+// nothing at the software layer can, is that real hardware touch noise of
+// a full pixel or more will always be absorbed - if the physical sensor
+// turns out noisier than this margin on real hardware, that is a genuine,
+// reportable finding about this device's touch resolution at a 360-tick
+// lap, not something to quietly round away, and the fix at that point is
+// hardware-level averaging or a coarser DISPLAY step (not what the coil
+// actually STORES, which stays exact 5s ticks either way) rather than a
+// bigger software hysteresis, which would just trade flicker for
+// sluggishness. Flagged here, not silently assumed solved - see this
+// task's own report for the same flag, and repro-timer-coil.ts for the
+// jitter-relevant coverage this emulator CAN provide (a perfectly still
+// simulated finger produces zero displayed-value changes across many
+// ticks).
+#define DRAG_COMMIT_HYSTERESIS_TICKS 0.3f
+
+static void drag_touch(timer_state_t *s, int touchX, int touchY) {
+    float angle = raw_touch_angle_deg(touchX, touchY);
+    float delta = angle - s->lastTouchAngleDeg;
+    if (delta > 180.0f) delta -= 360.0f;
+    else if (delta < -180.0f) delta += 360.0f;
+    s->lastTouchAngleDeg = angle;
+
+    s->dragAccumTicks += delta / 360.0f * (float)TICKS_PER_LAP;
+    if (s->dragAccumTicks < 0.0f) s->dragAccumTicks = 0.0f;
+    if (s->dragAccumTicks > (float)MAX_TICKS) s->dragAccumTicks = (float)MAX_TICKS;
+
+    float diff = s->dragAccumTicks - (float)s->setTicks;
+    if (diff >= 0.5f + DRAG_COMMIT_HYSTERESIS_TICKS || diff <= -(0.5f + DRAG_COMMIT_HYSTERESIS_TICKS)) {
+        s->setTicks = (int)lroundf(s->dragAccumTicks);
+    }
 }
 
 /* ---------------------------------------------------------------------
@@ -804,36 +1220,31 @@ static float running_true_remaining(const timer_state_t *s, uint32_t nowMs) {
     return t < 0.0f ? 0.0f : t;
 }
 
-// The ring's current fill angle, 0..360, as a function of state alone.
+// The coil's current fill angle PER BAND, 0..360 each, as a function of
+// state alone - the direct generalisation of the single ring's own
+// current_fill_deg(), which this replaces. Reads a continuous total-ticks
+// value (SETTING: setTicks itself; PAUSED: the frozen pausedTrueRemaining;
+// RUNNING: running_true_remaining()'s live fractional seconds), same three
+// state branches as before, then - because the coil's step is flat - turns
+// total ticks into each band's own fraction of TICKS_PER_LAP directly,
+// with no piecewise tick_index_for_seconds() dance the tiered ring needed
+// (that function still exists, unchanged in role, for the seconds<->ticks
+// conversion the digits and BOOT/lastSetTicks handling still need; it just
+// no longer has to feed this function, because ticks and seconds are now
+// the same curve up to a constant factor).
 //
-// Corrected 2026-08-13, reversing this function's own previous rule: it
-// used to be proportional to REMAINING SECONDS, deliberately NOT to tick
-// index, so the arc swept at one constant angular speed regardless of the
-// (then two-tier) step size. That was right for a uniform or near-uniform
-// step. It is WRONG now that TICK_COUNT's table has three tiers spanning
-// 5s to 1m per step (see that comment for the table and why the owner
-// accepted a non-uniform arc to get it): a plain remainSec/TIMER_MAX_SECONDS
-// curve and the tick-index curve are different functions now, so SETTING's
-// drag (which picks a TICK via ring_tick_for_touch, an angle-to-tick
-// mapping) and a naive seconds-proportional arc would visibly disagree -
-// drag to one spot, watch the arc fill to another. Unusable, not just
-// inconsistent.
-//
-// So this now goes through tick_index_for_seconds(remainSec) - the
-// continuous inverse of seconds_for_ticks(), on the SAME three-tier scale -
-// and turns THAT into degrees. This is the one and only place either
-// SETTING or RUNNING computes the ring's angle (see the SETTING branch in
-// timer_tick, which calls this function too rather than deriving its own
-// angle from newTicks directly): setting and running sharing this single
-// mapping is the invariant that matters here, not any longer "arc length
-// equals fraction of time".
-//
-// RUNNING/PAUSED still read a fractional, continuous remainSec (via
-// running_true_remaining()'s sub-second remainder, or the frozen
-// pausedTrueRemaining), so the arc still sweeps smoothly within whichever
-// tier the countdown is currently in - it just no longer sweeps at the same
-// angular speed across tiers, on purpose.
-static float current_fill_deg(const timer_state_t *s, uint32_t nowMs) {
+// bandStartTicks = b*TICKS_PER_LAP for band b: band b has not been reached
+// at all while totalTicks <= bandStartTicks (outDeg 0, pure grey track),
+// is FULLY wound once totalTicks >= bandStartTicks + TICKS_PER_LAP (outDeg
+// 360, solid black, "completed"), and in between shows the live fraction -
+// this one formula produces every case this file's header describes: both
+// bands empty at exactly 0:00, both full at exactly 60:00, and a smooth,
+// continuous transition through the one lap boundary in between, with no
+// special-casing of any boundary anywhere in this function (see this
+// file's header, "SETTING AND RUNNING STILL SHARE ONE MAPPING" - SETTING
+// and RUNNING/PAUSED all funnel through this exact function, same
+// invariant the single ring had for current_fill_deg()).
+static void compute_band_fill_degs(const timer_state_t *s, uint32_t nowMs, float outDeg[LAPS_MAX]) {
     float remainSec;
     switch (s->state) {
         case TS_SETTING: remainSec = (float)seconds_for_ticks(s->setTicks); break;
@@ -841,11 +1252,16 @@ static float current_fill_deg(const timer_state_t *s, uint32_t nowMs) {
         case TS_RUNNING:
         default:         remainSec = running_true_remaining(s, nowMs); break;
     }
-    float tickIdx = tick_index_for_seconds(remainSec);
-    float deg = (tickIdx / (float)TICK_COUNT) * 360.0f;
-    if (deg < 0.0f) deg = 0.0f;
-    if (deg > 360.0f) deg = 360.0f;
-    return deg;
+    float ticks = tick_index_for_seconds(remainSec);
+    if (ticks < 0.0f) ticks = 0.0f;
+    if (ticks > (float)MAX_TICKS) ticks = (float)MAX_TICKS;
+
+    for (int b = 0; b < LAPS_MAX; b++) {
+        float within = ticks - (float)b * (float)TICKS_PER_LAP;
+        if (within <= 0.0f) outDeg[b] = 0.0f;
+        else if (within >= (float)TICKS_PER_LAP) outDeg[b] = 360.0f;
+        else outDeg[b] = (within / (float)TICKS_PER_LAP) * 360.0f;
+    }
 }
 
 static void draw_all_digits(int seconds, uint16_t color) {
@@ -882,16 +1298,17 @@ static void update_digits_if_changed(timer_state_t *s, int seconds) {
     s->lastDigitSeconds = seconds;
 }
 
-// Full repaint of the ring (track + arc, with rounded caps) and the digits,
-// for enter() and for every state transition. Does not push: callers that
-// run after enter() (i.e. every transition) follow this with
+// Full repaint of the coil (both bands, track + arc, with rounded caps) and
+// the digits, for enter() and for every state transition. Does not push:
+// callers that run after enter() (i.e. every transition) follow this with
 // gfx_push_all(), since a transition changes the digits' colour, which is
 // cheaper as one push than as several smaller ones.
 static void redraw_full(timer_state_t *s, uint32_t nowMs) {
     ensure_ring_tables();
-    float fillDeg = current_fill_deg(s, nowMs);
+    float fillDeg[LAPS_MAX];
+    compute_band_fill_degs(s, nowMs, fillDeg);
     paint_ring_full(fillDeg);
-    s->lastFillDeg = fillDeg;
+    for (int b = 0; b < LAPS_MAX; b++) s->lastFillDeg[b] = fillDeg[b];
 
     int seconds = digit_seconds_for(s);
     draw_all_digits(seconds, digit_color_for_state(s->state));
@@ -901,8 +1318,13 @@ static void redraw_full(timer_state_t *s, uint32_t nowMs) {
 /* ---------------------------------------------------------------------
  * The alarm. Runs entirely inside this function; timer_tick() calls it
  * first, before anything else, and returns, so an input frame that was
- * actually "make it stop" is never also processed as a ring drag or a
- * button toggle.
+ * actually "make it stop" is never also processed as a coil drag, a
+ * shake-clear, or a button toggle - see timer_tick()'s own header comment
+ * for why that same early, unconditional return is also what guarantees
+ * the alarm's own shake dismissal can never double-fire into the new
+ * shake-clear reaction on the same tick. Unchanged by the coil redesign:
+ * everything here reads s->setTicks/seconds_for_ticks() generically, with
+ * no dependency on how many ticks there are or how they map onto the dial.
  * ------------------------------------------------------------------- */
 static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
     // "Any input", read as literally every event app_frame_t can carry, per
@@ -910,8 +1332,8 @@ static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
     // remember which button, or that it has to be a button at all. f->shaken
     // joined this list per the owner's explicit correction (see this app's
     // ALARM_MAX_MS/ALARM_FLASH_MS comment above and g_timerApp's wantsShake
-    // comment below for why shake is safe to read HERE and nowhere else in
-    // this file).
+    // comment below for why shake is safe to read here AND, since
+    // 2026-08-14, in exactly one other place in this file).
     bool anyInput = f->touchPressed || f->touchDown || f->touchReleased ||
                     f->bootClicked || (f->key != 0) || f->shaken;
     bool timedOut = (f->nowMs - s->alarmStartMs) >= ALARM_MAX_MS;
@@ -936,15 +1358,15 @@ static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
 
         // Clear the whole panel first: the alarm's last flash frame may have
         // left it solid black (see the fill below, PX_BLACK on the inverted
-        // phase), and redraw_full() only repaints the ring and the digit
+        // phase), and redraw_full() only repaints the coil and the digit
         // cells, not every pixel in between. Skipping this leaves black
         // showing through the gaps between digit cells and everywhere
-        // outside the ring - found by actually looking at a captured
+        // outside the coil - found by actually looking at a captured
         // dismiss frame, not by reasoning about the code. Pre-existing (the
         // alarm's flash-then-partial-redraw shape predates this file's
-        // dots-to-ring rewrite); fixed here because it is squarely this
-        // function's own bug. Same "whole rect needs no landscape rotation"
-        // reasoning as the flash fill just below.
+        // dots-to-ring-to-coil rewrites); fixed here because it is squarely
+        // this function's own bug. Same "whole rect needs no landscape
+        // rotation" reasoning as the flash fill just below.
         gfx_fill_rect(0, 0, PANEL_W, PANEL_H, PX_WHITE);
         s->state = TS_SETTING;
         redraw_full(s, f->nowMs);
@@ -968,27 +1390,48 @@ static void handle_alarm(timer_state_t *s, const app_frame_t *f) {
 }
 
 /* ---------------------------------------------------------------------
- * enter(): draws the initial SETTING screen (empty ring, 00:00, light grey
- * digits) into the white framebuffer the runtime has just cleared. Does not
- * push: the runtime pushes the whole panel once after this returns.
+ * enter(): draws the initial SETTING screen (empty coil, both bands pure
+ * track, 00:00, light grey digits) into the white framebuffer the runtime
+ * has just cleared. Does not push: the runtime pushes the whole panel once
+ * after this returns.
  * ------------------------------------------------------------------- */
 static void timer_enter(void) {
     s_state = APP_STATE(timer_state_t);
     // APP_STATE zeroes the allocation: state == TS_SETTING (0), setTicks ==
-    // 0, everything else 0/false, which is exactly the "nothing set yet"
-    // starting point.
-    redraw_full(s_state, 0); // nowMs unused: SETTING ignores it (current_fill_deg's switch)
-    printf("timer: entered, drag the ring to set a time\r\n");
+    // 0, dragAccumTicks == 0, lastFillDeg[] all 0, everything else 0/false -
+    // exactly the "nothing set yet, every band empty" starting point.
+    redraw_full(s_state, 0); // nowMs unused: SETTING ignores it (compute_band_fill_degs's switch)
+    printf("timer: entered, drag the coil to set a time\r\n");
 }
 
 /* ---------------------------------------------------------------------
  * tick(): one state transition or one incremental update per call, never
- * both, so every visible change traces to exactly one input - with one
- * deliberate exception: a BOOT release and a PWR short-press verdict
- * landing on the same tick both apply, in that order (see the bootClicked
- * branch below). That is not two inputs pretending to be one; it is two
- * real, distinct inputs that genuinely arrived together, so both events get
- * to act rather than one silently eating the other.
+ * both, so every visible change traces to exactly one input - with two
+ * deliberate exceptions, both the same idiom applied to a different pair of
+ * inputs:
+ *
+ *   1. a BOOT release and a PWR short-press verdict landing on the same
+ *      tick both apply, in that order (see the bootClicked branch below).
+ *      That is not two inputs pretending to be one; it is two real,
+ *      distinct inputs that genuinely arrived together, so both events get
+ *      to act rather than one silently eating the other.
+ *   2. TS_PAUSED's touch-to-edit reaction (see the TS_PAUSED branch below)
+ *      changes s->state to TS_SETTING and then falls into the TS_SETTING
+ *      branch on the SAME call - one physical input (this frame's touch)
+ *      genuinely causing two logical effects (the state transition, and
+ *      that same touch immediately placing the coil), rather than
+ *      deferring the second effect to a frame that has not happened yet.
+ *
+ * The shake-clear branch, new 2026-08-14, is NOT a third instance of this:
+ * it always returns immediately after acting, same as every other
+ * transition in this function, and is reachable only from TS_SETTING or
+ * TS_PAUSED - never from TS_ALARM, because the unconditional `return;`
+ * right after handle_alarm() above means TS_ALARM never reaches ANY of the
+ * code below it, on any tick, regardless of what handle_alarm() itself
+ * changed s->state to. That is what guarantees an alarm-dismissing shake
+ * can never also clear "something else" on the very same tick: by the time
+ * this function would otherwise re-examine s->state for the shake-clear
+ * branch, it has already returned.
  * ------------------------------------------------------------------- */
 static void timer_tick(const app_frame_t *f) {
     timer_state_t *s = s_state;
@@ -1024,18 +1467,19 @@ static void timer_tick(const app_frame_t *f) {
             printf("timer: BOOT recalled %02d:%02d\r\n", sec / 60, sec % 60);
         }
         // NOT an unconditional `return;` here any more - that was the bug
-        // (see docs/findings-app-fuzzing.md section 1). runtime_core.c's
-        // sensors_key_take() is read-and-clear, called exactly once per
-        // tick regardless of whether this app goes on to look at KEY_SHORT.
-        // BOOT is polled at only ~20Hz (bootbtn.h), so a BOOT release and a
-        // PWR short-press verdict landing in the same tick is easy to
-        // trigger by releasing both buttons together, and an unconditional
-        // return here used to throw the KEY_SHORT bit away for good: no log
-        // line, no state change, unrecoverable. chrono.c's bootClicked
-        // branch (chrono_tick) has no early return for the identical reason
-        // and this follows the same idiom: apply BOOT, then let a same-tick
-        // KEY_SHORT below act on the state BOOT produced (recall, then
-        // start; reset-to-setting, then start-from-there).
+        // (see docs/findings-app-fuzzing.md section 1, commit 88cabe6).
+        // runtime_core.c's sensors_key_take() is read-and-clear, called
+        // exactly once per tick regardless of whether this app goes on to
+        // look at KEY_SHORT. BOOT is polled at only ~20Hz (bootbtn.h), so a
+        // BOOT release and a PWR short-press verdict landing in the same
+        // tick is easy to trigger by releasing both buttons together, and an
+        // unconditional return here used to throw the KEY_SHORT bit away
+        // for good: no log line, no state change, unrecoverable. chrono.c's
+        // bootClicked branch (chrono_tick) has no early return for the
+        // identical reason and this follows the same idiom: apply BOOT,
+        // then let a same-tick KEY_SHORT below act on the state BOOT
+        // produced (recall, then start; reset-to-setting, then start-from-
+        // there).
         //
         // Still return when there is no KEY_SHORT pending this tick, exactly
         // as before: a plain BOOT click on its own must not newly fall
@@ -1062,32 +1506,32 @@ static void timer_tick(const app_frame_t *f) {
             gfx_push_all();
             printf("timer: start, %02d:%02d\r\n", s->remainingSeconds / 60, s->remainingSeconds % 60);
         } else if (s->state == TS_RUNNING) {
-            // Freeze the arc's exact fractional position BEFORE flipping
+            // Freeze the arcs' exact fractional position BEFORE flipping
             // state: running_true_remaining() reads remainingSeconds and
             // lastDecMs, both still valid pre-flip, using f->nowMs one last
             // time while it still means "how far into this second are we".
-            // Once state is TS_PAUSED, current_fill_deg() stops consulting
-            // nowMs at all, so this is the only chance to capture it;
-            // skipping this would either snap the arc back to a whole tick
-            // on pause or let it drift while frozen.
+            // Once state is TS_PAUSED, compute_band_fill_degs() stops
+            // consulting nowMs at all, so this is the only chance to
+            // capture it; skipping this would either snap the coil back to
+            // a whole tick on pause or let it drift while frozen.
             s->pausedTrueRemaining = running_true_remaining(s, f->nowMs);
             s->state = TS_PAUSED;
-            redraw_full(s, f->nowMs); // arc freezes exactly where it was; digit colour changes
+            redraw_full(s, f->nowMs); // arcs freeze exactly where they were; digit colour changes
             gfx_push_all();
             printf("timer: pause at %02d:%02d\r\n", s->remainingSeconds / 60, s->remainingSeconds % 60);
         } else { // TS_PAUSED
             s->state = TS_RUNNING;
             // Reset the decrement anchor rather than reusing the old one: a
             // long pause must not dump a backlog of missed seconds into the
-            // countdown the instant it resumes. This also means the arc's
+            // countdown the instant it resumes. This also means each arc's
             // sub-second position resets to 0 rather than resuming from
             // pausedTrueRemaining's exact fraction; the discrepancy is at
-            // most one second, which (worst case, resuming inside the 5s-
-            // per-step fine tier - see TICK_COUNT's table comment) is at
-            // most 0.8 degrees of arc, under 0.23% of the full sweep, so it
-            // reads as continuous rather than as a jump. In the coarser
-            // tiers the same one-second cap is smaller still (down to
-            // ~0.07 degrees in the 1-minute-per-step tail).
+            // most one second, which - the coil's flat step, unlike the old
+            // tiered ring, makes this the SAME number everywhere on the
+            // dial rather than a range - is 360/TICKS_PER_LAP/TICK_STEP_S =
+            // 0.2 degrees of arc within whichever band is currently active,
+            // well under 0.1% of that band's full sweep: reads as
+            // continuous, not as a jump.
             s->lastDecMs = f->nowMs;
             redraw_full(s, f->nowMs);
             gfx_push_all();
@@ -1096,19 +1540,110 @@ static void timer_tick(const app_frame_t *f) {
         return;
     }
 
+    // Shake-to-clear, added 2026-08-14. Owner, direct quote: "also i should
+    // be able to shake to clear while i'm still in edit mode there."
+    //
+    // SCOPE: TS_SETTING and TS_PAUSED, both because both are "the dial is
+    // editable" - SETTING obviously, and PAUSED because pause-then-edit
+    // (see this file's header) already means a paused countdown can be
+    // dragged without touching first, so it counts as "editable" even
+    // before any touch has happened. TS_RUNNING is DELIBERATELY excluded:
+    // a running countdown is counting something real, and a knock against
+    // the table should not be able to destroy that progress the way it can
+    // destroy an unstarted or already-stopped value. This is a judgement
+    // call the owner explicitly handed to this file's own reading of the
+    // state machine, not a spec'd rule - flagged as such in this task's own
+    // report.
+    //
+    // EFFECT: identical shape to handle_alarm()'s own dismissal (preserve
+    // lastSetTicks if there was something to preserve, zero setTicks, land
+    // in TS_SETTING at 00:00, full redraw+push) - reusing that exact
+    // pattern rather than inventing a second one, so "shake wipes it, but
+    // BOOT can still recall it in one press" behaves identically whichever
+    // way the dial got cleared.
+    //
+    // WHY THIS CANNOT DOUBLE-FIRE WITH THE ALARM'S OWN SHAKE DISMISSAL: see
+    // this function's own header comment - handle_alarm() always returns
+    // unconditionally, so a shake that dismisses the alarm never reaches
+    // this branch on the same tick, regardless of what state it left
+    // behind.
+    //
+    // WHY THE EXISTING SHAKE THRESHOLD LOOKS RIGHT AS-IS, NOT RETUNED:
+    // firmware/runtime/sensors.c's imu_poll_core1() (out of scope for this
+    // change - see this task's own constraints) already requires several
+    // jolts (JOLT_MIN_COUNT, currently 4) inside a short window
+    // (JOLT_WINDOW_MS, 700ms), specifically so "a social shake or a knock
+    // cannot fire it" per that file's own comment. A single accidental
+    // bump is exactly what that threshold was built to reject, for the
+    // sketchpad's deliberate-wipe gesture; reusing it here for a second
+    // deliberate-wipe gesture asks nothing new of it. Reported as checked
+    // and appropriate rather than silently reused unexamined, per the
+    // owner's own instruction to say so if it looked too easy - it does
+    // not.
+    if ((s->state == TS_SETTING || s->state == TS_PAUSED) && f->shaken) {
+        if (s->setTicks > 0) s->lastSetTicks = s->setTicks;
+        s->setTicks = 0;
+        s->state = TS_SETTING;
+        redraw_full(s, f->nowMs);
+        gfx_push_all();
+        int recallSec = seconds_for_ticks(s->lastSetTicks);
+        printf("timer: shake cleared to 00:00 (BOOT recalls %02d:%02d)\r\n", recallSec / 60, recallSec % 60);
+        return;
+    }
+
+    // TS_PAUSED, touched: "if I stop the timer I should be able to directly
+    // edit the time without clearing" - see this file's header, "PAUSE,
+    // THEN EDIT". Gated on f->touchDown, not f->touchPressed, deliberately:
+    // that is the same gate the TS_SETTING branch below already uses for
+    // its own touch dispatch, and it means a finger already resting on the
+    // coil at the exact instant PWR pauses starts editing right away too,
+    // rather than requiring a lift-and-retouch first. Converts the frozen
+    // pausedTrueRemaining into setTicks (rounded to the nearest 5s tick,
+    // same rounding every other seconds->ticks conversion in this file
+    // uses), flips the state, and falls through - no `return` here, see
+    // this function's own header comment on why, and chrono.c's/this
+    // function's bootClicked branch above for the established precedent.
+    if (s->state == TS_PAUSED && f->touchDown) {
+        int pausedTicks = (int)lroundf(s->pausedTrueRemaining / (float)TICK_STEP_S);
+        if (pausedTicks < 0) pausedTicks = 0;
+        if (pausedTicks > MAX_TICKS) pausedTicks = MAX_TICKS;
+        s->setTicks = pausedTicks;
+        s->state = TS_SETTING;
+
+        // The very touch that triggered this transition is ALSO this
+        // context's first touch: point_touch() unconditionally, exactly as
+        // TS_SETTING's own branch does for a genuine f->touchPressed (see
+        // point_touch()'s own comment on why both call sites are "start a
+        // new pointing/dragging gesture" alike). This IS a full redraw
+        // (state changed, digit colour must flip from PAUSED's darker grey
+        // to SETTING's lighter one), so it does not go through
+        // update_ring_to()'s incremental path the way a later drag_touch()
+        // in this same TS_SETTING session will.
+        point_touch(s, f->touchX, f->touchY);
+        redraw_full(s, f->nowMs);
+        gfx_push_all();
+        int sec = seconds_for_ticks(s->setTicks);
+        printf("timer: paused value now editable, %02d:%02d\r\n", sec / 60, sec % 60);
+        return;
+    }
+
     if (s->state == TS_SETTING) {
         if (!f->touchDown) return;
-        int newTicks = ring_tick_for_touch(f->touchX, f->touchY);
-        if (newTicks == s->setTicks) return;
-        s->setTicks = newTicks;
-        int newSeconds = seconds_for_ticks(newTicks);
-        // current_fill_deg(), not a hand-rolled newSeconds/TIMER_MAX_SECONDS
-        // formula: see that function's header comment for why a plain
-        // seconds-proportional angle would now visibly disagree with the
-        // finger. Going through the same function RUNNING uses is what
-        // guarantees the two states never compute the angle two different
-        // ways.
-        update_ring_to(s, current_fill_deg(s, f->nowMs));
+
+        int beforeTicks = s->setTicks;
+        if (f->touchPressed) point_touch(s, f->touchX, f->touchY);
+        else drag_touch(s, f->touchX, f->touchY);
+        if (s->setTicks == beforeTicks) return;
+
+        int newSeconds = seconds_for_ticks(s->setTicks);
+        // compute_band_fill_degs(), not a hand-rolled per-band formula at
+        // this call site: see that function's header comment for why
+        // SETTING and RUNNING/PAUSED must all funnel through the exact same
+        // function. Going through it here is what guarantees a drag and the
+        // coil it draws never compute the angle two different ways.
+        float fillDeg[LAPS_MAX];
+        compute_band_fill_degs(s, f->nowMs, fillDeg);
+        update_ring_to(s, fillDeg);
         update_digits_if_changed(s, newSeconds);
         return;
     }
@@ -1136,42 +1671,45 @@ static void timer_tick(const app_frame_t *f) {
             printf("timer: ringing\r\n");
             return;
         }
-        // Every RUNNING frame, not just on a whole-second `changed`: the arc
-        // moves at sub-second granularity (that is the entire point of a
-        // continuous arc over the old stepped dots), so gating it on
+        // Every RUNNING frame, not just on a whole-second `changed`: the
+        // coil moves at sub-second granularity (that is the entire point of
+        // a continuous arc over the old stepped dots), so gating it on
         // `changed` would reintroduce once-a-second stepping. update_ring_to
-        // is itself a no-op when the angle has not moved enough to touch a
-        // new pixel, so most calls here do nothing.
-        update_ring_to(s, current_fill_deg(s, f->nowMs));
+        // is itself a no-op when no band's angle has moved enough to touch
+        // a new pixel, so most calls here do nothing.
+        float fillDeg[LAPS_MAX];
+        compute_band_fill_degs(s, f->nowMs, fillDeg);
+        update_ring_to(s, fillDeg);
         if (changed) update_digits_if_changed(s, s->remainingSeconds);
         return;
     }
 
-    // TS_PAUSED: nothing changes on its own; only BOOT and PWR, both handled
-    // above, ever move it.
+    // TS_PAUSED, not touched and not shaken: nothing changes on its own;
+    // only BOOT, PWR and (above) a touch or a shake ever move it.
 }
 
-// wantsShake is true, added 2026-08-13 - read this comment before assuming
-// that means "the timer uses shake", because it deliberately does not, past
-// this one narrow case:
+// wantsShake is true, added 2026-08-13 for the alarm's own dismissal, and
+// read from a SECOND place since 2026-08-14 (the shake-clear branch in
+// timer_tick(), above) for the owner's "shake to clear while editing"
+// addition. Both readings share the same underlying signal and the same
+// opt-in rule (sensors.h: shake is opt-in per app precisely so it cannot
+// become a universal destructive verb - decision 0002 section 5), and
+// between them they cover every state that reads f->shaken at all:
 //
-// The owner's explicit instruction is that shaking the device while the
-// alarm RINGS must dismiss it, exactly like a button or a touch - a child
-// grabbing a beeping object and shaking it is exactly what happens, and
-// should work like everything else that silences it. sensors.h's opt-in
-// rule exists precisely so shake cannot become a universal destructive verb
-// (decision 0002 section 5: promoting it globally would let a stray jolt
-// reset the countdown a child is waiting on, or worse, wipe the sketchpad
-// from across the room). Turning wantsShake on for THIS app widens what
-// runtime_core.c is willing to deliver to it, but does not by itself decide
-// what the app DOES with it - that decision is handle_alarm()'s alone
-// (f->shaken is folded into anyInput there, and read NOWHERE else in this
-// file). Outside TS_ALARM, f->shaken is simply never consulted, so a shake
-// during SETTING, RUNNING or PAUSED does exactly nothing, same as before
-// this flag flipped. If a future change ever reads f->shaken from a second
-// place in this file, stop and re-read this comment: that is very likely
-// the opt-in rule being rebuilt by hand into a mistake it exists to
-// prevent.
+//   TS_ALARM                     handle_alarm() - dismiss, silence, clear.
+//   TS_SETTING / TS_PAUSED       timer_tick()'s shake-clear branch - wipe
+//                                 to 00:00, same shape as a dismissal.
+//   TS_RUNNING                   f->shaken is NOT read here, on purpose -
+//                                 see the shake-clear branch's own comment
+//                                 for why a running countdown is excluded.
+//
+// If a future change ever reads f->shaken from a THIRD place in this file,
+// stop and check it against both of the above first: the two existing
+// readers were each scoped deliberately (one to "the alarm is ringing", one
+// to "the dial is editable but nothing is counting down"), and a new reader
+// that does not fit either description is very likely the opt-in rule being
+// widened by accident rather than by a real, considered instruction the way
+// both of these were.
 const app_t g_timerApp = {
     .name       = "timer",
     .enter      = timer_enter,

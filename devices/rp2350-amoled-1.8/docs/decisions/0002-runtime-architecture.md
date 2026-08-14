@@ -356,6 +356,28 @@ See `docs/decisions/`'s own convention (further down this section, and in
 the runtime rewrite this document is titled after): record the correction
 with its date rather than silently editing the original sentence away.
 
+**Corrected 2026-08-14, the coil.** "Snap to sensible steps (30s below 5
+minutes, a minute above)" above described the tiered ring; it no longer
+holds. The owner: dragging near the fast end of that ring bought seconds,
+dragging near the slow end bought minutes, and nothing on the dial itself
+told a child which zone her finger was in - unpredictable by design for
+someone who cannot yet read MM:SS. The replacement is a flat 5-second step
+everywhere, wound onto the dial like a coil: a full lap is a fixed length
+of time (30 minutes, after a same-day revision from an initial 10), the
+60-minute ceiling is two laps, each lap is its own concentric band so the
+lap count is visible (Apple-activity-rings style, winding inward so the
+outer diameter never grows), and dragging past twelve o'clock adds or
+removes a lap via continuous unwrapped angle tracking rather than a
+snapshot. Pointing directly still works as the fast gesture; at this lap
+length it lands in the right neighbourhood rather than on one exact
+5-second tick, and continuing to drag is what resolves the exact value -
+see `firmware/apps/timer.c`'s own header for the full derivation, the
+fine-grained-drag jitter/hysteresis reasoning, and why. The same change
+also added a shake-to-clear reaction, scoped to SETTING and a paused
+countdown (both "the dial is editable"); a running countdown is
+deliberately left alone, so a knock against the table cannot destroy time
+actually being counted.
+
 End-to-end, phrased as a child would notice them rather than as frame counts.
 
 | Path | Budget | Notes |

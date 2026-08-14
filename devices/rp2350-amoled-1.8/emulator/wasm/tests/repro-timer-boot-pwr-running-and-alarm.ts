@@ -208,10 +208,15 @@ async function testAlarm() {
     let t = 1;
     dev.tick(t);
 
-    console.log("-- drag the ring to the smallest settable value (one fine tick, 5s) and start it --");
-    // A tiny angle lands in tick slot 0 (ring_tick_for_touch's slot+1 = 1),
-    // i.e. FINE_STEP_S = 5 seconds - the fastest reachable route to ALARM.
-    const [px, py] = panelTouchForAngle(2);
+    console.log("-- drag the ring to the smallest settable value (one 5s tick) and start it --");
+    // timer.c's coil (2026-08-14 on) is a flat, one-degree-per-tick mapping
+    // (TICKS_PER_LAP=360 across a 360-degree lap): a tap at 1 degree rounds
+    // to sub-lap tick 1, i.e. TICK_STEP_S = 5 seconds - the fastest
+    // reachable route to ALARM. Updated from the old tiered ring's angle=2
+    // (which landed on tick slot 0 there); at the coil's finer, flat
+    // resolution angle=2 now rounds to tick 2 (10s) instead, so this uses
+    // angle=1 to land on exactly one tick.
+    const [px, py] = panelTouchForAngle(1);
     dev.touch(true, px, py);
     t += 16; dev.tick(t);
     dev.touch(false, 0, 0);
