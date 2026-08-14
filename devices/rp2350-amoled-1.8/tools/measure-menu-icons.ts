@@ -72,9 +72,9 @@ async function main() {
         return (((v >> 5) & 0x3f) << 2);
     };
 
-    console.log("icon        optical WxH   ink px   ink % of its own box");
-    console.log("----------  -----------   ------   --------------------");
-    const rows: { name: string; w: number; h: number; ink: number; pct: number }[] = [];
+    console.log("icon        optical WxH   ink px   ink %   stroke px");
+    console.log("----------  -----------   ------   -----   ---------");
+    const rows: { name: string; w: number; h: number; ink: number; pct: number; stroke: number }[] = [];
     for (let i = 0; i < n; i++) {
         const w = Math.floor(LAND_W / n);
         const bx = i * w;
@@ -83,25 +83,68 @@ async function main() {
         const y0 = ICON_TOP_MARGIN;
 
         let minX = 1e9, maxX = -1, minY = 1e9, maxY = -1, ink = 0;
+        const solid: boolean[][] = [];
         for (let ly = y0; ly < y0 + ICON_H; ly++) {
+            const row: boolean[] = [];
             for (let lx = x0; lx < x0 + ICON_W; lx++) {
                 const g = gray(lx, ly);
-                if (g >= 128) continue;           // paper, or a light AA fringe
-                ink += (255 - g) / 255;            // coverage-weighted, so an
-                                                    // anti-aliased edge counts
-                                                    // for what it actually is
+                row.push(g < 128);
+                if (g >= 128) { continue; }          // paper, or a light AA fringe
+                ink += (255 - g) / 255;               // coverage-weighted, so an
+                                                       // anti-aliased edge counts
+                                                       // for what it actually is
                 if (lx < minX) minX = lx;
                 if (lx > maxX) maxX = lx;
                 if (ly < minY) minY = ly;
                 if (ly > maxY) maxY = ly;
             }
+            solid.push(row);
         }
         const ow = maxX - minX + 1, oh = maxY - minY + 1;
         const pct = (ink / (ow * oh)) * 100;
-        rows.push({ name: names[i]!, w: ow, h: oh, ink, pct });
+
+        // STROKE WEIGHT, which is the axis the eye reads as "belongs to this
+        // set" and the one this tool did not report until an icon passed both
+        // of the others and the owner rejected it on sight: "l'epaisseur du
+        // trait de l'icone du puissance 4 est pas la meme que les autres".
+        //
+        // Measured as the MODE of the run lengths of consecutive ink pixels,
+        // taken along both rows and columns. For a stroked glyph almost every
+        // run is one crossing of the stroke, so they pile up at the stroke's
+        // width and the mode lands on it; a SOLID area contributes runs
+        // spread thinly across every length up to its own diameter, so it
+        // never forms a peak and cannot outvote the strokes.
+        //
+        // The median was tried first and is wrong for exactly that reason:
+        // this icon has two filled counters, whose long runs dragged it to
+        // 25px on a glyph whose stroke is 10. The mode is checkable rather
+        // than merely plausible - the other three are Lucide conversions at a
+        // known LUCIDE_STROKE_HALF of 5, so if this metric does not report
+        // about 10 for them, the metric is what is broken.
+        const runs: number[] = [];
+        const collect = (get: (a: number, b: number) => boolean, outer: number, inner: number) => {
+            for (let a = 0; a < outer; a++) {
+                let run = 0;
+                for (let b = 0; b < inner; b++) {
+                    if (get(a, b)) { run++; continue; }
+                    if (run > 0) runs.push(run);
+                    run = 0;
+                }
+                if (run > 0) runs.push(run);
+            }
+        };
+        collect((r, c) => solid[r]![c]!, ICON_H, ICON_W);
+        collect((c, r) => solid[r]![c]!, ICON_W, ICON_H);
+        const hist = new Map<number, number>();
+        for (const r of runs) hist.set(r, (hist.get(r) ?? 0) + 1);
+        let stroke = 0, best = -1;
+        for (const [len, count] of hist) if (count > best || (count === best && len < stroke)) { best = count; stroke = len; }
+
+        rows.push({ name: names[i]!, w: ow, h: oh, ink, pct, stroke });
         console.log(
             `${names[i]!.padEnd(10)}  ${String(ow).padStart(3)} x ${String(oh).padStart(3)}   ` +
-            `${Math.round(ink).toString().padStart(6)}   ${pct.toFixed(1).padStart(5)}%`,
+            `${Math.round(ink).toString().padStart(6)}   ${pct.toFixed(1).padStart(5)}%   ` +
+            `${String(stroke).padStart(9)}`,
         );
     }
 
@@ -109,12 +152,19 @@ async function main() {
     const others = rows.filter((r) => r.name !== "four");
     const four = rows.find((r) => r.name === "four");
     if (four && others.length) {
-        const hLo = Math.min(...others.map((r) => r.h)), hHi = Math.max(...others.map((r) => r.h));
-        const iLo = Math.min(...others.map((r) => r.ink)), iHi = Math.max(...others.map((r) => r.ink));
+        const rng = (f: (r: typeof rows[0]) => number) => [Math.min(...others.map(f)), Math.max(...others.map(f))];
+        const [hLo, hHi] = rng((r) => r.h);
+        const [iLo, iHi] = rng((r) => r.ink);
+        const [sLo, sHi] = rng((r) => r.stroke);
+        const verdict = (v: number, lo: number, hi: number) => (v >= lo && v <= hi ? "IN range" : "OUT of range");
         console.log("");
-        console.log(`the other icons span ${hLo}-${hHi}px tall and ${Math.round(iLo)}-${Math.round(iHi)} ink px`);
-        console.log(`four is ${four.h}px tall (${four.h >= hLo && four.h <= hHi ? "IN range" : "OUT of range"}) ` +
-            `and ${Math.round(four.ink)} ink px (${four.ink >= iLo && four.ink <= iHi ? "IN range" : "OUT of range"})`);
+        console.log(`the other icons: ${hLo}-${hHi}px tall, ${Math.round(iLo)}-${Math.round(iHi)} ink px, ${sLo}-${sHi}px stroke`);
+        console.log(`four:            ${four.h}px tall (${verdict(four.h, hLo, hHi)}), ` +
+            `${Math.round(four.ink)} ink px (${verdict(four.ink, iLo, iHi)}), ` +
+            `${four.stroke}px stroke (${verdict(four.stroke, sLo, sHi)})`);
+        console.log("");
+        console.log("STROKE is the one to trust first: two icons can agree on size and ink");
+        console.log("and still not look related, and that is what happened here twice.");
     }
 }
 

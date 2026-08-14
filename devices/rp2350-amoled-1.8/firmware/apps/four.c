@@ -346,10 +346,6 @@
  * existed to hold a 42px disc, and nothing needs to sit outside the board
  * any more.
  * ================================================================== */
-#ifndef FOUR_SLAB_FULL_WIDTH
-#define FOUR_SLAB_FULL_WIDTH 0
-#endif
-
 #define COLS 7
 #define ROWS 6
 
@@ -393,12 +389,16 @@
  * height; square cells then cost width. He accepted the height explicitly
  * and the width follows from it arithmetically.
  *
- * THE SLAB'S OWN WIDTH IS THE ONE OPEN QUESTION, so it is a build variant
- * and both are rendered: the slab can hug the hole grid (a 6px rim, the
- * default) or stretch to the visible edges with the same holes inside it.
- * Identical geometry otherwise - only the grey lozenge's extent differs.
- *
- *   EMU_EXTRA_DEFINES=-DFOUR_SLAB_FULL_WIDTH=1 bun run emulator/wasm/build.ts
+ * THE SLAB HUGS THE HOLE GRID, with a 6px rim, and that was the last open
+ * question. It was briefly a build variant so that the alternative - the
+ * slab stretched to the visible edges with the same holes inside it - could
+ * be rendered beside it (preview/four-*-ballwide.png in this file's git
+ * history). The narrow one won on the same argument that decided the cell
+ * size: the holes are identical either way, so the wide slab spends 12px a
+ * column on grey and leaves the holes floating in a field instead of
+ * reading as a board. The variant is deleted rather than left behind a
+ * define nobody builds, which is how a second code path rots; this
+ * paragraph is the part worth keeping.
  */
 #define CELL      49
 #define SLAB_PAD  6
@@ -411,13 +411,8 @@
 // visible area allows so the band below it is as short as it can be.
 #define HOPPER_CY ((float)SAFE_Y0 + HOLE_R)
 
-#if FOUR_SLAB_FULL_WIDTH
-  #define SLAB_X0 SAFE_X0
-  #define SLAB_X1 SAFE_X1
-#else
-  #define SLAB_X0 (BOARD_X0 - SLAB_PAD)
-  #define SLAB_X1 (BOARD_X0 + BOARD_W + SLAB_PAD)
-#endif
+#define SLAB_X0   (BOARD_X0 - SLAB_PAD)
+#define SLAB_X1   (BOARD_X0 + BOARD_W + SLAB_PAD)
 #define SLAB_Y0   (BOARD_Y0 - SLAB_PAD)
 #define SLAB_Y1   SAFE_Y1
 

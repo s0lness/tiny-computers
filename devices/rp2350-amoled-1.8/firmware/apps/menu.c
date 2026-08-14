@@ -1260,20 +1260,51 @@ static void draw_icon_lucide_timer_loadercircle(int ox, int oy, uint16_t color) 
  * brush, shapes.h's anti-aliased annulus, no ruler and no straight line in
  * it anywhere.
  * ------------------------------------------------------------------- */
-#define FOUR_ICON_STROKE_HALF  2.5f   // 5px on a 45px circle = 0.11 of the
-                                       // shape, which is Lucide's own ratio
-                                       // (8px on its ~80px glyphs)
-#define FOUR_ICON_R           19.5f    // ring centreline; outer edge +stroke
-#define FOUR_ICON_A           25.5f    // first centre, in icon-box coords
-#define FOUR_ICON_B           70.5f    // second: 45 apart, so rings are tangent
+// Tangency solves the size, exactly as before, but at the OTHER THREE
+// ICONS' OWN STROKE. That is the correction this pass exists for: the owner
+// saw the four together and said "l'epaisseur du trait de l'icone du
+// puissance 4 est pas la meme que les autres icones", and he was right -
+// this one was drawn with the float brush at whatever weight the rings
+// happened to land on (5px) while its three neighbours are Lucide
+// conversions at LUCIDE_STROKE_HALF (10px). Same shape, wrong voice.
+//
+// With the stroke doubled, the ring's outer edge is what has to stay at
+// 22.5 for the four to remain tangent inside a 90px optical box, so the
+// CENTRELINE moves in instead: 22.5 - LUCIDE_STROKE_HALF = 17.5, leaving a
+// 25px hole in each empty ring.
+#define FOUR_ICON_R      17.5f    // centreline; outer edge is +LUCIDE_STROKE_HALF
+#define FOUR_ICON_A      25.5f    // first centre, in icon-box coords
+#define FOUR_ICON_B      70.5f    // second: 45 apart, so the rings are tangent
 
+/* TWO OF THE FOUR ARE FILLED, ON THE DIAGONAL: bottom-left and top-right.
+ * The owner's own instruction - "ce serait bien d'en colorier en noir plein
+ * deux en diagonales (bas gauche et haut droit)" - and it is worth saying
+ * what it buys, because it is more than decoration.
+ *
+ * Four empty rings say "counters". Two of them filled say A GAME IN
+ * PROGRESS, which is what the app is, and the diagonal is the shape a
+ * winning line takes. It also gives this icon the internal contrast the
+ * other three have and it lacked: the pencil's solid tip, the stopwatch's
+ * wedge, the hourglass's sand. Four identical outlines had no dark mass
+ * anywhere and read as a pattern rather than a picture of something.
+ */
 static void draw_icon_four(int ox, int oy, uint16_t color) {
-    const float cs[4] = { FOUR_ICON_A, FOUR_ICON_B, FOUR_ICON_A, FOUR_ICON_B };
-    const float rs[4] = { FOUR_ICON_A, FOUR_ICON_A, FOUR_ICON_B, FOUR_ICON_B };
+    // Row-major from the top-left. Filled on the anti-diagonal: index 1 is
+    // top-right, index 2 is bottom-left.
+    static const float CX[4] = { FOUR_ICON_A, FOUR_ICON_B, FOUR_ICON_A, FOUR_ICON_B };
+    static const float CY[4] = { FOUR_ICON_A, FOUR_ICON_A, FOUR_ICON_B, FOUR_ICON_B };
     for (int i = 0; i < 4; i++) {
-        shapes_fill_annulus_aa_land((float)ox + cs[i], (float)oy + rs[i],
-                                     FOUR_ICON_R + FOUR_ICON_STROKE_HALF,
-                                     FOUR_ICON_R - FOUR_ICON_STROKE_HALF, color);
+        float cx = (float)ox + CX[i], cy = (float)oy + CY[i];
+        if (i == 1 || i == 2) {
+            // A played counter fills the hole it sits in, so it is drawn at
+            // the ring's OUTER radius: an empty cell and a full one are the
+            // same size on a real board, and an icon where they were not
+            // would read as two different objects.
+            shapes_fill_disc_aa_land(cx, cy, FOUR_ICON_R + LUCIDE_STROKE_HALF, color);
+        } else {
+            shapes_fill_annulus_aa_land(cx, cy, FOUR_ICON_R + LUCIDE_STROKE_HALF,
+                                         FOUR_ICON_R - LUCIDE_STROKE_HALF, color);
+        }
     }
 }
 

@@ -5,15 +5,17 @@
  * load emu.wasm, drive it through emu_touch/emu_tick, read the framebuffer
  * back. Nothing here reimplements the app.
  *
- * This exists because four.c carries a compile-time LAYOUT VARIANT the owner
- * asked to see both of ("faire un test pour prendre tout l'ecran en hauteur
- * aussi"), and comparing two layouts means rendering two builds:
+ * It exists because this app's layout has been decided by looking at renders
+ * rather than by argument, twice - full height against a hopper, then a wide
+ * slab against a narrow one - and each of those comparisons meant building
+ * two variants and rendering both:
  *
  *   bun run emulator/wasm/build.ts
- *   bun tools/preview-four.ts --label fullheight
+ *   bun tools/preview-four.ts --label whatever-this-one-is
  *
- *   EMU_EXTRA_DEFINES=-DFOUR_FULL_HEIGHT=0 bun run emulator/wasm/build.ts
- *   bun tools/preview-four.ts --label hopper
+ * Both of those questions are settled now and four.c carries no layout
+ * variant, so --label is just a name for the run; pass EMU_EXTRA_DEFINES to
+ * build.ts if a future one needs comparing again.
  *
  * Writes preview/four-<shot>-<label>.png, LANDSCAPE (448x368, the way the
  * device is held for this app) rather than in the panel's own portrait
