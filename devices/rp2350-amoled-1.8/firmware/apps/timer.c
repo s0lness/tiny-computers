@@ -1588,24 +1588,47 @@ static void cap_centre(float deg, float *dxCap, float *dyCap) {
     *dyCap = -(float)RING_MID_R * cosf(a);
 }
 
-// One row of a filled rounded end at angle deg.
-static void paint_cap_row(int y, int rowIdx, float deg, uint16_t c) {
+// One row of a rounded end at angle deg, ANTI-ALIASED.
+//
+// Owner, after seeing hard pixels on the panel: "lisse le bout avec des gris,
+// comme les icônes du menu". So this uses shapes.c's own convention, the one
+// the menu icons and sketch.c's capsules already use: coverage is
+// r + 0.5 - distance, clamped to 0..1, evaluated at the pixel's centre.
+//
+// The difference from shapes.c is what it composites ONTO. Those shapes sit
+// on bare paper, so they blend toward white. A cap sits inside the ring,
+// where the background is the grey track ahead of the fill and solid ink
+// behind it. Blending toward white here would draw a pale halo around the end
+// against the track, which is precisely the artefact this is meant to remove,
+// so the background is computed per pixel from the same phi < fillDeg test
+// paint_band_row itself uses. Ink is black, so the result is simply the
+// background darkened by the coverage.
+static void paint_cap_row(int y, int rowIdx, float deg, float fillDeg) {
+    int hwOuter = s_hwOuter[rowIdx];
+    int hwInner = s_hwInner[rowIdx];
+    if (hwOuter <= 0) return;
     float dxCap, dyCap;
     cap_centre(deg, &dxCap, &dyCap);
     float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R;
     float dv = dyCenter - dyCap;
-    float rr = (float)(CAP_R * CAP_R) - dv * dv;
-    if (rr <= 0.0f) return;
-    float half = sqrtf(rr);
-    // A pixel belongs to the cap when its CENTRE is inside the disc, which is
-    // the same rule paint_head_outline_row and phi_deg_for_col already use
-    // (centres sit at dx + 0.5). Filling from floorf() to ceilf() instead
-    // rounds every row OUTWARD, so each one overhangs by up to a pixel: that
-    // is what made the end look crenelated and squared off rather than
-    // round, which the owner spotted on the panel.
-    int lo = (int)ceilf(dxCap - half - 0.5f);
-    int hi = (int)floorf(dxCap + half - 0.5f);
-    fill_band_run(y, rowIdx, lo, hi, c);
+    float reach = (float)CAP_R + 0.5f;
+    if (dv * dv >= reach * reach) return;
+    float half = sqrtf(reach * reach - dv * dv);
+    int lo = (int)floorf(dxCap - half);
+    int hi = (int)ceilf(dxCap + half);
+    for (int dx = lo; dx <= hi; dx++) {
+        int adx = dx < 0 ? -dx : dx;
+        if (adx > hwOuter) continue;
+        if (hwInner > 0 && adx < hwInner) continue;
+        float du = ((float)dx + 0.5f) - dxCap;
+        float dist = sqrtf(du * du + dv * dv);
+        float cov = reach - dist;
+        if (cov <= 0.0f) continue;
+        if (cov > 1.0f) cov = 1.0f;
+        float bg = (phi_deg_for_col(dx, dyCenter) < fillDeg) ? 0.0f : (float)TRACK_GRAY;
+        int g = (int)(bg * (1.0f - cov) + 0.5f);
+        gfx_fill_rect_land(RING_CX + dx, y, 1, 1, gray_to_px((uint8_t)g));
+    }
 }
 
 // One row of the head's outward crescent: the outer HEAD_OUTLINE_PX of the
@@ -1654,8 +1677,8 @@ static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
     if (rowIdx < 0 || rowIdx >= RING_ROWS) return;
     paint_band_row(y, rowIdx, fillDeg[0]);
     if (fillDeg[0] > 0.0f) {
-        paint_cap_row(y, rowIdx, 0.0f, PX_BLACK);
-        paint_cap_row(y, rowIdx, fillDeg[0], PX_BLACK);
+        paint_cap_row(y, rowIdx, 0.0f, fillDeg[0]);
+        paint_cap_row(y, rowIdx, fillDeg[0], fillDeg[0]);
     }
     if (fillDeg[1] > 0.0f) paint_head_outline_row(y, rowIdx, fillDeg[1]);
 }
