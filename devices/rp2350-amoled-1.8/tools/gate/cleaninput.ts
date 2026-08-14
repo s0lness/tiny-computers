@@ -57,6 +57,8 @@ export const CLEAN_INPUT_BASELINE: Record<string, string> = {
     "the whole point is a window with ZERO samples in it; a simulated controller would be adding samples to a test about their absence",
   "repro-sketch-palette-pop-in-residue.ts":
     "residue after a known pop-in; same reason as repro-ring-shrink-residue.ts",
+  "repro-sketch-palette-cell-gap.ts":
+    "measures rendered pixel geometry against palette_cell_bounds()'s own formula; the touch position selects which cell settles where, and must land exactly, not somewhere a controller's own noise happened to leave it",
 };
 
 export interface LintResult {

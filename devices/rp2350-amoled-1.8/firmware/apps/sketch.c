@@ -548,11 +548,25 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
  * by half the gap on every side). That gap is also this feature's only
  * "over nothing" zone now - see palette_cell_contains() and PALETTE_LIFT_
  * GRACE_MS's own comment below for what lands there.
+ *
+ * SIXTH ROUND: 14 -> 16, because the gap this comment used to describe was
+ * only ever true AT REST. The pop-in's own overshoot (PALETTE_POP_PEAK_
+ * SCALE, ~10% past base) grows EVERY cell on EVERY side, gap included, and
+ * an 8px gap was never sized against that: two neighbours each reaching
+ * ~10% past their own resting half-extent collided by about 2.6px at the
+ * peak of every pop - captured off the real board (capture/palette-on-
+ * device.png, the coordinator's own `hold` command) as cells 12..127 and
+ * 128..239 with zero space between them, not the 17..123/131..237 this
+ * file's own geometry describes at rest. Not residue, not a whiten box,
+ * not layout in the settled sense any of the earlier rounds this feature
+ * went through fixed - an overshoot sized without reference to the space
+ * it has to bounce in. See the _Static_assert below PALETTE_POP_PEAK_SCALE
+ * for the arithmetic and why 16 is what closes it, not a nudge.
  * ------------------------------------------------------------------- */
 #define PALETTE_COLS              3
 #define PALETTE_ROWS              3
 #define PALETTE_COUNT             (PALETTE_COLS * PALETTE_ROWS)
-#define PALETTE_CELL_GAP_PX       8
+#define PALETTE_CELL_GAP_PX       16
 #define PALETTE_CORNER_PX        26.0f
 #define PALETTE_CANDIDATE_GROW_PX 3.0f
 #define PALETTE_POP_MS          160.0f
@@ -615,7 +629,70 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 // keeping this curve, re-check this comment's own arithmetic first, since
 // that is the regime (two, maybe three frames across the whole overshoot)
 // where a stutter becomes the more likely reading again.
-#define PALETTE_POP_PEAK_SCALE 1.10f
+//
+// PALETTE_POP_PEAK_OVERSHOOT_PCT is this same 10% as a plain integer - the
+// _Static_assert two blocks down needs an integer constant expression (no
+// float allowed) to check neighbouring cells can never collide at the
+// peak, so this is that check's own input, and PALETTE_POP_PEAK_SCALE is
+// DERIVED from it rather than kept as an independent float that could
+// drift out of step with what the assert is actually checking.
+#define PALETTE_POP_PEAK_OVERSHOOT_PCT 10
+#define PALETTE_POP_PEAK_SCALE (1.0f + (float)PALETTE_POP_PEAK_OVERSHOOT_PCT / 100.0f)
+
+// SIXTH ROUND: the collision this closes. Two neighbouring cells' own
+// resting edges sit PALETTE_CELL_GAP_PX apart by construction (palette_
+// cell_bounds()'s own halfW/halfH already subtract the gap) - but every
+// cell grows on EVERY side at the pop's own peak, gap included, by
+// PALETTE_POP_PEAK_OVERSHOOT_PCT percent of its OWN half-extent. Two
+// neighbours reaching toward each other at the same instant close
+// 2 * halfExtent * PCT/100 of the gap between them; if that exceeds the
+// gap itself, they touch, or overlap, at the top of every bounce - found
+// on the real board (capture/palette-on-device.png, this file's own
+// header comment on PALETTE_CELL_GAP_PX has the numbers), not caught by
+// any test that only ever compares one framebuffer this code produced
+// against another, because a proportional overshoot the gap was never
+// sized against passes every one of those the same way on both sides.
+//
+// PALETTE_TILE_*_MAX: the largest raw grid tile palette_cell_bounds()'s
+// own "i*N/D" distributed partition can ever produce, for either axis -
+// ceil(grid/count), an upper bound whether or not the grid happens to
+// divide evenly by the column/row count today (it does for columns, not
+// for rows: 422/3 is not an integer, so some rows get 141px and others
+// 140 - the assert has to hold for the worst of them, not the average).
+#define PALETTE_TILE_W_MAX ((PALETTE_GRID_W + PALETTE_COLS - 1) / PALETTE_COLS)
+#define PALETTE_TILE_H_MAX ((PALETTE_GRID_H + PALETTE_ROWS - 1) / PALETTE_ROWS)
+// The half-extent palette_cell_bounds() itself would compute for that
+// worst-case tile - same formula, same truncation, so this is exactly
+// what halfW/halfH can reach, not an approximation of it.
+#define PALETTE_HALFW_MAX ((PALETTE_TILE_W_MAX - PALETTE_CELL_GAP_PX) / 2)
+#define PALETTE_HALFH_MAX ((PALETTE_TILE_H_MAX - PALETTE_CELL_GAP_PX) / 2)
+
+// GAP * 100 > 2 * halfExtent * PCT, both sides scaled by 100 so the whole
+// check is integer multiplication - no division, so no truncation can make
+// this look safe when it is not. Checked for both axes: today rows are the
+// tighter one (larger halfH), but a future change to PALETTE_COLS/ROWS,
+// the bezel margin or the candidate grow could flip which axis binds, and
+// this does not assume it knows which.
+//
+// THE TRADE MADE HERE: PALETTE_CELL_GAP_PX moved (8 -> 16), not PALETTE_
+// POP_PEAK_OVERSHOOT_PCT. A smaller peak was the other lever - it costs
+// the bounce itself ("pop out like little balloons", the owner's own
+// words for what this animation is supposed to feel like), and it would
+// still have to soften ease_out_back()'s own standard "back" coefficients,
+// not just this constant, since PALETTE_POP_PEAK_SCALE is already sized to
+// that curve's own true peak, not chosen independently of it. A wider gap
+// costs balloon area instead - about 8px off every cell's own width and
+// height, ~6-8%, on a grid that was never tight for a fingertip to begin
+// with (PALETTE_CORNER_PX and the whole "big, unmissable" design brief
+// this file's own header section describes). Cheaper trade, same bounce.
+_Static_assert(PALETTE_CELL_GAP_PX * 100 > 2 * PALETTE_HALFW_MAX * PALETTE_POP_PEAK_OVERSHOOT_PCT,
+               "two cells in the same row can collide at the pop's own overshoot peak - "
+               "widen PALETTE_CELL_GAP_PX, or shrink the peak (which costs the bounce), "
+               "see PALETTE_CELL_GAP_PX's own header comment for the arithmetic");
+_Static_assert(PALETTE_CELL_GAP_PX * 100 > 2 * PALETTE_HALFH_MAX * PALETTE_POP_PEAK_OVERSHOOT_PCT,
+               "two cells in the same column can collide at the pop's own overshoot peak - "
+               "widen PALETTE_CELL_GAP_PX, or shrink the peak (which costs the bounce), "
+               "see PALETTE_CELL_GAP_PX's own header comment for the arithmetic");
 
 // Minimum wall-clock time between two palette re-renders while nothing
 // discrete (a candidate changing) demands an immediate one. THE BOARD
