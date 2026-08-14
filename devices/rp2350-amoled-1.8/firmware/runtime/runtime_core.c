@@ -33,10 +33,14 @@
 extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
+extern const app_t g_fourApp;
 extern const app_t g_menuApp;
 extern void menu_set_return_app(int index);
 
-const app_t *const g_apps[] = { &g_chronoApp, &g_sketchApp, &g_timerApp };
+// Appended, not inserted: index 0 is what boots (app.h) and every emulator
+// test in emulator/wasm/tests/ addresses apps by their index in this array
+// (APP_DRAW = 1 and so on), so a new app goes on the end.
+const app_t *const g_apps[] = { &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp };
 const int g_appCount = sizeof(g_apps) / sizeof(g_apps[0]);
 
 // Startup-only sentinel: "nothing has been entered yet", so do_switch()'s

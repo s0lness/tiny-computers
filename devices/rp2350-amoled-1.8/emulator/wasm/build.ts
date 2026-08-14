@@ -89,6 +89,7 @@ const SOURCES = [
   join(FIRMWARE, "apps", "sketch.c"),
   join(FIRMWARE, "apps", "menu.c"),
   join(FIRMWARE, "apps", "timer.c"),
+  join(FIRMWARE, "apps", "four.c"),
   join(FIRMWARE, "apps", "shapes.c"),
 ];
 
@@ -142,10 +143,39 @@ const args = [
 ];
 
 console.log(`${ZIG} ${args.join(" ")}`);
-const result = Bun.spawnSync([ZIG, ...args], { stdout: "inherit", stderr: "inherit" });
+
+// RETRIED, because this linker crashes at random on this toolchain. The
+// header comment above already records that -Wl,--export-dynamic
+// "intermittently segfaults the linker"; dropping it did not remove the
+// intermittency, it only made it rarer. What is observed is an exit code
+// with NO diagnostic output at all on inputs that link cleanly moments
+// later. It is BURSTY rather than evenly random: observed here as roughly
+// one failure in three most of the time, and once as twelve consecutive
+// failures on unchanged sources that then built first try a minute later
+// (with the identical command line run by hand succeeding in between).
+// That shape points at contention over zig's shared global cache rather
+// than at anything about these inputs, which matters because this repo is
+// worked on by more than one agent at a time and a second `zig cc` running
+// in another checkout is entirely normal.
+//
+// A one-shot build therefore reports a phantom failure often enough that
+// "the build is broken" stops meaning anything, and the specific way that
+// bites is silent: a caller that ignores the exit status runs its tests
+// against the PREVIOUS emu.wasm and gets results for code it is not
+// looking at. That happened while this retry was being written.
+//
+// So: retry, and let a genuine error (which does print diagnostics, and
+// fails identically every time) survive all the attempts and be reported
+// as itself.
+const MAX_ATTEMPTS = 20;
+let result = Bun.spawnSync([ZIG, ...args], { stdout: "inherit", stderr: "inherit" });
+for (let attempt = 2; !result.success && attempt <= MAX_ATTEMPTS; attempt++) {
+  console.error(`zig cc exited ${result.exitCode}; retrying (attempt ${attempt}/${MAX_ATTEMPTS})`);
+  result = Bun.spawnSync([ZIG, ...args], { stdout: "inherit", stderr: "inherit" });
+}
 
 if (!result.success) {
-  console.error(`zig cc exited ${result.exitCode}`);
+  console.error(`zig cc exited ${result.exitCode} on all ${MAX_ATTEMPTS} attempts - this one is real`);
   process.exit(result.exitCode ?? 1);
 }
 

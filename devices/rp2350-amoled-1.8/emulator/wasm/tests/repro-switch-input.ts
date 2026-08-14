@@ -43,25 +43,33 @@ const BTN_BOOT = 0;
 const BTN_PWR = 1;
 const KEY_LONG_MS = 1500; // emu_device()'s declared longPressMs for PWR
 
-// menu.c's tile layout, landscape coordinates: TILE_MARGIN=16, TILE_GAP=16,
-// TILE_H=220, g_appCount=3, LAND_W=PANEL_H=448, LAND_H=PANEL_W=368. Recomputed
-// here (not read back from the module - there is no export for it) so a
-// touch can be aimed at a specific tile, the same way a finger would be aimed
-// at a specific spot on the glass.
+// menu.c's ACTUAL touch layout (column_rect_land/column_hit_test): the tiles
+// are contiguous, full-height columns of LAND_W/g_appCount, with the last one
+// absorbing whatever LAND_W does not divide evenly, and no margin or gap
+// anywhere - so every landscape x belongs to exactly one column and only x
+// decides the hit. Recomputed here (there is no export for it) so a touch can
+// be aimed at a specific tile, the same way a finger would be aimed at a spot
+// on the glass.
+//
+// THIS USED TO MODEL A LAYOUT MENU.C NO LONGER HAS (TILE_MARGIN=16,
+// TILE_GAP=16, TILE_H=220, bordered tiles centred vertically) and it kept
+// passing anyway, because with three apps the centre of an imaginary bordered
+// tile still landed inside the real full-width column. The fourth app
+// (Connect Four, 2026-08-14) narrowed the columns from 149px to 112px and the
+// stale model started aiming into the NEIGHBOURING column - so this was a
+// latent wrong test that a layout change exposed, not a regression in menu.c.
+// appCount is now read from emu_device()'s own "apps" array rather than
+// written down here, so the next app to be added cannot re-stale it.
 function tileCenterPanelXY(appIndex: number, appCount: number): [number, number] {
-    const TILE_MARGIN = 16, TILE_GAP = 16, TILE_H = 220;
     const LAND_W = PANEL_H, LAND_H = PANEL_W;
-    const usableW = LAND_W - 2 * TILE_MARGIN - (appCount - 1) * TILE_GAP;
-    const tileW = Math.floor(usableW / appCount);
-    const bx = TILE_MARGIN + appIndex * (tileW + TILE_GAP);
-    const by = Math.floor((LAND_H - TILE_H) / 2);
-    const lx = bx + Math.floor(tileW / 2);
-    const ly = by + Math.floor(TILE_H / 2);
+    const w = Math.floor(LAND_W / appCount);
+    const bx = appIndex * w;
+    const bw = appIndex === appCount - 1 ? LAND_W - bx : w;
+    const lx = bx + Math.floor(bw / 2);
+    const ly = Math.floor(LAND_H / 2); // the column is the full height: any ly hits
     // menu.c's panel_to_land() inverted: lx=py, ly=PANEL_W-1-px -> px =
     // PANEL_W-1-ly, py = lx.
-    const px = PANEL_W - 1 - ly;
-    const py = lx;
-    return [px, py];
+    return [PANEL_W - 1 - ly, lx];
 }
 
 let passCount = 0;
@@ -130,6 +138,18 @@ async function loadDevice() {
             const fb = new Uint8Array(memory.buffer, ptr, PANEL_W * PANEL_H * 2);
             return Bun.hash(fb);
         },
+        // How many apps this firmware actually declares, from emu_device()'s
+        // own JSON (emu_abi.h's "apps" key) rather than a number written down
+        // in this file - see tileCenterPanelXY's comment for what a hardcoded
+        // one cost.
+        appCount(): number {
+            const ptr = exp.emu_device();
+            const bytes = new Uint8Array(memory.buffer, ptr);
+            let end = 0;
+            while (bytes[end] !== 0) end++;
+            const json = JSON.parse(decoder.decode(bytes.subarray(0, end)));
+            return Array.isArray(json.apps) ? json.apps.length : 0;
+        },
     };
 }
 
@@ -192,7 +212,7 @@ async function main() {
     check("menu opens from chrono", afterOpen1 === APP_INDEX_MENU, `app_current()=${afterOpen1}`);
 
     // ---- tap the draw tile, launching sketch -----------------------------
-    const appCount = 3; // g_apps[] = { chrono, sketch("draw"), timer }
+    const appCount = dev.appCount(); // from emu_device()'s own "apps" array
     const [drawX, drawY] = tileCenterPanelXY(APP_DRAW, appCount);
     console.log(`-- tap "draw" tile at panel (${drawX}, ${drawY}) --`);
     dev.touch(true, drawX, drawY);

@@ -38,9 +38,9 @@ const coilLabel = args.includes("--coil");
 
 // ---- menu.c's own layout, mirrored exactly (see that file's "Layout"
 // section: column_rect_land, ICON_TOP_MARGIN, ICON_W/ICON_H). g_appCount is
-// 3 in this build (chrono, sketch, timer) - read back from the device
-// itself below rather than hardcoded, so this script cannot silently drift
-// from a future app-table change.
+// read back from the device itself in main() (emu_device()'s "apps" array),
+// not hardcoded, so this script cannot silently drift from an app-table
+// change - see main()'s own comment for the time it did exactly that.
 const ICON_TOP_MARGIN = 24;
 const ICON_W = 96;
 const ICON_H = 96;
@@ -89,6 +89,17 @@ async function loadDevice() {
     fbBytes(): Uint8Array {
       const ptr = exp.emu_fb();
       return new Uint8Array(memory.buffer, ptr, PANEL_W * PANEL_H * 2).slice();
+    },
+    // The app names this firmware actually declares, from emu_device()'s own
+    // JSON (emu_abi.h's "apps" key). See main()'s own comment for why this is
+    // read rather than written down.
+    appNames(): string[] {
+      const ptr = exp.emu_device();
+      const b = new Uint8Array(memory.buffer, ptr);
+      let end = 0;
+      while (b[end] !== 0) end++;
+      const json = JSON.parse(decoder.decode(b.subarray(0, end)));
+      return Array.isArray(json.apps) ? (json.apps as string[]) : [];
     },
   };
 }
@@ -207,8 +218,21 @@ async function main() {
   writePng(join(ROOT, "preview", "menu-full-landscape.png"), LAND_W, LAND_H, landGray);
   console.log(`wrote preview/menu-full-landscape.png (${LAND_W}x${LAND_H})`);
 
-  const n = 3; // g_apps[] = { chrono, sketch("draw"), timer } - see menu.c
-  const names = ["chrono", "sketch", coilLabel ? "timer-coil" : "timer"];
+  // READ from the firmware, not written down here. This used to be a
+  // hardcoded `n = 3` (with a comment two dozen lines up already claiming it
+  // was read back from the device, which it was not), and the fourth app
+  // (Connect Four, 2026-08-14) narrowed menu.c's columns from 149px to 112px:
+  // every crop then came out of the wrong place, and the file called
+  // "menu-icon-timer" was a picture of the Connect Four icon. A preview tool
+  // that silently mislabels what it captured is worse than one that fails.
+  //
+  // The filenames keep this directory's existing vocabulary rather than the
+  // app's own: the drawing app calls itself "draw" and its captures have
+  // always been "menu-icon-sketch-*".
+  const appNames = dev.appNames();
+  const n = appNames.length;
+  if (n === 0) throw new Error("emu_device() declared no apps - cannot place the crops");
+  const names = appNames.map((a) => (a === "draw" ? "sketch" : a === "timer" && coilLabel ? "timer-coil" : a));
   for (let i = 0; i < n; i++) {
     const { bx, bw } = columnRectLand(i, n);
     const iconX = bx + Math.floor((bw - ICON_W) / 2);

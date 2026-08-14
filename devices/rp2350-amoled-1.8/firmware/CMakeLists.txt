@@ -79,6 +79,7 @@ target_sources(main PRIVATE
     apps/sketch.c
     apps/chrono.c
     apps/timer.c
+    apps/four.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into

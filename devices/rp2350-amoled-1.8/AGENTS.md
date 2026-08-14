@@ -162,9 +162,11 @@ firmware/runtime/    the runtime: runtime.c (board entry point, startup,
                       emu.wasm unmodified)
 firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
-                      menu.c (the app picker), digits.c (shared seven-segment
-                      numerals), shapes.c (round silhouettes built from
-                      rectangles, used by menu.c's icons)
+                      four.c (Connect Four against the device, slide a thumb
+                      and release to drop), menu.c (the app picker), digits.c
+                      (shared seven-segment numerals), shapes.c (round
+                      silhouettes built from rectangles, used by menu.c's
+                      icons)
 firmware/lib/         Waveshare drivers, copied from the vendor demo (with our
                       patches - see "Gotchas that bite" below)
 firmware/bootbtn.c    reads the BOOT button by borrowing the flash chip select
@@ -382,12 +384,29 @@ bun run emulator/wasm/tests/repro-ring-shrink-residue.ts
 bun run emulator/wasm/tests/repro-switch-input.ts
 ```
 
-Each one is a reproduction of a real bug found on hardware or in the emulator,
-turned into a standing regression check rather than a one-off script: read the
-header comment at the top of each file for what it reproduces and why the
-assertions are shaped the way they are. They compare framebuffer hashes and
-`emu_app_current()`, never internal pointers, so a failure is something a
-person at the device could also have observed.
+Each `repro-*` file is a reproduction of a real bug found on hardware or in
+the emulator, turned into a standing regression check rather than a one-off
+script; each `feature-*` file is a statement of what a feature is supposed to
+do, asserted the same way. Read the header comment at the top of each file for
+what it covers and why the assertions are shaped the way they are. They
+compare framebuffer hashes, sampled pixels and `emu_app_current()`, never
+internal pointers, so a failure is something a person at the device could also
+have observed.
+
+**A feature driven by touch needs BOTH kinds of file.** `feature-*` drives
+clean input, which is what makes it a readable statement of intent; the
+`repro-touch-dropout-*` files drive the same gesture through `TouchSim` at the
+measured hardware dropout rate (34 episodes/sec), which is what catches the
+class of bug that has already shipped once here - the sketchpad's palette
+passed all 22 of its clean-input checks and did not work in the owner's hands.
+Connect Four's own pair is `feature-four.ts` and
+`repro-touch-dropout-four-drop.ts`.
+
+The build retries `zig cc`, because this toolchain's linker crashes at random
+(no diagnostics, exit code 5, links fine moments later - see
+`emulator/wasm/build.ts`). A failure that survives all the attempts is real. A
+one-shot build that is not checked will leave the PREVIOUS `emu.wasm` in
+place, and the tests will then pass or fail about code nobody is looking at.
 
 ## Gotchas that bite
 
