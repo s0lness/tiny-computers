@@ -285,5 +285,48 @@ function waitForStatus(
   await host.stop();
 }
 
+// ===========================================================================
+// 4. The case a real hardware run found missing from section 3: a bridge
+//    whose PROCESS stays alive (no EOF, ever) but whose underlying port no
+//    longer answers - a board that rebooted mid-flash while the bridge held
+//    a handle to the OLD device instance. Neither a failed open nor
+//    pumpBridgeLines's EOF handling can see this; only the liveness probe
+//    (devlink-host.ts's runLivenessCheck/probeReply) can, which is why it
+//    needs its own scenario rather than being folded into section 3.
+//    probeIntervalMs/probeTimeoutMs are overridden to run this in
+//    milliseconds instead of the real, deliberately conservative production
+//    cadence (5s/1.5s).
+// ===========================================================================
+
+{
+  const host = new DevlinkHost({ mode: "fake", probeIntervalMs: 150, probeTimeoutMs: 100 });
+  await host.start();
+  const connected = await waitForStatus(host, (s) => s.state === "connected", 2000, "the initial (unscripted) fake open to succeed");
+  check("starts genuinely connected before the silence test begins", connected.connected === true);
+
+  const silenced = host.debugSilenceCurrentBridge();
+  check("the test hook actually had a live fake bridge to silence", silenced);
+
+  // Right after silencing, nothing has checked yet - staying "connected"
+  // here is correct, not a violation: the guarantee is that a stale bridge
+  // gets NOTICED, not that it is noticed instantly (see PROBE_INTERVAL_MS's
+  // own comment: "slow to notice is acceptable, claiming health you have
+  // not verified is not"). What must never happen is staying connected
+  // forever, checked next.
+  check("immediately after silencing, nothing has been disproven yet, so state is still connected", host.status.state === "connected");
+
+  const wentStale = await waitForStatus(host, (s) => s.state !== "connected", 3000, "the liveness probe to notice the silenced bridge");
+  check("a bridge that stays alive but stops answering stops claiming to be usable", wentStale.connected === false);
+  check(
+    "going stale this way is reported with its own reason (a liveness check, not a closed port)",
+    typeof wentStale.reason === "string" && /liveness/i.test(wentStale.reason)
+  );
+
+  const recoveredFromStale = await waitForStatus(host, (s) => s.state === "connected", 10_000, "recovery after the stale bridge is torn down and reopened");
+  check("it recovers on its own from a stale-but-alive bridge too, no restart", recoveredFromStale.connected === true && recoveredFromStale.reason === null);
+
+  await host.stop();
+}
+
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -87,6 +87,12 @@ export interface DevlinkHostOptions {
   // second server. Ignored outside mode: "fake". Default 0 (fake mode's
   // historical behaviour: connects immediately, first try).
   fakeOpenFailures?: number;
+  // Test-only (harness/selftest.ts): overrides the liveness probe's
+  // cadence below (PROBE_INTERVAL_MS / PROBE_TIMEOUT_MS) so the "bridge
+  // stays alive but stops answering" case can be proven in milliseconds
+  // rather than on the real, deliberately conservative production cadence.
+  probeIntervalMs?: number;
+  probeTimeoutMs?: number;
 }
 
 const WATCH_VID = "2E8A";
@@ -95,6 +101,42 @@ const WATCH_POLL_MS = 500;
 // from the watcher's own 500ms poll on purpose (see scheduleRetry's own
 // comment): this is retrying OUR open attempt, not re-detecting the board.
 const RETRY_MS = 1500;
+
+// A real hardware run (see docs/decisions/0004's follow-up) found a THIRD
+// way a bridge lies: the board reboots (a routine reflash, the owner's own
+// normal case) while the PowerShell bridge process stays alive, still
+// holding an OS handle on the same COM port - but that handle now points at
+// nothing the new device instance answers to. No process death, no EOF, so
+// neither a failed open nor pumpBridgeLines's own loss detection ever
+// fires, and `state` stayed "connected" for the rest of the session until
+// the owner restarted the server by hand.
+//
+// Two mechanisms were on the table. A watcher-driven teardown (an "absent"
+// observation closes the held bridge, a later "present" opens a fresh one)
+// is cheap and precise, but depends on the WMI poll actually catching a gap
+// that, on real hardware, may be shorter than expected or arrive delayed -
+// exactly the kind of dependency that produced this bug, so it is not
+// trusted alone here. A liveness probe - send a real devlink command
+// periodically, treat silence as death - catches every case, including
+// ones the watcher structurally cannot see (this one: USB never fully drops
+// from the watcher's point of view, or WMI's own snapshot lags reality),
+// because it asks the ONE question that actually matters: will a command
+// sent right now get an answer. That is the property this file's status is
+// supposed to guarantee, so this is the mechanism that gets to be
+// authoritative. The watcher's own "absent" -> closeBridge() path (see
+// onWatcherStatus's `else` branch) stays as well, since it is real and
+// free when it fires - the probe is the backstop that makes correctness
+// not depend on it firing.
+//
+// Cost, paid deliberately: PING and its reply are real devlink traffic on
+// a port the owner's own tools and prints already share, and (like every
+// other line on this port) get relayed to the page's console same as any
+// other line - there is no way to tell "my own probe's reply" apart from
+// "a reply to something else" without a wire-protocol change, which is out
+// of scope here. 5s keeps that visible-but-quiet; the 42s the owner's own
+// test ran stale would have been caught within the first tick.
+const PROBE_INTERVAL_MS = 5000;
+const PROBE_TIMEOUT_MS = 1500;
 
 // Prints a compact JSON status line only when the answer actually changes -
 // keeps the pipe quiet (and DevlinkHost's own log spam-free) the vast
@@ -151,10 +193,19 @@ export class DevlinkHost {
   // intentional-close path.
   private fakeLink: LoopbackLinkHandle | null = null;
   private fakeOpenFailuresRemaining: number;
+  // fake mode only: makes the fake bridge's send() a no-op while its link
+  // stays fully open - see debugSilenceCurrentBridge()'s own comment. Reset
+  // on every fresh fake open, so a recovered bridge is never born silenced.
+  private fakeSilenced = false;
+  private livenessTimer: ReturnType<typeof setInterval> | null = null;
+  private probeIntervalMs: number;
+  private probeTimeoutMs: number;
 
   constructor(opts: DevlinkHostOptions) {
     this.opts = opts;
     this.fakeOpenFailuresRemaining = opts.fakeOpenFailures ?? 0;
+    this.probeIntervalMs = opts.probeIntervalMs ?? PROBE_INTERVAL_MS;
+    this.probeTimeoutMs = opts.probeTimeoutMs ?? PROBE_TIMEOUT_MS;
   }
 
   onStatus(cb: (s: DevlinkStatus) => void): void {
@@ -187,13 +238,19 @@ export class DevlinkHost {
       // path, connects instantly" case this used to be limited to.
       this.watching = true;
       void this.onWatcherStatus({ connected: true, port: "FAKE0" });
+      this.startLivenessProbe();
       return;
     }
     this.startRealWatcher();
+    this.startLivenessProbe();
   }
 
   async stop(): Promise<void> {
     this.watching = false;
+    if (this.livenessTimer) {
+      clearInterval(this.livenessTimer);
+      this.livenessTimer = null;
+    }
     try {
       this.watcherProc?.kill();
     } catch {
@@ -216,6 +273,23 @@ export class DevlinkHost {
     const link = this.fakeLink;
     this.fakeLink = null;
     void link.close();
+    return true;
+  }
+
+  // Test-only (harness/selftest.ts). Fake mode only. Makes the CURRENTLY
+  // HELD fake bridge stop answering anything sent to it, while its
+  // underlying link stays fully open (no EOF, no close) - simulating a
+  // bridge PROCESS that stays alive holding a handle to a device that
+  // rebooted underneath it (the real-hardware failure this seam exists to
+  // reproduce: a routine reflash, not an edge case). This is exactly the
+  // case pumpBridgeLines's own EOF-based loss detection structurally cannot
+  // see - only the liveness probe below can catch it, which is the point of
+  // this hook existing separately from debugDropCurrentBridge() above.
+  // Returns false (a no-op) outside fake mode or with nothing currently
+  // held.
+  debugSilenceCurrentBridge(): boolean {
+    if (this.opts.mode !== "fake" || !this.bridge) return false;
+    this.fakeSilenced = true;
     return true;
   }
 
@@ -260,12 +334,18 @@ export class DevlinkHost {
         `fake devlink: simulated open failure on ${port} (scripted by fakeOpenFailures - standing in for a real "access denied" from another process already holding the port)`
       );
     }
+    this.fakeSilenced = false; // a fresh open is never born silenced
     const tunables = this.opts.fakeTunables === "mismatch" ? MISMATCHED_TUNABLES : SKETCH_TUNABLES;
     const link = createLoopbackLink({ tunables });
     this.fakeLink = link;
     return {
       lines: link,
-      send: (cmd) => link.send(cmd),
+      // Silenced (debugSilenceCurrentBridge): swallow the command instead
+      // of forwarding it to the link, so nothing ever comes back - the link
+      // itself stays open (readLine() never resolves null) exactly like a
+      // real bridge process still holding a handle to a device that is no
+      // longer there to answer.
+      send: (cmd) => (this.fakeSilenced ? Promise.resolve() : link.send(cmd)),
       close: async () => {
         if (this.fakeLink === link) this.fakeLink = null;
         await link.close();
@@ -386,20 +466,82 @@ export class DevlinkHost {
       // bridge` still true - only an UNEXPECTED death does: the port went
       // away under us, unplugged or the board resetting mid-flash, which
       // the owner reflashes constantly, so this is the normal case, not an
-      // edge case (docs/decisions/0004). Say so, honestly, and let the same
-      // retry loop a failed open uses pick it back up - no restart needed.
+      // edge case (docs/decisions/0004). This is the case where the process
+      // itself actually died; handleBridgeLoss() below also covers the
+      // other one, where it does not.
       if (this.bridge === bridge) {
-        this.bridge = null;
-        const port = this.status.port;
-        console.warn(`devlink: lost the bridge on ${port ?? "?"} (port closed unexpectedly)`);
-        this.setStatus({
-          state: "unavailable",
-          connected: false,
-          port,
-          reason: "the port closed unexpectedly (unplugged, or the board reset)",
-        });
-        if (port) this.scheduleRetry(port);
+        void this.handleBridgeLoss(bridge, "the port closed unexpectedly (unplugged, or the board reset)");
       }
     })();
+  }
+
+  // Shared by two callers that both discover the same fact by different
+  // means: pumpBridgeLines above (the process died: EOF) and
+  // runLivenessCheck below (the process is still alive but nothing answers
+  // it any more - docs/decisions/0004's follow-up: a board that rebooted
+  // underneath a held handle). Either way, this bridge is done: close it
+  // (releases whatever OS handle it still holds, which a fresh open needs
+  // to succeed), say so honestly with why, and let the normal retry loop
+  // pick it back up. Guarded on `this.bridge === bridge` so a bridge
+  // already superseded by a fresher open cannot report a loss for a
+  // connection nobody is relying on any more.
+  private async handleBridgeLoss(bridge: Bridge, reason: string): Promise<void> {
+    if (this.bridge !== bridge) return;
+    this.bridge = null;
+    const port = this.status.port;
+    console.warn(`devlink: lost the bridge on ${port ?? "?"} (${reason})`);
+    this.setStatus({ state: "unavailable", connected: false, port, reason });
+    try {
+      await bridge.close();
+    } catch {
+      // closing regardless - the point is releasing whatever handle it
+      // still holds, not a clean shutdown
+    }
+    if (port) this.scheduleRetry(port);
+  }
+
+  // ---- liveness probe: the backstop for a bridge that stays alive but has
+  // stopped being usable (see PROBE_INTERVAL_MS's own comment for why this
+  // exists alongside, not instead of, the watcher-driven paths above).
+  private startLivenessProbe(): void {
+    this.livenessTimer = setInterval(() => {
+      void this.runLivenessCheck();
+    }, this.probeIntervalMs);
+  }
+
+  private async runLivenessCheck(): Promise<void> {
+    if (this.status.state !== "connected" || !this.bridge) return;
+    const bridge = this.bridge;
+    const alive = await this.probeReply(this.probeTimeoutMs);
+    if (alive) return;
+    if (this.bridge !== bridge) return; // superseded while the probe was in flight
+    await this.handleBridgeLoss(bridge, "the board stopped answering a liveness check (likely reset, or the port is otherwise no longer live)");
+  }
+
+  // Sends PING and waits for a devlink-shaped reply via the SAME onLine
+  // broadcast every other consumer already reads from (server.ts's WS
+  // relay, the page's console) - NOT a second reader on bridge.lines, which
+  // pumpBridgeLines already owns exclusively; a second concurrent reader
+  // there would race it for lines rather than just observing them.
+  // Resolves true on a timely reply, false on timeout; never throws.
+  private probeReply(timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const listener = (text: string) => {
+        if (settled || !/^(OK devlink \d+ \d+ \d+|ERR .*)$/.test(text)) return;
+        settled = true;
+        this.lineListeners.delete(listener);
+        clearTimeout(timer);
+        resolve(true);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.lineListeners.delete(listener);
+        resolve(false);
+      }, timeoutMs);
+      this.lineListeners.add(listener);
+      void this.bridge?.send("PING");
+    });
   }
 }
