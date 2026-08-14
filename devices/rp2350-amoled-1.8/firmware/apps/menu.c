@@ -177,8 +177,24 @@ static void ensure_chrono_tables(void) {
 // in place of the old dead-straight `leftX[i] = ccx`. Indexed defensively
 // in draw_icon_chrono() below in case CHRONO_R_OUT/CHRONO_R_IN are ever
 // retuned without regenerating this table.
+// REPLACED 2026-08-14 after the owner saw it rendered: "the part in the
+// middle of the chronometer is fucking horrible". He was right, and the
+// cause is worth writing down because it will recur.
+//
+// The generated wobble changed by one pixel from one row to the next, with
+// six pixels of amplitude over twenty-four rows, and
+// shapes_fill_between_curves_aa_land takes integer column arrays, so it has
+// no sub-pixel edge to anti-alias against. A per-row jitter under those
+// conditions cannot look like a hand: it can only look like a saw, which is
+// exactly what it looked like. Randomness is not the same thing as
+// handwriting, and at this scale it reads as a tear.
+//
+// What a hand actually does over a short line is bow it very slightly. So
+// this is one gentle arc, half a sine over the wedge's height, three pixels
+// at its widest: six one-pixel steps in total instead of twenty-odd, each
+// far enough from the next to read as curvature rather than as noise.
 static const int8_t s_chronoWedgeWobble[24] = {
-    -3, -2, -2, -1, -1, 0, 0, 1, 1, 0, -1, -2, -1, -1, 0, 1, 1, 1, 2, 2, 3, 3, 3, 3
+    0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 0, 0
 };
 
 // Crown path, hand-wobbled - tools/gen-chrono-icon.ts, same seed. Offsets
@@ -899,7 +915,11 @@ static void draw_icon_timer_coil(int ox, int oy, uint16_t color) {
 // draw_icon_timer_coil() above, then delete whichever function this
 // stops calling - both are kept compiled for now only so the emulator
 // can render either one on request while the choice is open.
-#define TIMER_ICON_USE_COIL 0
+// 1 since 2026-08-14: the owner chose the coil over the hourglass. It is one
+// continuous stroke, so "no stray pixel" holds by construction rather than by
+// vigilance, and the timer has not shown an hourglass since it became a wound
+// dial that morning. The hourglass stays compiled and one edit away.
+#define TIMER_ICON_USE_COIL 1
 
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) draw_icon_chrono(ox, oy, color);
