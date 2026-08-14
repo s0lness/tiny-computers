@@ -99,6 +99,11 @@
   margin-left: 6px;
 }
 .devlink-status.connected { color: var(--chip-a-text); background: var(--chip-a-bg); }
+/* A board present but not (yet) usable is a distinct, honest state, not a
+   softer version of "connected" - the existing --danger tokens (already
+   used by .wasm-error) rather than a new colour, since this genuinely means
+   "commands will not reach it right now", same severity class. */
+.devlink-status.unavailable { color: var(--danger); background: var(--danger-bg); }
 
 .filebtn { position: relative; overflow: hidden; }
 .filebtn input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }

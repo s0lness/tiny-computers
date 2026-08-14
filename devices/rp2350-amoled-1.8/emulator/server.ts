@@ -240,8 +240,17 @@ startWasmWatcher();
 // in scripts/verify-ui-feedback.ts passes explicitly.
 const DEVLINK_MODE = (process.env.DEVLINK_MODE as DevlinkMode | undefined) ?? "real";
 const DEVLINK_FAKE_TUNABLES = process.env.DEVLINK_FAKE_TUNABLES === "mismatch" ? "mismatch" : "default";
+// Test-only (scripts/verify-ui-feedback.ts): scripts fake mode's first N
+// open attempts to fail before succeeding, so the retry/recovery UI can be
+// proven end-to-end (real page, real WS relay) with no real port - see
+// devlink-host.ts's DevlinkHostOptions.fakeOpenFailures for the mechanism.
+const DEVLINK_FAKE_OPEN_FAILURES = Math.max(0, Number(process.env.DEVLINK_FAKE_OPEN_FAILURES ?? 0)) || 0;
 
-const devlinkHost = new DevlinkHost({ mode: DEVLINK_MODE, fakeTunables: DEVLINK_FAKE_TUNABLES });
+const devlinkHost = new DevlinkHost({
+  mode: DEVLINK_MODE,
+  fakeTunables: DEVLINK_FAKE_TUNABLES,
+  fakeOpenFailures: DEVLINK_FAKE_OPEN_FAILURES,
+});
 const devlinkClients = new Set<import("bun").ServerWebSocket<unknown>>();
 
 devlinkHost.onStatus((status) => {

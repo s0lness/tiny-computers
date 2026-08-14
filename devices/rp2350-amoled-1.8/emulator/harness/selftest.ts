@@ -17,6 +17,7 @@
 //      never falls through to a real port) when nothing is listening.
 import { createLoopbackLink, SKETCH_TUNABLES, MISMATCHED_TUNABLES } from "./fixtures/loopbackLink";
 import { expectLine, readUntilEnd, openServerBridge, type Bridge } from "../../tools/dev";
+import { DevlinkHost, type DevlinkStatus } from "../devlink-host";
 
 let failures = 0;
 function check(label: string, cond: boolean): void {
@@ -35,6 +36,30 @@ async function checkThrows(label: string, fn: () => Promise<unknown>): Promise<v
   } catch {
     console.log(`PASS: ${label}`);
   }
+}
+
+// Waits for a DevlinkHost's status to satisfy `pred`, via onStatus rather
+// than polling - the same discipline the browser side already uses
+// (main.ts's updateDevlinkStatusUI is itself just an onStatus callback).
+function waitForStatus(
+  host: DevlinkHost,
+  pred: (s: DevlinkStatus) => boolean,
+  timeoutMs: number,
+  what: string
+): Promise<DevlinkStatus> {
+  return new Promise((resolve, reject) => {
+    if (pred(host.status)) {
+      resolve(host.status);
+      return;
+    }
+    const timer = setTimeout(() => reject(new Error(`timed out waiting for ${what}`)), timeoutMs);
+    host.onStatus((s) => {
+      if (pred(s)) {
+        clearTimeout(timer);
+        resolve(s);
+      }
+    });
+  });
 }
 
 // ===========================================================================
@@ -196,6 +221,68 @@ async function checkThrows(label: string, fn: () => Promise<unknown>): Promise<v
     await link.close();
     delete process.env.DEVLINK_SERVER_URL;
   }
+}
+
+// ===========================================================================
+// 3. DevlinkHost's own bridge-ownership state machine (docs/decisions/0004-
+//    the-day-the-instruments-lied.md): "connected" has to mean usable, not
+//    just detected, and a failed or lost bridge has to retry on its own,
+//    never sit claiming health. Driven entirely through fake mode's
+//    scriptable open failures (DevlinkHostOptions.fakeOpenFailures) and the
+//    test-only debugDropCurrentBridge() hook - no PowerShell, no real port,
+//    same constraint as sections 1-2 above.
+// ===========================================================================
+
+{
+  const host = new DevlinkHost({ mode: "fake", fakeOpenFailures: 2 });
+  await host.start();
+
+  // The very first status a listener sees, right after the scripted open
+  // failure, must already be honest: a board (FAKE0) was seen, but it is
+  // not usable, and why - never a bare "connected: true" claiming more than
+  // is actually known.
+  const firstFailure = await waitForStatus(host, (s) => s.state !== "absent", 2000, "the first (scripted) open attempt to fail");
+  check("a failed open reports state=unavailable, not connected", firstFailure.state === "unavailable" && firstFailure.connected === false);
+  check("a failed open still names the port a board was seen on", firstFailure.port === "FAKE0");
+  check("a failed open carries a non-empty reason", typeof firstFailure.reason === "string" && firstFailure.reason.length > 0);
+
+  // The obstacle (2 scripted failures) clears on its own: the SAME host,
+  // never restarted, must retry and reach connected with no external call
+  // telling it to try again.
+  const recovered = await waitForStatus(host, (s) => s.state === "connected", 10_000, "recovery to connected once the scripted failures run out");
+  check("the bridge recovers on its own once the obstacle clears, no restart", recovered.connected === true && recovered.port === "FAKE0" && recovered.reason === null);
+
+  // ---- loss detection: the port disappearing has to be noticed by the
+  // bridge itself. Fake mode has no watcher polling at all, so this
+  // exercises pumpBridgeLines's own EOF handling in isolation - the
+  // "reverse" case the task calls out: nobody told it, it noticed. -------
+  const dropped = host.debugDropCurrentBridge();
+  check("the test hook actually had a live fake bridge to drop", dropped);
+  const afterDrop = await waitForStatus(host, (s) => s.state !== "connected", 3000, "loss detection once the port disappears");
+  check("a bridge whose port disappears stops claiming to be usable", afterDrop.connected === false);
+  check("loss is reported with a reason, not silently", typeof afterDrop.reason === "string" && afterDrop.reason.length > 0);
+
+  // And it recovers again on its own - the owner's stated NORMAL case (the
+  // board reflashed constantly), not an edge case, and again no restart.
+  const recoveredAgain = await waitForStatus(host, (s) => s.state === "connected", 10_000, "recovery after the port comes back");
+  check("the bridge reconnects on its own after the port comes back, still no restart", recoveredAgain.connected === true);
+
+  await host.stop();
+}
+
+// A bridge that never stops failing to open must never claim connected -
+// the "do not make it vague" boundary from the task: staying unavailable,
+// with a reason, forever, is still an honest and distinguishable state, not
+// a silent hang or a false positive.
+{
+  const host = new DevlinkHost({ mode: "fake", fakeOpenFailures: Number.MAX_SAFE_INTEGER });
+  await host.start();
+  await new Promise((r) => setTimeout(r, 3200)); // long enough for at least one retry to have fired and failed again
+  check(
+    "a bridge that keeps failing to open never claims connected, across retries",
+    host.status.state === "unavailable" && host.status.connected === false && !!host.status.reason
+  );
+  await host.stop();
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILED`);

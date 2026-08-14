@@ -411,8 +411,33 @@ export async function openDirectBridge(port: string = PORT, baud: string = BAUD)
       "-Baud",
       baud,
     ],
-    { stdin: "pipe", stdout: "pipe", stderr: "inherit" }
+    { stdin: "pipe", stdout: "pipe", stderr: "pipe" }
   );
+
+  // stderr is captured (not "inherit") so a failed Open() - most commonly
+  // another process already holding the port, see the PS1 script's own
+  // catch above - can be reported to a JS caller with the OS's own message,
+  // not just printed to a terminal nobody but an interactive CLI user is
+  // watching (see docs/decisions/0004: DevlinkHost, the caller that most
+  // needs this, has to say WHY a port could not be opened, not just that it
+  // couldn't). Still relayed live to our own stderr underneath, so
+  // `bun tools/dev.ts ...` run by hand looks exactly as it always has.
+  let stderrText = "";
+  void (async () => {
+    const reader = (proc.stderr as ReadableStream<Uint8Array>).getReader();
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        stderrText += chunk;
+        process.stderr.write(chunk);
+      }
+    } catch {
+      // stream torn down along with the process; nothing left to relay
+    }
+  })();
 
   const lines = new LineReader(proc.stdout as ReadableStream<Uint8Array>);
 
@@ -453,9 +478,20 @@ export async function openDirectBridge(port: string = PORT, baud: string = BAUD)
 
   // Settle time: the SerialPort has to finish opening (and the device has
   // to notice DTR and be ready to answer) before the first command lands.
-  // Cheap insurance against racing PING against a port that is still
-  // mid-open.
+  // This also doubles as the window in which a FAILED Open() has time to
+  // happen and exit the script: the PS1 script's only path to exiting this
+  // early is its own catch-and-exit(1) on Open() failure, so if the process
+  // is already gone by the time this sleep is over, the port was never
+  // actually opened, and handing back this bridge as if it worked would be
+  // exactly the lie docs/decisions/0004 is about - a status that claims
+  // more than it knows.
   await Bun.sleep(300);
+  if (proc.exitCode !== null) {
+    if (activeBridge === bridge) activeBridge = null;
+    throw new Error(
+      stderrText.trim() || `devlink bridge exited immediately (code ${proc.exitCode}) while opening ${port}`
+    );
+  }
   return bridge;
 }
 

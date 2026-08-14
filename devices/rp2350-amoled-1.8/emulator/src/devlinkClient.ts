@@ -22,10 +22,23 @@
 // serialising means a line that does not match the head request's matcher
 // is unambiguously noise, not a race between two pending readers.
 
+// Mirrors devlink-host.ts's DevlinkStatus (server-side, not importable here
+// - see this file's own header on why the browser and server halves stay
+// separate). Three real situations, not two: "absent" (no board),
+// "unavailable" (a board is present but the bridge is not open/usable -
+// and why, in `reason`), "connected" (open and usable). `connected` stays
+// a plain boolean alongside `state` because it predates the richer type and
+// every existing caller (tunables.ts) only ever needed the boolean.
+export type DevlinkState = "absent" | "unavailable" | "connected";
+
 export interface DevlinkStatus {
   connected: boolean;
+  state: DevlinkState;
   port: string | null;
+  reason: string | null;
 }
+
+const ABSENT_STATUS: DevlinkStatus = { connected: false, state: "absent", port: null, reason: null };
 
 export type LineVerdict = "keep" | "done" | "skip";
 
@@ -38,7 +51,7 @@ interface PendingRequest {
 }
 
 export class DevlinkClient {
-  status: DevlinkStatus = { connected: false, port: null };
+  status: DevlinkStatus = ABSENT_STATUS;
 
   private ws: WebSocket | null = null;
   private statusListeners = new Set<(s: DevlinkStatus) => void>();
@@ -53,7 +66,7 @@ export class DevlinkClient {
       ws.addEventListener("message", (e) => this.handleMessage(String(e.data)));
       ws.addEventListener("close", () => {
         this.ws = null;
-        this.setStatus({ connected: false, port: null });
+        this.setStatus(ABSENT_STATUS);
         this.failPending(new Error("devlink socket closed"));
         this.reconnectTimer = setTimeout(() => this.connect(), 2000);
       });
@@ -119,9 +132,22 @@ export class DevlinkClient {
     } catch {
       return;
     }
-    const m = msg as { type?: string; connected?: boolean; port?: string | null; text?: string; error?: string };
+    const m = msg as {
+      type?: string;
+      connected?: boolean;
+      state?: DevlinkState;
+      port?: string | null;
+      reason?: string | null;
+      text?: string;
+      error?: string;
+    };
     if (m.type === "status") {
-      this.setStatus({ connected: !!m.connected, port: m.port ?? null });
+      this.setStatus({
+        connected: !!m.connected,
+        state: m.state ?? (m.connected ? "connected" : "absent"),
+        port: m.port ?? null,
+        reason: m.reason ?? null,
+      });
     } else if (m.type === "line" && typeof m.text === "string") {
       for (const cb of this.lineListeners) cb(m.text);
       this.feedPending(m.text);

@@ -74,6 +74,7 @@ const server = await spawnServer(PORT, { DEVLINK_MODE: "off" });
 let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 let fakeServer: ServerHandle | null = null;
 let mismatchServer: ServerHandle | null = null;
+let flakyServer: ServerHandle | null = null;
 try {
   console.log("server up (DEVLINK_MODE=off)");
 
@@ -666,10 +667,48 @@ try {
   if (!jitterRow!.hasDevInput) fail('"jitter" should still show a working device slider (the board does declare it)');
   console.log('PASS: a knob on only one side ("pendgrace" emulator-only, "jitter" device-only) shows as such instead of vanishing');
 
+  await killServer(mismatchServer);
+  mismatchServer = null;
+
+  // ---- 14. a board present but not (yet) openable is its own honest chip
+  // state, and recovers on its own, on the real page, with no restart -----
+  // docs/decisions/0004-the-day-the-instruments-lied.md: the actual bug a
+  // real hardware run found was "connected: true" from a server whose
+  // bridge had failed to open, then staying that way forever. This is the
+  // page-level proof that both halves are fixed - DEVLINK_FAKE_OPEN_FAILURES
+  // scripts the fake bridge's first open attempt to fail (see
+  // devlink-host.ts's fakeOpenFailures), standing in for "another process
+  // already holds the port" with zero real hardware and zero PowerShell.
+  const FLAKY_PORT = PORT + 3;
+  flakyServer = await spawnServer(FLAKY_PORT, { DEVLINK_MODE: "fake", DEVLINK_FAKE_OPEN_FAILURES: "1" });
+  console.log("server up (DEVLINK_MODE=fake, first open attempt scripted to fail)");
+
+  await page.goto(`http://127.0.0.1:${FLAKY_PORT}/`, { waitUntil: "domcontentloaded" });
+
+  await page.waitForFunction(() => document.querySelector("#devlinkStatus")?.classList.contains("unavailable") ?? false, { timeout: 3000 });
+  const unavailableClasses = await page.evaluate(() => Array.from(document.querySelector("#devlinkStatus")?.classList ?? []));
+  if (unavailableClasses.includes("connected")) fail('devlink status shows both "unavailable" and "connected" at once');
+  const unavailableText = await page.$eval("#devlinkStatus", (el) => el.textContent || "");
+  if (!/FAKE0/.test(unavailableText)) fail(`expected the devlink status to name the port even while unavailable, got "${unavailableText}"`);
+  const unavailableTitle = await page.$eval("#devlinkStatus", (el) => el.getAttribute("title") || "");
+  if (!/simulated open failure/i.test(unavailableTitle)) fail(`expected the devlink status title to say why it is unavailable, got "${unavailableTitle}"`);
+  console.log(`PASS: a board present but not yet openable shows its own honest chip state ("${unavailableText}"), with why in its title`);
+
+  await page.waitForFunction(() => document.querySelector("#devlinkStatus")?.classList.contains("connected") ?? false, { timeout: 5000 });
+  const flakyRecoveredClasses = await page.evaluate(() => Array.from(document.querySelector("#devlinkStatus")?.classList ?? []));
+  if (flakyRecoveredClasses.includes("unavailable")) fail('devlink status still shows "unavailable" after recovering to connected');
+  const flakyRecoveredText = await page.$eval("#devlinkStatus", (el) => el.textContent || "");
+  if (!/FAKE0/.test(flakyRecoveredText)) fail(`expected the devlink status to recover to naming the port, got "${flakyRecoveredText}"`);
+  console.log(`PASS: the bridge recovers on its own once the scripted obstacle clears, no restart, no reload ("${flakyRecoveredText}")`);
+
+  await killServer(flakyServer);
+  flakyServer = null;
+
   console.log("\nALL PASS");
 } finally {
   if (browser) await browser.close();
   await killServer(server);
   await killServer(fakeServer);
   await killServer(mismatchServer);
+  await killServer(flakyServer);
 }

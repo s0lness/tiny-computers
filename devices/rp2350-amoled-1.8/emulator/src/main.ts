@@ -202,12 +202,26 @@ function appendConsoleLine(line: LogLine): void {
 // dot (the reload-dot's own mistake would be repeating here): a dot alone
 // is not "plainly says no device is present", which the connected-UI test
 // (scripts/verify-ui-feedback.ts) checks for in words.
+//
+// Three states, not two (see docs/decisions/0004-the-day-the-instruments-
+// lied.md): "device: COM4" must mean commands will actually reach it, so a
+// board that is present but not yet openable (another process holding the
+// port, or still settling) gets its own honest label instead of being
+// folded into either "connected" or "no device" - both of which would be a
+// lie here, one way or the other.
 function updateDevlinkStatusUI(status: DevlinkStatus): void {
-  devlinkStatusEl.classList.toggle("connected", status.connected);
-  devlinkStatusEl.textContent = status.connected ? `device: ${status.port}` : "no device";
-  devlinkStatusEl.title = status.connected
-    ? `a board is connected on ${status.port} - tools/dev.ts routes through this page's server instead of opening the port itself`
-    : "no board detected on this machine's USB (VID 2E8A) - plug one in, no reload needed";
+  devlinkStatusEl.classList.toggle("connected", status.state === "connected");
+  devlinkStatusEl.classList.toggle("unavailable", status.state === "unavailable");
+  if (status.state === "connected") {
+    devlinkStatusEl.textContent = `device: ${status.port}`;
+    devlinkStatusEl.title = `a board is connected on ${status.port} - tools/dev.ts routes through this page's server instead of opening the port itself`;
+  } else if (status.state === "unavailable") {
+    devlinkStatusEl.textContent = `${status.port}: unavailable`;
+    devlinkStatusEl.title = `a board is present on ${status.port} but the connection is not usable yet: ${status.reason ?? "unknown reason"} - retrying automatically, no restart needed`;
+  } else {
+    devlinkStatusEl.textContent = "no device";
+    devlinkStatusEl.title = "no board detected on this machine's USB (VID 2E8A) - plug one in, no reload needed";
+  }
 }
 
 // ---- wasm error banner ----
