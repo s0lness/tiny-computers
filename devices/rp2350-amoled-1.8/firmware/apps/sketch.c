@@ -1696,6 +1696,79 @@ static void palette_render_frame(sketch_state_t *st, uint16_t *fb, uint32_t nowM
     printf("palette: frame kind=%s whitenPx=%d coverageEvals=%d\r\n", kind, whitenPx, coverageEvals);
 }
 
+// Advances the pop-in animation from WALL-CLOCK TIME ALONE, called once
+// per sketch_tick() regardless of whether any touch sample was drained
+// this tick - not from inside the drain loop, the way palette_render_
+// frame() used to only ever be reached.
+//
+// Found 2026-08-14, third round: the owner, on real hardware, after the
+// watchdog-reset fix landed: "l'animation est super super saccadée.
+// concretement j'ai qu'une frame intermediaire avant que ça fasse les
+// carrés en gros" - one intermediate frame across the whole ~280ms pop,
+// not the eight or nine the throttle was sized for.
+//
+// THE CAUSE. palette_render_frame() was only ever called from inside
+// sketch_tick's touch-sample drain loop - once per drained sample, then
+// (after the watchdog fix) throttled to at most once every
+// PALETTE_RENDER_MIN_MS. That throttle assumed samples would keep
+// arriving often enough to have something to throttle. The palette's own
+// gesture is a finger held still, which is exactly the condition under
+// which this controller stops producing much of anything: the owner's
+// own words, "le controleur repete les memes coordonnees, le dedupe les
+// jette, et il n'arrive presque rien" - almost nothing reaches sensors_
+// touch_next() at all while the position genuinely is not changing, so
+// the drain loop's own body rarely runs, so palette_render_frame() rarely
+// got called, so the animation only ever advanced on the rare sample that
+// did land. Before the watchdog fix, a FLOOD of samples during the
+// animation (the bug that fix addressed) accidentally hid this: with
+// hundreds of calls arriving regardless, a handful of them landing at
+// useful moments was enough to look smooth. Bounding the call count
+// correctly is what made the underlying dependency on samples visible.
+//
+// THE FIX is exactly what the shape of the bug points at: an animation
+// has to advance because time passed, not because something was touched.
+// sketch_tick() already receives f->nowMs and runs every frame regardless
+// of input (app_frame_t's own contract) - this function is called from
+// there, after the drain loop, so it sees a fresh nowMs on every single
+// tick, sample or no sample.
+//
+// WHAT DOES NOT CHANGE: palette_render_frame() itself is untouched by
+// this - still throttled to PALETTE_RENDER_MIN_MS, still scoped to only
+// the cells that can have changed once settled, still returns immediately
+// (no whiten, no draw, no push) when nothing discrete has happened and no
+// throttle window has elapsed. Calling it once more per tick does not
+// re-open the watchdog cost question that fix closed: an idle settled
+// palette, ticked as many times as the runtime likes, still renders zero
+// times a second, because the function's own top-level check says so
+// before doing anything - see repro-sketch-palette-watchdog-reset.ts,
+// unchanged, for the standing proof.
+//
+// THE CANDIDATE ITSELF IS A DIFFERENT QUESTION, deliberately not answered
+// here: this function tracks the pop-in's own clock, and reads whichever
+// cell st->paletteTouchX/Y (the last position a SAMPLE actually reported)
+// falls over - it does not decide what that position is. A sample saying
+// the finger moved to another cell is still handled promptly, at whatever
+// rate samples actually arrive, by palette_drain_sample() itself; this
+// function only fills the GAPS between samples with the animation's own
+// progress, using the most recent position already on record.
+static void palette_advance_animation(sketch_state_t *st, uint16_t *fb, uint32_t nowMs,
+                                       int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    if (!st->paletteOpen) return;
+    int candidate = -1;
+    if (st->paletteHasTouch) {
+        for (int i = 0; i < PALETTE_COUNT; i++) {
+            if (palette_cell_contains(i, st->paletteTouchX, st->paletteTouchY)) { candidate = i; break; }
+        }
+    }
+    palette_render_frame(st, fb, nowMs, candidate, dMinX, dMinY, dMaxX, dMaxY);
+    // Same bookkeeping open_palette()/palette_drain_sample() both do right
+    // after their own calls to palette_render_frame() - candidateChanged
+    // is measured against this on the NEXT call, from whichever of the
+    // three call sites happens to fire it, and it has to reflect what was
+    // actually just rendered regardless of which one that was.
+    st->paletteLastCandidate = candidate;
+}
+
 // Fires once the hold-candidacy check in sketch_tick's drain loop decides
 // LONG_PRESS_MS has genuinely elapsed within HOLD_STILL_RADIUS_PX. touchX/
 // touchY is the confirmed stroke's own current position (the hold's
@@ -2117,6 +2190,18 @@ static void sketch_tick(const app_frame_t *f) {
             }
         }
     }
+
+    // EXPERIMENTAL: advance the palette's own pop-in animation from wall-
+    // clock time, not from whatever samples this tick happened to drain -
+    // see palette_advance_animation's own comment for why sample-driven
+    // alone left it "super saccadée" (the owner's own word) on a
+    // genuinely still hold, which is every hold this feature has. Placed
+    // AFTER the drain loop so a sample-driven candidate change this same
+    // tick (handled inside the loop above, via palette_drain_sample) is
+    // already reflected in st->paletteTouchX/Y before this reads it - and
+    // OUTSIDE the loop, deliberately, so it still runs on a tick where the
+    // loop drained nothing at all.
+    palette_advance_animation(st, gfx_fb, f->nowMs, &dMinX, &dMinY, &dMaxX, &dMaxY);
 
     // The runtime calls sensors_set_finger_down() before tick() runs, but it
     // has nothing real to base that call on yet (it does not drain the touch
