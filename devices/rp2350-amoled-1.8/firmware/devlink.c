@@ -347,9 +347,17 @@ static void devlink_tune_freeze(void) {
         if (!defineName) defineName = name;
         float cur = def;
         if (g_hooks.tune_get) g_hooks.tune_get(name, &cur);
-        printf("#define %s_DEFAULT ", defineName);
-        devlink_print_tune_value(cur);
-        printf("f\r\n");
+        // A float literal, not a number with an f stapled on. The value
+        // printer drops the decimal point on whole numbers, so appending "f"
+        // produced "220f", which is not valid C: the one output whose entire
+        // purpose is to be pasted into a source file did not compile.
+        char buf[32];
+        snprintf(buf, sizeof buf, "%g", (double)cur);
+        if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E')) {
+            size_t len = strlen(buf);
+            if (len + 3 < sizeof buf) { buf[len] = '.'; buf[len + 1] = '0'; buf[len + 2] = '\0'; }
+        }
+        printf("#define %s_DEFAULT %sf\r\n", defineName, buf);
     }
     printf("END\r\n");
 }
