@@ -1642,13 +1642,18 @@ static float ease_out_back(float t) {
 }
 
 // The provable upper bound on cell (col,row)'s own drawn half-extent, at
-// ANY instant this feature could ever draw it (mid-overshoot, grown as the
-// candidate, or both in immediate succession across frames) - see
+// ANY instant the ANIMATING path could ever draw it (mid-overshoot, grown
+// as the candidate, or both in immediate succession across frames) - see
 // PALETTE_POP_PEAK_SCALE's own comment for where 1.10 comes from. This is
 // what whitening is now scoped to, per cell, instead of the whole panel -
 // see palette_render_animating()'s own header comment for why the earlier
 // full-panel choice, while correct, was never costed and cost the board a
 // reboot.
+//
+// ANIMATING ONLY - see palette_cell_settled_extent()'s own comment for why
+// palette_render_handoff() does NOT use this one, even though it also
+// draws cell(s) that used to pop in: reusing this box there is what caused
+// the fifth round's own regression.
 static void palette_cell_max_extent(int col, int row, int *cx, int *cy, int *maxHalfW, int *maxHalfH) {
     int halfW, halfH;
     palette_cell_bounds(col, row, cx, cy, &halfW, &halfH);
@@ -1656,17 +1661,66 @@ static void palette_cell_max_extent(int col, int row, int *cx, int *cy, int *max
     *maxHalfH = (int)ceilf((float)halfH * PALETTE_POP_PEAK_SCALE) + (int)PALETTE_CANDIDATE_GROW_PX + 2;
 }
 
-// Whitens exactly cell `index`'s own maximum possible footprint (never the
-// whole panel - see palette_cell_max_extent()) and widens the tick's dirty
-// accumulator to match. Returns the number of pixels actually written
-// (post-clip), the same "count what the work costs" reasoning draw_
-// rounded_rect()'s own return value follows.
-static int palette_whiten_cell(uint16_t *fb, int index, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
-    int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
-    int cx, cy, maxHalfW, maxHalfH;
-    palette_cell_max_extent(col, row, &cx, &cy, &maxHalfW, &maxHalfH);
-    int x0 = cx - maxHalfW, y0 = cy - maxHalfH;
-    int w = 2 * maxHalfW, h = 2 * maxHalfH;
+// The provable upper bound on cell (col,row)'s own drawn half-extent while
+// SETTLED - palette_render_handoff() only ever runs once the pop-in is
+// over (palette_advance_animation() does not call it while stillAnimating),
+// and every draw it makes is at scale exactly 1.0 (palette_render_handoff()
+// itself, "draw_cell(index, 1.0f, ...)") - overshoot cannot happen here, so
+// unlike palette_cell_max_extent() this bound only ever needs to cover the
+// candidate's own grow, not PALETTE_POP_PEAK_SCALE's 1.10x.
+//
+// WHY THIS EXISTS - THE FIFTH ROUND'S OWN REGRESSION, found via the byte-
+// for-byte residue test added this same round (repro-sketch-palette-pop-
+// in-residue.ts): the owner's report, "l'animation de palette est pire
+// qu'avant: maintenant les rectangles s'overlapent... si je parcours tout
+// l'ecran avec mon doigt, les rectangles reprennent leur bonne forme" -
+// cells drawing overlapped, and a sweep repairs them one cell at a time.
+// The coordinator's own hypothesis - the ANIMATING path whitening less than
+// its own maximum extent - turned out not to match this file: palette_
+// render_animating() was already whitening every cell to palette_cell_max_
+// extent() (confirmed by reading it, then by an isolated single-transition
+// probe that matched the animating path's own steady state exactly).
+//
+// THE ACTUAL CAUSE was the opposite path. Adjacent cells' own max-extent
+// boxes legitimately overlap by design (that overlap is exactly what lets
+// a grown candidate's highlight and a neighbour's overshoot share a margin
+// without one erasing the other WITHIN a single call - see palette_render_
+// animating()'s own "two passes, not interleaved" comment). palette_render_
+// handoff() only whitens and redraws the (at most two) cells a hand-off
+// actually touches - so when cell C becomes touched and its OWN max-extent
+// box (sized for an overshoot C, being settled, will never actually reach)
+// happens to overlap NEIGHBOUR cell N's own already-correct edge, C's own
+// whiten erases a sliver of N without N being part of this transition to
+// redraw it. A single transition never shows this (proven: an isolated
+// probe of exactly one hand-off matched the animating path's own reference
+// byte for byte) - it only accumulates once several transitions run in
+// sequence, each one capable of biting a NEIGHBOUR it does not also
+// restore, which is exactly the shape "several small overlaps, repaired
+// one cell at a time by a sweep" describes: sweeping touches every cell in
+// turn, and each touch is a chance to fix (or re-bite) whatever a NEIGHBOUR
+// most recently left behind.
+//
+// THE FIX: whiten no more than a settled cell could ever actually need.
+// palette_cell_max_extent()'s own 1.10x margin was sized for a case this
+// path never reaches - shrinking to grow-only removes exactly the reach
+// that was landing inside a neighbour's own nominal box (halfW+grow+2,
+// against a neighbour's own nominal edge at halfW past ITS centre - the
+// two no longer meet, by the same arithmetic PALETTE_CELL_GAP_PX already
+// keeps a real gap between neighbours' nominal boxes).
+static void palette_cell_settled_extent(int col, int row, int *cx, int *cy, int *halfW, int *halfH) {
+    palette_cell_bounds(col, row, cx, cy, halfW, halfH);
+    *halfW += (int)PALETTE_CANDIDATE_GROW_PX + 2;
+    *halfH += (int)PALETTE_CANDIDATE_GROW_PX + 2;
+}
+
+// Shared clip + fill + dirty-rect-expand for a whiten box already resolved
+// to a centre and half-extent - palette_whiten_cell() (the animating path's
+// own overshoot-inclusive box) and palette_whiten_cell_settled() (the
+// settled path's own smaller, grow-only box) both reduce to this; only
+// which extent function computed halfW/halfH differs between them.
+static int palette_whiten_box(int cx, int cy, int halfW, int halfH, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    int x0 = cx - halfW, y0 = cy - halfH;
+    int w = 2 * halfW, h = 2 * halfH;
     if (x0 < 0) { w += x0; x0 = 0; }
     if (y0 < 0) { h += y0; y0 = 0; }
     if (x0 + w > PANEL_W) w = PANEL_W - x0;
@@ -1678,6 +1732,29 @@ static int palette_whiten_cell(uint16_t *fb, int index, int *dMinX, int *dMinY, 
     if (x0 + w - 1 > *dMaxX) *dMaxX = x0 + w - 1;
     if (y0 + h - 1 > *dMaxY) *dMaxY = y0 + h - 1;
     return w * h;
+}
+
+// Whitens exactly cell `index`'s own maximum possible footprint (never the
+// whole panel - see palette_cell_max_extent()) and widens the tick's dirty
+// accumulator to match. Returns the number of pixels actually written
+// (post-clip), the same "count what the work costs" reasoning draw_
+// rounded_rect()'s own return value follows. ANIMATING PATH ONLY - see
+// palette_whiten_cell_settled() for the settled path's own smaller box.
+static int palette_whiten_cell(uint16_t *fb, int index, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
+    int cx, cy, maxHalfW, maxHalfH;
+    palette_cell_max_extent(col, row, &cx, &cy, &maxHalfW, &maxHalfH);
+    return palette_whiten_box(cx, cy, maxHalfW, maxHalfH, dMinX, dMinY, dMaxX, dMaxY);
+}
+
+// The settled path's own counterpart to palette_whiten_cell() - see
+// palette_cell_settled_extent()'s own comment for why it needs a smaller
+// box, and palette_whiten_box() for the fill/dirty-rect logic both share.
+static int palette_whiten_cell_settled(uint16_t *fb, int index, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
+    int cx, cy, halfW, halfH;
+    palette_cell_settled_extent(col, row, &cx, &cy, &halfW, &halfH);
+    return palette_whiten_box(cx, cy, halfW, halfH, dMinX, dMinY, dMaxX, dMaxY);
 }
 
 // Draws cell `index` at the given instant (t, scale already resolved by
@@ -1822,13 +1899,24 @@ static void palette_render_handoff(sketch_state_t *st, uint16_t *fb, int candida
     int touched[2], n = 0;
     if (st->paletteLastCandidate >= 0) touched[n++] = st->paletteLastCandidate;
     if (candidateIdx >= 0 && candidateIdx != st->paletteLastCandidate) touched[n++] = candidateIdx;
-    // Whiten BOTH before drawing either - see palette_render_animating()'s
-    // own "two passes, not interleaved" comment for why: two adjacent
-    // cells' own max-extent boxes can legitimately overlap (that overlap
-    // margin is exactly what the overshoot needed), and whitening cell B
-    // after drawing cell A would erase whatever of A's own ink fell inside
-    // that shared margin.
-    for (int k = 0; k < n; k++) whitenPx += palette_whiten_cell(fb, touched[k], dMinX, dMinY, dMaxX, dMaxY);
+    // Whiten BOTH before drawing either, same reasoning as palette_render_
+    // animating()'s own "two passes, not interleaved" comment: the outgoing
+    // cell's own box and the incoming (grown) candidate's own box can still
+    // legitimately overlap each other a little (the grow itself is what
+    // needs that margin now, not an overshoot this path never reaches -
+    // see palette_cell_settled_extent()'s own comment), and whitening B
+    // after drawing A would erase whatever of A's own ink fell inside that
+    // shared sliver.
+    //
+    // palette_whiten_cell_settled(), NOT palette_whiten_cell() - the
+    // animating path's own box, sized for an overshoot this path can never
+    // produce (every draw here is at scale exactly 1.0), reaches far enough
+    // past a cell's own edge to land inside a NEIGHBOUR cell's nominal box
+    // - a neighbour that is not one of the (at most two) touched here and
+    // so never gets redrawn to repair it. See palette_cell_settled_extent()
+    // for the fifth round's own regression this fixed, and repro-sketch-
+    // palette-pop-in-residue.ts for the standing proof.
+    for (int k = 0; k < n; k++) whitenPx += palette_whiten_cell_settled(fb, touched[k], dMinX, dMinY, dMaxX, dMaxY);
     for (int k = 0; k < n; k++) {
         int index = touched[k];
         coverageEvals += palette_draw_cell(fb, index, 1.0f, index == candidateIdx, dMinX, dMinY, dMaxX, dMaxY);
