@@ -1087,14 +1087,22 @@ static void draw_icon_lucide_chrono(int ox, int oy, uint16_t color) {
     // It runs from inside the bar's own ink down past the ring's outer edge,
     // so both joins overlap rather than abut, which is what MIN composition
     // needs to merge them into one mark.
+    //
+    // WHERE IT ENDS, and this is the whole of it: a round cap extends a full
+    // radius past the point you give it. The first version ended at y=27 with
+    // a 4px radius, so its ink actually reached y=31, while the ring's INNER
+    // edge is at y=29 (centre 56, radius 32, half-stroke 5). Two pixels of
+    // the neck therefore hung inside the dial, which is what the owner saw:
+    // "y a des bouts qui descendent trop bas a l'interieur de la bordure".
+    //
+    // Ending at 24 puts the cap's far edge at 28, inside the ring's band
+    // (19 to 29) rather than through it. Still overlapping, so the join
+    // holds, without a millimetre in the white.
     {
-        // A round cap extends a full radius past the point it is given: at
-        // y=27 with a 4px radius the ink reached y=31, while the ring's inner
-        // edge is y=29, so two pixels hung inside the dial. Ending at 24 puts
-        // the cap's far edge at 28, inside the band rather than through it.
         const float neckHalf = 4.0f;
+        const float neckEndY = 24.0f;  // + neckHalf = 28, and the band ends at 29
         float sx[2] = { dx + 48.0f, dx + 48.0f };
-        float sy[2] = { dy + 10.0f, dy + 24.0f };
+        float sy[2] = { dy + 10.0f, dy + neckEndY };
         shapes_stroke_polyline_aa_land(sx, sy, 2, neckHalf, color);
     }
 }
