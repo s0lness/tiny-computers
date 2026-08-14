@@ -826,7 +826,31 @@ typedef struct {
     // Stroke-machine state. Formerly main()'s while-loop locals.
     bool fingerDown;
     int lastRawX, lastRawY;
-    uint32_t lastSampleMs;
+    uint32_t lastSampleMs;   // last ACCEPTED MOVE - the speed/jump-allowance clock only. See lastContactMs.
+    // Last haveTouch sample seen at all while fingerDown, moved or not -
+    // the genuine-lift clock. Found missing 2026-08-14: a real lift used
+    // to be judged by `nowMs - lastSampleMs >= LIFT_DEBOUNCE_MS`, but
+    // lastSampleMs only advances on newReport (an accepted MOVE), so a
+    // finger held perfectly still - which is the palette's entire
+    // gesture, HOLD_STILL_RADIUS_PX by construction - never refreshed it
+    // past the first sample. On real hardware (34 dropout episodes/sec)
+    // any dropout landing more than LIFT_DEBOUNCE_MS after the last
+    // movement was believed as a genuine lift, even with contact reported
+    // continuously right up to that one dropped sample - ending the
+    // stroke, clearing holdCandidate, and forcing the whole confirm+hold
+    // sequence to start over. Reproduced headless with TouchSim's
+    // realistic-controller profile before this was diagnosed (see
+    // emulator/wasm/tests/repro-touch-dropout-stroke-start.ts's own sibling
+    // test for the hold gesture): a stationary 2-second hold produced 5-6
+    // "stroke start"/"stroke end" pairs instead of one, and the palette
+    // opened on well under half of trials despite LONG_PRESS_MS=550 being
+    // comfortably inside the hold duration - never a lack of contact, only
+    // a lack of MOVEMENT being mistaken for one. Split off exactly the way
+    // pendStartMs/pendLastTouchMs already are for the not-yet-confirmed
+    // case (see pendLastTouchMs's own comment) - this is the same
+    // "persistence vs movement" distinction, just missing on the mid-
+    // stroke side until now.
+    uint32_t lastContactMs;
     bool bridging;
     bool pendingStart;
     int pendX, pendY;
@@ -1649,6 +1673,7 @@ static void sketch_tick(const app_frame_t *f) {
                         st->fingerDown = true;
                         st->haveCand = false;
                         st->lastSampleMs = nowMs;
+                        st->lastContactMs = nowMs; // see lastContactMs's own comment
 
                         // EXPERIMENTAL: arm hold-candidacy for the colour
                         // palette right here, before anything is drawn - see
@@ -1717,6 +1742,18 @@ static void sketch_tick(const app_frame_t *f) {
                 }
             }
 
+            // Contact heartbeat, not a move: refreshed on EVERY haveTouch
+            // sample while a stroke is already down, whether or not this
+            // particular sample moved - see lastContactMs's own struct
+            // comment for the bug this fixes (a stationary hold used to be
+            // judged lifted after LIFT_DEBOUNCE_MS of no MOVEMENT, not of
+            // no CONTACT). lastSampleMs itself is untouched here - it keeps
+            // its original, narrower job of dating the last accepted move
+            // for the speed/jump-allowance calc above, which genuinely
+            // needs "time since we last knew where the finger was going",
+            // not "time since we last heard from it".
+            if (st->fingerDown) st->lastContactMs = nowMs;
+
             // EXPERIMENTAL: hold-candidacy for the colour palette. Runs on
             // EVERY haveTouch sample, not only newReport ones - same reason
             // CONFIRM_MS's own persisted check above does: this controller
@@ -1769,8 +1806,16 @@ static void sketch_tick(const app_frame_t *f) {
             // No contact reported. This is either a real lift or the controller
             // briefly losing a fast-moving finger, and the two are
             // indistinguishable at this instant, so wait before believing it.
+            //
+            // Measured against lastContactMs, NOT lastSampleMs: the latter
+            // only dates the last MOVE, and a stroke that has been sitting
+            // perfectly still (a held stroke's own last accepted position,
+            // or the palette's hold gesture) would otherwise look exactly
+            // like a lift the moment any single dropout landed more than
+            // LIFT_DEBOUNCE_MS after the last movement - see lastContactMs's
+            // own struct comment for how this was found.
             uint32_t nowMs = smp.tMs;
-            if (nowMs - st->lastSampleMs >= LIFT_DEBOUNCE_MS) {
+            if (nowMs - st->lastContactMs >= LIFT_DEBOUNCE_MS) {
                 st->fingerDown = false;
                 st->bridging = false;
                 // Forget the last coordinates, so touching down again on the
