@@ -65,6 +65,46 @@ export const TOUCHSIM_DEFAULTS: TouchSimConfig = {
 // emu_abi.h: "off by default, and clearly labelled when on").
 export const TOUCH_DEFECTS_DEFAULT = false;
 
+// What the REAL FT3168 on this board was measured doing, as opposed to
+// TOUCHSIM_DEFAULTS above, which is what a controller is imagined doing.
+// Every number here has a hardware session behind it:
+//
+//   dropoutsPerSec 34    798 lost contacts over roughly 23 seconds of
+//                        touch-down time, TOUCH_POLL_SELFTEST, 2026-08-14.
+//                        Seventeen times TOUCHSIM_DEFAULTS' guess of 2.
+//   positionJitter*      splits=10 in 40 seconds with a finger held
+//                        deliberately still: the reported centroid jumping
+//                        80-250px away and STAYING there for a report or
+//                        three. 1.5 episodes/sec is what reproduces that
+//                        splits figure (see
+//                        emulator/wasm/tests/repro-touch-dropout-palette-
+//                        open.ts, where it was calibrated).
+//   straysEnabled false  contact-down defects are what this profile is
+//                        for; strays (a contact reported while nothing is
+//                        touching) are a separate axis and are left to the
+//                        test that wants them, so a failure here has one
+//                        cause and not two.
+//
+// It exists as ONE named constant because it was previously spelled out by
+// hand in four different test files, which is one edit away from four
+// different opinions about what the hardware does. This is the profile the
+// gate uses, and the profile any new gesture test should start from: a
+// clean-input gesture test is the exception that has to be argued for
+// (tools/gate/cleaninput.ts), because the sketchpad's palette passed all
+// 22 of its clean-input checks and did not work in the owner's hands.
+export const TOUCHSIM_HARDWARE_MEASURED: TouchSimConfig = {
+  reportRateHz: 60,
+  dropoutsEnabled: true,
+  dropoutsPerSec: 34,
+  straysEnabled: false,
+  straysPerSec: 0,
+  positionJitterEnabled: true,
+  positionJitterPerSec: 1.5,
+  positionJitterMinPx: 80,
+  positionJitterMaxPx: 250,
+  positionJitterMaxHoldReports: 3,
+};
+
 // How long a push-rectangle outline stays visible in the overlay before
 // fully fading (see overlay.ts). Not part of any ABI; a UI choice.
 export const PUSH_FADE_MS = 400;

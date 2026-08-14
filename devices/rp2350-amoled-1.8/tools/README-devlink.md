@@ -126,6 +126,7 @@ giving up the shared console's usefulness to a human.
 | Command | Reply |
 |---|---|
 | `PING` | `OK devlink <version> <w> <h>` |
+| `FP` | `FP <12 hex digits>`, or `FP unknown` on a build that did not go through cmake |
 | `SHOT` | see below |
 | `DOWN <x> <y>` | `OK` (or `ERR args` if x/y do not parse) |
 | `MOVE <x> <y>` | `OK` (or `ERR args`) |
@@ -156,6 +157,35 @@ firmware version. `<w>` and `<h>` are the framebuffer dimensions in pixels
 Coordinates are panel pixel coordinates, `x` in `[0, w)`, `y` in `[0, h)`.
 Whoever wires up the hooks in `runtime.c` is responsible for clamping (see
 the integration notes below); devlink itself does not.
+
+### FP
+
+The only question a board can be asked that is about the board rather than
+about what it is showing: **which build is this?**
+
+`FP` answers with the first 12 hex digits of a SHA-256 over every firmware
+source that went into the image (`tools/gate/fingerprint.ts`), stamped in at
+build time by `firmware/CMakeLists.txt`. The host computes the same hash
+from its own checkout and compares.
+
+It exists because a differential harness once diffed three apps on the board
+against four in the tree and reported a 28 percent divergence that read
+convincingly as a rendering bug. The board was simply older. Nothing it
+could have said would have revealed that, because nothing it said was about
+which code it was running.
+
+**Nothing that compares the board against the tree should be believed until
+this matches.** `assertDeviceMatchesTree()` in `tools/gate/fingerprint.ts`
+is that check, and `bun run tools/gate/fingerprint.ts --device` is it as a
+command.
+
+Two failure modes, deliberately worded differently:
+
+- `FP unknown` - the image was built without the cmake step (or without
+  `bun` on PATH). It is not a *different* build, it is a build nobody can
+  say anything about, and comparing against it is refused for that reason.
+- `ERR unknown FP` - the board predates this command entirely, which is
+  itself the answer: it is not this tree.
 
 ### APP and SWITCH
 

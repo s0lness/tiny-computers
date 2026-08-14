@@ -61,6 +61,16 @@ export class TouchSim {
   cfg: TouchSimConfig;
   private panelW: number;
   private panelH: number;
+  // Every draw below goes through this rather than through the global
+  // random directly. It defaults to Math.random, so the browser and every
+  // existing caller are unchanged; a headless caller that needs the SAME
+  // weather twice (a gate that must not flap, a bisect that must
+  // reproduce) passes a seeded generator instead. This was the one thing
+  // repro-touch-dropout-stroke-start.ts had to write a caveat about (it
+  // "draws from an unseeded generator, so this is not bit-for-bit
+  // deterministic"); the hook is here now, and that test is free to keep
+  // its statistical thresholds.
+  private rng: () => number;
 
   // Real input, set every tick from actual pointer events.
   private realDown = false;
@@ -85,10 +95,11 @@ export class TouchSim {
   simStrays = 0;
   simJitterEpisodes = 0;
 
-  constructor(cfg: TouchSimConfig, panelW: number, panelH: number) {
+  constructor(cfg: TouchSimConfig, panelW: number, panelH: number, rng?: () => number) {
     this.cfg = cfg;
     this.panelW = panelW;
     this.panelH = panelH;
+    this.rng = rng ?? Math.random;
   }
 
   // Called after a wasm module reload, in case the new device declares a
@@ -124,7 +135,7 @@ export class TouchSim {
 
   private refresh(periodSec: number): void {
     if (this.realDown) {
-      if (this.cfg.dropoutsEnabled && Math.random() < this.cfg.dropoutsPerSec * periodSec) {
+      if (this.cfg.dropoutsEnabled && this.rng() < this.cfg.dropoutsPerSec * periodSec) {
         // Contact lost for this report. Real FT3168_Get_Point does not touch
         // the struct when finger count is 0, so the last coordinate is left
         // in place; the report's x/y are irrelevant since fingers=0.
@@ -143,10 +154,10 @@ export class TouchSim {
       // consecutive reports in the same episode are close to each other but
       // not identical.
       if (this.jitterRemaining <= 0 && this.cfg.positionJitterEnabled &&
-          Math.random() < this.cfg.positionJitterPerSec * periodSec) {
-        const angle = Math.random() * Math.PI * 2;
+          this.rng() < this.cfg.positionJitterPerSec * periodSec) {
+        const angle = this.rng() * Math.PI * 2;
         const mag = this.cfg.positionJitterMinPx +
-          Math.random() * (this.cfg.positionJitterMaxPx - this.cfg.positionJitterMinPx);
+          this.rng() * (this.cfg.positionJitterMaxPx - this.cfg.positionJitterMinPx);
         this.jitterOffsetX = Math.cos(angle) * mag;
         this.jitterOffsetY = Math.sin(angle) * mag;
         // 1..positionJitterMaxHoldReports reports. A run of exactly 1 is a
@@ -154,7 +165,7 @@ export class TouchSim {
         // accept, never confirmed by a second one nearby). A run of 2+ is
         // what sketch.c can "confirm" into a "split" - the SAME wrong spot
         // has to be reported again, not merely a repeat of the true one.
-        this.jitterRemaining = 1 + Math.floor(Math.random() * this.cfg.positionJitterMaxHoldReports);
+        this.jitterRemaining = 1 + Math.floor(this.rng() * this.cfg.positionJitterMaxHoldReports);
         this.simJitterEpisodes++;
       }
 
@@ -168,8 +179,8 @@ export class TouchSim {
         // wobble stays comfortably inside it).
         const wobble = 6;
         this.repFingers = 1;
-        this.repX = clamp(this.realX + this.jitterOffsetX + (Math.random() * 2 - 1) * wobble, 0, this.panelW - 1);
-        this.repY = clamp(this.realY + this.jitterOffsetY + (Math.random() * 2 - 1) * wobble, 0, this.panelH - 1);
+        this.repX = clamp(this.realX + this.jitterOffsetX + (this.rng() * 2 - 1) * wobble, 0, this.panelW - 1);
+        this.repY = clamp(this.realY + this.jitterOffsetY + (this.rng() * 2 - 1) * wobble, 0, this.panelH - 1);
         return;
       }
 
@@ -181,11 +192,11 @@ export class TouchSim {
 
     // No real touch down: maybe a stray single-report contact at a nearby
     // wrong position, otherwise genuinely nothing.
-    if (this.cfg.straysEnabled && Math.random() < this.cfg.straysPerSec * periodSec) {
+    if (this.cfg.straysEnabled && this.rng() < this.cfg.straysPerSec * periodSec) {
       const jitter = 40;
       this.repFingers = 1;
-      this.repX = clamp(this.repX + (Math.random() * 2 - 1) * jitter, 0, this.panelW - 1);
-      this.repY = clamp(this.repY + (Math.random() * 2 - 1) * jitter, 0, this.panelH - 1);
+      this.repX = clamp(this.repX + (this.rng() * 2 - 1) * jitter, 0, this.panelW - 1);
+      this.repY = clamp(this.repY + (this.rng() * 2 - 1) * jitter, 0, this.panelH - 1);
       this.simStrays++;
       return;
     }

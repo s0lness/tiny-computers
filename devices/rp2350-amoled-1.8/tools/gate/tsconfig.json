@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "strict": true,
+    "skipLibCheck": true,
+    "allowJs": false,
+    "noEmit": true,
+    "types": ["bun-types"]
+  },
+  "include": ["**/*.ts", "../../emulator/src/touchsim.ts", "../../emulator/src/constants.ts"],
+  "exclude": ["_scratch"]
+}

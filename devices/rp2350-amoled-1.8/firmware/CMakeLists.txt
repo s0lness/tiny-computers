@@ -228,3 +228,49 @@ if(BUN_EXECUTABLE)
 else()
     message(WARNING "bun not found on PATH: tools/invariants did not run - see docs/decisions/0006")
 endif()
+
+# The build's own identity, so a host can refuse to compare its tree
+# against a board running something else. A differential harness once
+# diffed three apps on the board against four in the tree and called the
+# result a 28% rendering divergence; the board was simply older, and
+# nothing it could say would have shown that.
+#
+# tools/gate/fingerprint.ts hashes every firmware source and writes
+# build_fingerprint.h here; devlink.c includes it (guarded by
+# __has_include, so a build without bun still compiles and honestly
+# reports "unknown") and answers the FP command with it. The host computes
+# the SAME hash from its own checkout - one definition of the fingerprint,
+# not a C one and a TypeScript one that agree on the day they are written.
+#
+# A CUSTOM TARGET, NOT `PRE_BUILD`, and the difference is not cosmetic.
+# `add_custom_command(TARGET main PRE_BUILD)` is a Visual Studio-only
+# concept: under Ninja and Makefiles CMake silently downgrades it to
+# PRE_LINK, which runs AFTER every .c has already been compiled. Wired that
+# way, the first build compiled devlink.c with no header to include and
+# produced exactly the failure this mechanism exists to prevent - an image
+# that confidently answered "unknown" while a correct fingerprint sat in
+# the build directory beside it. Verified by looking for the string in the
+# linked .elf rather than by reading the CMake docs, which is the only
+# reason it was caught.
+#
+# `add_custom_target(... ALL)` + `add_dependencies` orders it strictly
+# before any of main's objects, and it runs on EVERY build (a fingerprint
+# computed once at configure time is stale the moment anyone edits a .c,
+# which is the failure it exists to prevent). The script rewrites the
+# header only when the value actually changes, so the ordinary case - build
+# again, nothing edited - does not recompile devlink.c.
+if(BUN_EXECUTABLE)
+    set(FINGERPRINT_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    add_custom_target(build_fingerprint ALL
+        COMMAND ${BUN_EXECUTABLE} run
+                ${CMAKE_CURRENT_LIST_DIR}/../tools/gate/fingerprint.ts
+                --header ${FINGERPRINT_DIR}/build_fingerprint.h
+        BYPRODUCTS ${FINGERPRINT_DIR}/build_fingerprint.h
+        COMMENT "Stamping the build fingerprint (tools/gate/fingerprint.ts)"
+        VERBATIM
+    )
+    add_dependencies(main build_fingerprint)
+    target_include_directories(main PRIVATE ${FINGERPRINT_DIR})
+else()
+    message(WARNING "bun not found on PATH: this image will report FP unknown - see tools/gate/README.md")
+endif()

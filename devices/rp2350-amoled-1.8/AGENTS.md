@@ -185,6 +185,13 @@ emulator/             runs the firmware's own C, compiled to WebAssembly, in a
                       browser - see "The emulator" below
 emulator/wasm/tests/  regression tests that run against the real compiled
                       firmware - see "Regression tests" below
+tools/gate/           ONE command, every cross-cutting rule, every app, ~3s:
+                      push geometry and per-tick cost, pixels changing
+                      outside pushed rectangles, ink under the bezel,
+                      animations that need touch samples or leave residue,
+                      a stale emu.wasm, a board running a different build.
+                      Run it before you believe a change - see "The gate"
+                      below and tools/gate/README.md
 store/                the retired two-flash-slot app switcher; its partition
                       machinery is kept as a golden-image crash-recovery
                       fallback, not how apps change now (see store/README.md
@@ -424,6 +431,42 @@ it. That is a zeroed `app_t` in `g_apps[]`, i.e. a truncated file - not a bug
 in whatever app you happen to be working on, which is exactly what it looks
 like. If you see it, rebuild and re-run before believing anything. It cost an
 afternoon twice before the rename went in.
+
+## The gate
+
+```powershell
+bun run emulator/wasm/build.ts
+bun run tools/gate/run.ts
+```
+
+Three seconds, every app, no per-app opt-in. The tests above pin what one
+app is supposed to do; this pins what is true of ALL of them, and each rule
+is a bug that has already reached the owner's hands once:
+
+- every pushed window's row length is a multiple of 8, and inside the panel
+- work per tick is bounded, in pixels pushed and transfers issued (the
+  palette's watchdog reset was unbounded render cost per drained sample)
+- **no pixel changes outside that tick's pushed rectangles** - the class of
+  bug that looks right in the emulator and is stale on the panel, and which
+  has shipped four times
+- no ink inside `PANEL_BEZEL_MARGIN_PX` on a settled frame
+- an animation advances on the clock, not on the arrival of touch samples,
+  and settles to the picture the settled state alone would draw
+- a gesture test drives the measured controller profile, or says why not
+- **it refuses to run at all against an `emu.wasm` older than its sources**,
+  which is the mechanical version of the warning three sections up
+
+It exits non-zero on anything new, prints known-and-unfixed findings loudly
+without failing, and prints what it cannot check at the end of every clean
+run. Read `tools/gate/README.md` before adding a rule, and
+`tools/gate/known.ts` before believing the repo is clean.
+
+`tools/gate/fingerprint.ts` is the other half: it hashes every firmware
+source, `firmware/CMakeLists.txt` stamps that into the image, and devlink's
+`FP` command reads it back. Nothing that compares the board against this
+tree should be believed until `bun run tools/gate/fingerprint.ts --device`
+agrees - a differential harness once diffed three apps on the board against
+four here and reported a 28% rendering divergence that was a stale flash.
 
 ## Gotchas that bite
 

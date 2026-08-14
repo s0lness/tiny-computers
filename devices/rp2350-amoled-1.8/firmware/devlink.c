@@ -18,6 +18,41 @@
 #include "pico/time.h"
 
 #define DEVLINK_VERSION   1
+
+/*
+ * THE BUILD IDENTITY, and why a device needs one.
+ *
+ * A differential harness once diffed three apps on the board against four
+ * in the tree and reported a 28 percent divergence that read, convincingly,
+ * as a rendering bug. It was not one. The board was simply older than the
+ * checkout, and nothing it could say would have revealed that, because
+ * nothing it said was about which code it was running.
+ *
+ * BUILD_FINGERPRINT is a hash of every firmware source that went into this
+ * image, computed by tools/gate/fingerprint.ts and handed to the compiler
+ * by firmware/CMakeLists.txt. The host computes the same hash from its own
+ * tree and refuses to compare anything until the two agree
+ * (assertDeviceMatchesTree, same file). ONE definition of the fingerprint,
+ * in one language, used by both sides - a second implementation of it here
+ * in C would be the exact drift decision 0003 spent an emulator rewrite
+ * removing.
+ *
+ * The fallback matters as much as the value. A build that did not go
+ * through CMake (or one whose fingerprint step failed) reports "unknown",
+ * and the host treats that as "this cannot be compared" rather than as a
+ * mismatch - because an unnamed build is not a different build, it is a
+ * build nobody can say anything about, and those two deserve different
+ * words.
+ */
+#if defined(__has_include)
+#  if __has_include("build_fingerprint.h")
+#    include "build_fingerprint.h"
+#  endif
+#endif
+#ifndef BUILD_FINGERPRINT
+#define BUILD_FINGERPRINT "unknown"
+#endif
+
 #define DEVLINK_LINE_MAX  96   // "MOVE -32768 -32768" style commands are
                                  // well under this; anything longer is
                                  // dropped and resynced on the next line.
@@ -491,6 +526,13 @@ static void devlink_dispatch(char *line) {
 
     if (strcmp(cmd, "PING") == 0) {
         printf("OK devlink %d %d %d\r\n", DEVLINK_VERSION, g_hooks.w, g_hooks.h);
+    } else if (strcmp(cmd, "FP") == 0) {
+        // Deliberately its own command rather than another field on PING:
+        // a host talking to a board that predates this gets "ERR unknown
+        // FP", which is an unambiguous answer ("older than fingerprinting,
+        // do not compare"), where a widened PING would just be a line with
+        // fewer fields that an older parser happily accepts.
+        printf("FP %s\r\n", BUILD_FINGERPRINT);
     } else if (strcmp(cmd, "SHOT") == 0) {
         devlink_send_shot();
     } else if (strcmp(cmd, "DOWN") == 0) {

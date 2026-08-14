@@ -1,0 +1,14 @@
+{
+  "name": "rp2350-amoled-1.8-gate",
+  "private": true,
+  "scripts": {
+    "gate": "bun run run.ts",
+    "measure": "bun run run.ts --measure",
+    "selftest": "bun run selftest.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.14",
+    "typescript": "^5.7.0"
+  }
+}
