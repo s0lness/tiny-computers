@@ -112,138 +112,71 @@ static int column_hit_test(int lx) {
  * ------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------
- * The chrono icon: a stopwatch, matching the owner's reference glyph (a
- * classic stopwatch pictogram). Four parts:
+ * The chrono icon: REDRAWN 2026-08-14 as ink, not as parts. The owner's
+ * rule for this pass, verbatim: "no spare pixel, everything should be
+ * linked, no stray pixel", and naming this icon specifically, "the
+ * stopwatch must have nothing sticking out."
  *
- *   - a thick RING (an annulus, via shapes.h), not a filled disc and not a
- *     thin outline;
- *   - a filled quarter WEDGE in the top-right quadrant, apex at the
- *     centre, its outer edge following the ring's INNER edge (touching it,
- *     per the reference - not floating inside it with a gap);
- *   - a rectangular CROWN on top, joined to the ring by a short, narrower
- *     NECK;
- *   - a small angled TAB near one-thirty on the dial, clear of the ring.
+ * The earlier version was four independent geometric primitives glued
+ * together - a ring, a filled quarter-wedge, a rectangular crown on a
+ * narrower neck, and a small diamond TAB held deliberately "clear of the
+ * ring" near one-thirty. That tab is the rule's own offender, named by
+ * its own former comment: a mark floating off the ring's edge on purpose.
+ * The wedge is gone too, not because it was disconnected but because it
+ * read as a pie-chart progress indicator - a diagram's vocabulary, not a
+ * hand's - and a stopwatch pictogram does not need it to be legible (the
+ * Unicode stopwatch glyph itself is just a circle and a knob).
  *
- * Every dimension is a fraction of ICON_W/ICON_H rather than a literal
- * pixel count, so the icon rescales if the tile geometry above ever
- * changes instead of silently assuming today's 96x96. All of it works out
- * to plain integers at ICON_W = ICON_H = 96 (the values noted after each
- * macro below), which is also why CHRONO_TAB_OFF below uses a 707/1000
- * integer approximation of 1/sqrt(2) rather than a runtime sinf/cosf call
- * for what is, at compile time, a single fixed 45-degree offset.
+ * What is left is the simplest stopwatch there is, built from exactly
+ * two ink marks:
  *
- * RENDERING: anti-aliased now (shapes.h's second generation), per the
- * owner's "aplats d'encre, pas de petits pixels" rule - see shapes.h's
- * header comment for the technique. The ring is a true circle
- * (shapes_fill_annulus_aa_land), needing no half-width table at all - a
- * genuine simplification over the old per-row-bar version, not just a
- * different look. The wedge and the tab are both
- * shapes_fill_between_curves_aa_land calls (see that function's header
- * comment for why a circular wedge and a straight-sided diamond are the
- * same primitive); the wedge still needs s_chronoHwInner for its curved
- * edge's row widths, which is why that table (and
- * shapes_fill_half_width_table itself) stays.
+ *   - the DIAL: shapes_fill_annulus_aa_land, unchanged technique from
+ *     before - it already reads as ink, not as an outline (shapes.h's
+ *     own header comment: "an anti-aliased stroke is ALSO an aplat").
+ *   - the CROWN: one shapes_fill_capsule_aa_land call, a single tapered
+ *     flick from a point ON the ring's own centreline (CHRONO_R_MID,
+ *     the middle of the painted band - not its outer edge) straight up
+ *     to a thinner tip. Starting the capsule's own round cap centred
+ *     INSIDE the ring's solid ink, rather than touching its outer edge,
+ *     is what makes the join unconditional: the two shapes overlap by a
+ *     full half-band-width before MIN composition ever has to decide
+ *     anything, so there is no seam to trap. Contrast the old wedge's
+ *     WEDGE_SEAM_OVERLAP hack, needed only because that geometry ever
+ *     touched the ring at one computed edge, not because overlap is hard
+ *     to arrange when you choose to start well inside the other shape.
+ *
+ * No half-width table, no per-row loop, no seam correction: two calls,
+ * both exact, both anti-aliased by construction, and provably one
+ * connected piece of ink (the crown's base disc is a strict subset of
+ * the ring's own painted annulus).
  * ------------------------------------------------------------------- */
-#define CHRONO_R_OUT   (ICON_W * 3 / 8)                    // 36
-#define CHRONO_R_IN    (CHRONO_R_OUT - CHRONO_R_OUT / 4)   // 27: 9px stroke
-#define CHRONO_NECK_W  (CHRONO_R_OUT / 3)                  // 12
-#define CHRONO_NECK_H  (ICON_H / 16)                       // 6
-#define CHRONO_CROWN_W (CHRONO_R_OUT * 2 / 3)               // 24
-#define CHRONO_CROWN_H (ICON_H / 8)                         // 12
-#define CHRONO_TAB_R   (CHRONO_R_OUT / 6)                   // 6, half-diagonal
-#define CHRONO_TAB_GAP (CHRONO_R_OUT / 9)                   // 4, clear of the ring
-// Distance from the ring's centre to the tab's centre: past the outer
-// radius by the gap, plus the tab's own half-diagonal so CHRONO_TAB_GAP is
-// the clearance between the ring's outer edge and the tab's nearest point.
-#define CHRONO_TAB_DIST (CHRONO_R_OUT + CHRONO_TAB_GAP + CHRONO_TAB_R) // 46
-#define CHRONO_TAB_OFF  (CHRONO_TAB_DIST * 707 / 1000)                 // 32
+#define CHRONO_R_OUT       (ICON_W * 17 / 48)                    // 34
+#define CHRONO_STROKE      10                                    // ring band width - "pretty thick"
+#define CHRONO_R_IN        (CHRONO_R_OUT - CHRONO_STROKE)        // 24
+#define CHRONO_R_MID       ((CHRONO_R_OUT + CHRONO_R_IN) / 2)    // 29, the ring's own centreline
+#define CHRONO_CROWN_LEN   16
+#define CHRONO_CROWN_TIP_R 2
+#define CHRONO_CROWN_BASE_R (CHRONO_STROKE / 2)                  // 5, matches the ring's own half-width
 
-// Top of the crown to the bottom of the ring, centred in ICON_H.
-#define CHRONO_COMP_H (CHRONO_CROWN_H + CHRONO_NECK_H + 2 * CHRONO_R_OUT) // 90
-
-// Only the inner circle's row widths are tabulated now (the ring itself is
-// drawn analytically - see this block's header comment); this table backs
-// only the wedge's curved edge, upper half of a 2*CHRONO_R_OUT-tall grid
-// centred on the ring's own centre, same convention as before.
-static int16_t s_chronoHwInner[2 * CHRONO_R_OUT];
-static bool s_chronoTablesReady = false;
-
-static void ensure_chrono_tables(void) {
-    if (s_chronoTablesReady) return;
-    shapes_fill_half_width_table(s_chronoHwInner, 2 * CHRONO_R_OUT, (float)CHRONO_R_IN);
-    s_chronoTablesReady = true;
-}
+// Crown tip to ring bottom, centred in ICON_H.
+#define CHRONO_COMP_H (CHRONO_R_MID + CHRONO_CROWN_LEN + CHRONO_R_OUT) // 79
 
 static void draw_icon_chrono(int ox, int oy, uint16_t color) {
-    ensure_chrono_tables();
-
     int top = oy + (ICON_H - CHRONO_COMP_H) / 2;
     int ccx = ox + ICON_W / 2;
-    int ringTop = top + CHRONO_CROWN_H + CHRONO_NECK_H;
-    int ccy = ringTop + CHRONO_R_OUT;
+    int ccy = top + CHRONO_R_MID + CHRONO_CROWN_LEN;
 
-    // Ring: a true circular annulus - analytic, both edges anti-aliased,
-    // no per-row table needed at all (see this block's header comment).
+    // Dial: a true circular annulus, both edges anti-aliased, analytic -
+    // no per-row table needed at all.
     shapes_fill_annulus_aa_land((float)ccx, (float)ccy, (float)CHRONO_R_OUT, (float)CHRONO_R_IN, color);
 
-    // Wedge: top-right quadrant only, apex at the ring's centre - "a
-    // filled shape bounded by two curves" (shapes.h), whose two curves
-    // here are the straight vertical line x=ccx and the inner circle's own
-    // arc (s_chronoHwInner). Rows where the inner circle has not started
-    // yet (hw<=0, near the very apex) are skipped: there is nothing to
-    // fill above where the circle itself begins.
-    int rowStart = 0;
-    while (rowStart < CHRONO_R_OUT && s_chronoHwInner[rowStart] <= 0) rowStart++;
-    int wedgeRows = CHRONO_R_OUT - rowStart;
-    // WEDGE_SEAM_OVERLAP: the wedge's curved edge and the ring's own inner
-    // edge are meant to touch exactly, but they come from two independent
-    // AA computations of the "same" circle - the ring's is the exact float
-    // radius (shapes_fill_annulus_aa_land takes CHRONO_R_IN directly), the
-    // wedge's is s_chronoHwInner, which is that same radius rounded to the
-    // nearest INTEGER per row (shapes_fill_half_width_table's int16_t
-    // table, shared with timer.c - see shapes.h). The rounding is at most
-    // 0.5px, which is exactly the width of either curve's own AA fringe, so
-    // without this the wedge sometimes undershoots by a sub-pixel amount
-    // and leaves the ring's own inner-edge fringe peeking through as
-    // scattered grey dots along the seam (found by rendering this icon and
-    // inspecting the framebuffer: a dotted line a few pixels inside the
-    // visible arc, not on it - see this file's task history). Padding the
-    // wedge's own edge outward by one whole pixel pushes it past that
-    // rounding error in every case; the extra pixel lands on ground the
-    // ring already inks solid black, so nothing outside the ring is ever
-    // affected - this is a deliberate overlap ("trap"), not a widened
-    // wedge.
-    const int wedgeSeamOverlap = 1;
-    if (wedgeRows > 0) {
-        int16_t leftX[CHRONO_R_OUT], rightX[CHRONO_R_OUT];
-        for (int i = 0; i < wedgeRows; i++) {
-            leftX[i] = (int16_t)ccx;
-            rightX[i] = (int16_t)(ccx + s_chronoHwInner[rowStart + i] + wedgeSeamOverlap);
-        }
-        shapes_fill_between_curves_aa_land(ringTop + rowStart, wedgeRows, leftX, rightX, color);
-    }
-
-    // Crown and neck: plain rectangles, already axis-aligned - nothing for
-    // anti-aliasing to buy here.
-    gfx_fill_rect_land(ccx - CHRONO_CROWN_W / 2, top, CHRONO_CROWN_W, CHRONO_CROWN_H, color);
-    gfx_fill_rect_land(ccx - CHRONO_NECK_W / 2, top + CHRONO_CROWN_H, CHRONO_NECK_W, CHRONO_NECK_H, color);
-
-    // Tab: a small diamond (a square rotated 45 degrees) near one-thirty,
-    // offset clear of the ring - the "angled" reading the reference has.
-    // Same "filled shape bounded by two curves" primitive as the wedge
-    // above, except both curves here are straight 45-degree edges
-    // (hw = R-|dy|, Manhattan rather than circular) instead of one curved
-    // and one straight - the primitive does not care which.
-    int tcx = ccx + CHRONO_TAB_OFF;
-    int tcy = ccy - CHRONO_TAB_OFF;
-    int16_t tabLeft[2 * CHRONO_TAB_R + 1], tabRight[2 * CHRONO_TAB_R + 1];
-    for (int dy = -CHRONO_TAB_R; dy <= CHRONO_TAB_R; dy++) {
-        int hw = CHRONO_TAB_R - (dy < 0 ? -dy : dy);
-        int i = dy + CHRONO_TAB_R;
-        tabLeft[i] = (int16_t)(tcx - hw);
-        tabRight[i] = (int16_t)(tcx + hw);
-    }
-    shapes_fill_between_curves_aa_land(tcy - CHRONO_TAB_R, 2 * CHRONO_TAB_R + 1, tabLeft, tabRight, color);
+    // Crown: one tapered flick, base centred on the ring's own painted
+    // band (see this block's header comment for why that guarantees the
+    // join rather than merely hoping for one).
+    int crownBaseY = ccy - CHRONO_R_MID;
+    int crownTipY  = crownBaseY - CHRONO_CROWN_LEN;
+    shapes_fill_capsule_aa_land((float)ccx, (float)crownBaseY, (float)CHRONO_CROWN_BASE_R,
+                                 (float)ccx, (float)crownTipY, (float)CHRONO_CROWN_TIP_R, color);
 }
 
 /* ---------------------------------------------------------------------
@@ -482,13 +415,40 @@ static void draw_icon_sketch(int ox, int oy, uint16_t color) {
  * (top cap to bottom cap) 92px, ink width (at the widest bulge) about
  * 66px - a 0.72 width/height ratio, against the reference photo's own
  * "distinctly taller than wide" and the brief's 0.7 target.
+ *
+ * REDRAWN 2026-08-14, ink-strokes pass. The owner's rule this pass named
+ * this icon specifically: "the hourglass must have no loose grain of
+ * sand." The two individual falling-grain discs that used to sit just
+ * below the neck are deleted (see that call site's own comment) - they
+ * floated, touching nothing, which is exactly what the rule forbids; the
+ * heap resting on the bottom cap already carries "sand has landed"
+ * without a mark that has to float to say it. TIMER_OUTLINE also went
+ * from 4px to 6px, for the "pretty thick, confident, Ink and Switch"
+ * weight the other two icons now carry - kept short of THEIR stroke
+ * width on purpose, since this icon's own argument above is that thin
+ * glass around a solid sand mass is what reads as an hourglass rather
+ * than an egg cup; matching the other icons' full boldness here would
+ * refight that argument.
+ *
+ * The owner has never liked this object ("l'icone de sablier est ultra
+ * moche") and this pass asked, on top of the pixel-level fix, whether an
+ * hourglass is even the right choice any more - the timer app itself
+ * stopped showing one when it became a coil dial (docs/decisions/
+ * 0002-runtime-architecture.md, "the coil"). draw_icon_timer_coil()
+ * below is the proposed alternative: same "one continuous piece of ink"
+ * rule, a different object. Both are wired to compile; TIMER_ICON_USE_COIL
+ * (see draw_icon_for) picks which one actually paints. See this icon's
+ * task report for a rendered side-by-side and which the agent preferred.
  * ------------------------------------------------------------------- */
 #define TIMER_MARGIN    (ICON_H / 48)                             // 2
 #define TIMER_HALF_OUT  (ICON_W * 7 / 24)                          // 28
 #define TIMER_HALF_NECK 5
 #define TIMER_NECK_H    (ICON_H / 24)                              // 4
 #define TIMER_CHAMBER_H ((ICON_H - 2 * TIMER_MARGIN - TIMER_NECK_H) / 2) // 44
-#define TIMER_OUTLINE   (ICON_W / 24)                              // 4
+#define TIMER_OUTLINE   (ICON_W / 16)                              // 6, bumped from 4 2026-08-14 for
+                                                                     // the "pretty thick, confident"
+                                                                     // ink-strokes pass - see this
+                                                                     // block's header comment.
 
 // Where the bulb's TRUE widest point sits, measured down from the cap -
 // see this block's header comment for why this needs to be a free choice
@@ -728,14 +688,16 @@ static void draw_icon_timer(int ox, int oy, uint16_t color) {
     gfx_fill_rect_land(cx - TIMER_HALF_OUT, bottomTop + TIMER_CHAMBER_H - TIMER_OUTLINE,
                         2 * TIMER_HALF_OUT, TIMER_OUTLINE, color);
 
-    // A couple of grains just past the neck, already fallen into the empty
-    // chamber - round dots, the same "aplats d'encre" rule as everything
-    // else in this icon (see this block's header comment: hatching the
-    // sand itself was tried and rejected the same way, for the same
-    // reason). They now connect two real things (the sand mass above, the
-    // empty glass below) instead of decorating an already-solid chamber.
-    shapes_fill_disc_aa_land((float)cx - 0.5f, (float)(bottomTop + 7), 1.6f, color);
-    shapes_fill_disc_aa_land((float)cx, (float)(bottomTop + 16), 1.1f, color);
+    // REMOVED 2026-08-14: two individual grain discs used to float here,
+    // a few pixels below the neck and touching nothing - exactly the
+    // "loose grain of sand" the owner named directly this pass ("no
+    // spare pixel... no stray pixel", the hourglass called out by name).
+    // They read as connected only by proximity, not by any actual shared
+    // ink with the sand mass above or the heap below - the one shape in
+    // this icon shapes.h's MIN-composition argument does not save,
+    // because a lone disc has nothing to composite AGAINST. The heap
+    // just below (see next) already carries "grains have landed" without
+    // a floating mark to do it.
 
     // A small heap where the fallen grains would be landing, tried rather
     // than assumed either way (see this file's task history): four rows,
@@ -755,10 +717,87 @@ static void draw_icon_timer(int ox, int oy, uint16_t color) {
     }
 }
 
+/* ---------------------------------------------------------------------
+ * PROPOSED ALTERNATIVE timer icon, 2026-08-14: a coil, not an hourglass.
+ * The owner has never liked the hourglass and this pass asked whether it
+ * is even the right object - a fair question now that the timer app
+ * itself no longer shows one anywhere: it is a coil dial that winds like
+ * a hose (docs/decisions/0002-runtime-architecture.md, "the coil"). This
+ * icon draws that same idea small - a spiral winding inward, the same
+ * "winding inward so the outer diameter never grows" language the real
+ * dial's own header comment uses - rather than inventing a second,
+ * unrelated pictogram for "waiting".
+ *
+ * ONE continuous ink stroke, by construction rather than by discipline: a
+ * single chain of shapes_fill_capsule_aa_land calls marched along a
+ * spiral parametric curve (COIL_POINTS samples, COIL_TURNS turns,
+ * radius linear from COIL_R_OUTER down to COIL_R_INNER), each call's
+ * start point the previous call's end point exactly - the same
+ * shared-endpoint argument shapes_fill_tapered_quad_aa_land's own header
+ * comment makes for why a chain built this way reads as one curve, not a
+ * set of facets. Width follows a sine hump (COIL_W_MIN at both ends,
+ * COIL_W_MAX at the middle turn) - the same asymmetric-taper spirit
+ * draw_icon_sketch's own header comment argues for, thin where the pen
+ * would be leaving or arriving, thick mid-stroke. There is no second
+ * shape for this icon to connect to anything: the "no stray pixel" rule
+ * is satisfied trivially, not by discipline, which is part of the case
+ * for it over the hourglass.
+ *
+ * COIL_TWO_PI/COIL_PI are spelled out rather than pulled from math.h's
+ * M_PI, which is not guaranteed available under -std=c11 on every
+ * toolchain this file builds under (the board's arm-none-eabi-gcc and
+ * zig's wasm32-freestanding target, see docs/decisions/0003) - the same
+ * reasoning CHRONO_TAB_OFF used to use to avoid sinf/cosf, in reverse:
+ * here the angle genuinely varies per point, so the runtime call is the
+ * right tool, but the constant it needs should not depend on a macro
+ * some toolchains define behind a feature-test flag and some do not.
+ * ------------------------------------------------------------------- */
+#define COIL_PI       3.14159265359f
+#define COIL_TWO_PI   6.28318530718f
+#define COIL_TURNS    2.25f
+#define COIL_R_OUTER  40
+#define COIL_R_INNER  6
+#define COIL_POINTS   72
+#define COIL_W_MAX    5.0f  // matches CHRONO_CROWN_BASE_R: same hand, same weight
+#define COIL_W_MIN    1.5f
+
+static void draw_icon_timer_coil(int ox, int oy, uint16_t color) {
+    int ccx = ox + ICON_W / 2;
+    int ccy = oy + ICON_H / 2;
+
+    float prevX = 0.0f, prevY = 0.0f, prevW = 0.0f;
+    for (int i = 0; i < COIL_POINTS; i++) {
+        float t = (float)i / (float)(COIL_POINTS - 1);
+        float theta = t * COIL_TURNS * COIL_TWO_PI;
+        float r = (float)COIL_R_OUTER + ((float)COIL_R_INNER - (float)COIL_R_OUTER) * t;
+        float x = (float)ccx + r * sinf(theta);
+        float y = (float)ccy - r * cosf(theta);
+        float w = COIL_W_MIN + (COIL_W_MAX - COIL_W_MIN) * sinf(COIL_PI * t);
+
+        if (i > 0) {
+            shapes_fill_capsule_aa_land(prevX, prevY, prevW, x, y, w, color);
+        }
+        prevX = x; prevY = y; prevW = w;
+    }
+}
+
+// Which timer icon actually paints. Flip to 1 once the owner has picked
+// between draw_icon_timer() (the cleaned-up hourglass) and
+// draw_icon_timer_coil() above, then delete whichever function this
+// stops calling - both are kept compiled for now only so the emulator
+// can render either one on request while the choice is open.
+#define TIMER_ICON_USE_COIL 0
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) draw_icon_chrono(ox, oy, color);
     else if (app == &g_sketchApp) draw_icon_sketch(ox, oy, color);
-    else if (app == &g_timerApp) draw_icon_timer(ox, oy, color);
+    else if (app == &g_timerApp) {
+#if TIMER_ICON_USE_COIL
+        draw_icon_timer_coil(ox, oy, color);
+#else
+        draw_icon_timer(ox, oy, color);
+#endif
+    }
     // An app added to g_apps[] without a matching icon here draws nothing -
     // a silent gap, not a fault. The menu is a navigation aid; it must
     // never be the thing that stops a build. There is no name to fall back

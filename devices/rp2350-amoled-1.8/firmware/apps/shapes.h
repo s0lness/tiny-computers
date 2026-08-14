@@ -65,12 +65,13 @@
 // given radius, on a `rows`-tall grid centred at rows/2.0 (row centre is
 // (row+0.5) - rows/2.0). radius may be smaller than rows/2: rows whose
 // |dy| >= radius come out 0, which is what an annulus's inner-radius table
-// needs on the rows above and below the hole, and what a wedge's row table
-// needs above its apex. Call once per shape at file scope, not per frame:
-// this runs sqrtf, same reasoning as timer.c's comment on the same
-// tradeoff. Used directly by timer.c (its own ring) and by menu.c's chrono
-// icon (the wedge's row widths only now - see draw_icon_chrono, the ring
-// itself moved to shapes_fill_annulus_aa_land below, which needs no table).
+// needs on the rows above and below the hole. Call once per shape at file
+// scope, not per frame: this runs sqrtf, same reasoning as timer.c's
+// comment on the same tradeoff. Used directly by timer.c (its own ring).
+// menu.c's chrono icon no longer needs it: the wedge that once used it for
+// its curved edge's row widths was removed 2026-08-14, when that icon was
+// redrawn as plain ink (a ring and a crown, no pie-slice) - see
+// draw_icon_chrono's own header comment.
 void shapes_fill_half_width_table(int16_t *out, int rows, float radius);
 
 // Draws one row of a NON-anti-aliased annulus (a ring) at landscape y,
@@ -92,18 +93,25 @@ void shapes_draw_annulus_row(int cx, int y, int16_t hwOuter, int16_t hwInner,
  * 8-bit grey value and composited by MIN against whatever is already in the
  * framebuffer - darkest wins, never alpha blending. This matters here for
  * the same reason sketch.c's header comment gives: menu.c's icons overlap
- * shapes on purpose (the wedge touches the ring's own inner edge, the
- * hourglass outline's two sides converge at the waist), and blending would
- * re-darken that overlap and band the result; MIN just unions the ink.
+ * shapes on purpose (the chrono icon's crown starts centred inside the
+ * ring's own painted band, the hourglass outline's two sides converge at
+ * the waist), and blending would re-darken that overlap and band the
+ * result; MIN just unions the ink.
  *
  * `colorPx` is carried through from the old API (menu.c always passes
  * PX_BLACK today) rather than hardcoding black, so a future caller drawing
  * something other than black ink is not blocked by this file.
  * ---------------------------------------------------------------------- */
 
-// A filled disc, landscape centre (cx, cy), radius r. Used by menu.c for
-// the hourglass's fallen sand grains - the one place a genuinely round dot,
-// not a curve or a stroke, is what the icon needs.
+// A filled disc, landscape centre (cx, cy), radius r. No current caller in
+// menu.c: the hourglass's two individual "fallen grain" discs, the one
+// place this device ever used a genuinely round dot rather than a curve or
+// a stroke, were deleted 2026-08-14 - they floated, touching nothing,
+// which is exactly the "loose grain of sand" the owner's ink-strokes rule
+// forbids. Kept in shapes.h rather than deleted alongside them: a disc is
+// a legitimate primitive on its own (a zero-length capsule, per
+// shapes_fill_capsule_aa_land's own construction), just not one this
+// device currently has a use for.
 void shapes_fill_disc_aa_land(float cx, float cy, float r, uint16_t colorPx);
 
 // A filled ring: an outer disc with an inner disc's worth of ink taken back
@@ -127,16 +135,17 @@ void shapes_fill_annulus_aa_land(float cx, float cy, float rOuter, float rInner,
 // too has to ask for one separately (see menu.c's hourglass icon, which
 // deliberately keeps its flat caps).
 //
-// One primitive covers three different-looking menu.c shapes because all
-// three ARE this same shape: a bulge (leftX = cx-hw, rightX = cx+hw, a
-// mirrored pair from one half-width table - the hourglass's sand), a wedge
-// (leftX constant, rightX a circular arc - the stopwatch's quarter pie,
-// whose two boundaries are the wedge's straight edge and its curved edge),
-// and a diamond (leftX = cx-hw, rightX = cx+hw again, but hw = R-|dy| this
-// time, a straight-sided tent instead of a circular arc - the stopwatch's
-// small tab). Nothing about the fill loop cares whether a boundary curve is
-// circular, elliptical, or a straight line; it only ever reads x-per-row
-// samples.
+// One primitive backs every bulge-shaped menu.c fill: leftX = cx-hw,
+// rightX = cx+hw, a mirrored pair from one half-width table - the
+// hourglass's sand (both the dip's two slivers and the solid mass below
+// it) and its resting heap. Until 2026-08-14 this also carried the
+// stopwatch's quarter-pie wedge (leftX constant, rightX a circular arc)
+// and its small diamond tab (hw = R-|dy|, a straight-sided tent); both
+// were dropped when that icon was redrawn as plain ink - see
+// draw_icon_chrono's header comment - which is why only the bulge case
+// remains as a caller today. Nothing about the fill loop cared which
+// shape it was drawing either way: it only ever reads x-per-row samples,
+// circular, elliptical or straight-edged alike.
 void shapes_fill_between_curves_aa_land(int topY, int rows,
                                          const int16_t *leftX, const int16_t *rightX,
                                          uint16_t colorPx);
@@ -148,7 +157,11 @@ void shapes_fill_between_curves_aa_land(int topY, int rows,
 // path: call it once per straight span, or chain several for a polyline -
 // menu.c's hourglass outline chains a march of these along its own curve
 // table, the same way its old, non-AA version marched
-// shapes_fill_thick_segment_land calls.
+// shapes_fill_thick_segment_land calls. menu.c's chrono icon uses a single
+// call for its crown, deliberately started centred inside the ring's own
+// annulus rather than touching its edge, so the two shapes are guaranteed
+// to overlap; its proposed coil alternative chains many calls the same
+// way the hourglass does, along a spiral instead of the bulb table.
 void shapes_fill_capsule_aa_land(float x0, float y0, float r0,
                                   float x1, float y1, float r1,
                                   uint16_t colorPx);
