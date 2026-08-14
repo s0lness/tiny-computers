@@ -67,6 +67,7 @@ async function serveWasmFile(req: Request): Promise<Response> {
 // plain freeze already landed) overwrites that same directory rather than
 // creating a new one.
 async function saveFreeze(req: Request): Promise<Response> {
+  if (!guard(req)) return new Response("nope", { status: 403 });
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;
@@ -92,6 +93,7 @@ async function saveFreeze(req: Request): Promise<Response> {
 // Full input trace: "a bug becomes a FILE that replays exactly" (see
 // recorder.ts / replay.ts). Timestamped archive plus a latest.json mirror.
 async function saveTrace(req: Request): Promise<Response> {
+  if (!guard(req)) return new Response("nope", { status: 403 });
   let body: unknown;
   try {
     body = await req.json();
