@@ -132,12 +132,13 @@ let wiredButtons: WiredButton[] = [];
 // is what lets performChord resolve "boot" back to the exact same
 // WiredButton a real pointer/keyboard press already drives.
 let wiredButtonById = new Map<string, WiredButton>();
-// The bezel DOM element for each declared button, id-keyed same as
-// wiredButtonById. Only needed for performChord's visual flash of PWR
-// below, which deliberately does NOT go through PWR's own WiredButton (see
-// performChord's comment on why) and so needs a raw element to add/remove
-// a class on.
-let buttonElById = new Map<string, HTMLElement>();
+// Every DOM element that represents one declared button, id-keyed same as
+// wiredButtonById: [bezel element, toolbox chip]. Used by performChord's
+// visual flash of PWR below, which deliberately does NOT go through PWR's
+// own WiredButton (see performChord's comment on why) and so needs the raw
+// elements to add/remove a class on directly - both of them, so the chord
+// shows the same hold on the toolbox chip as it does on the bezel.
+let buttonElById = new Map<string, HTMLElement[]>();
 let appStripControl: AppStripControl | null = null;
 let lastAppIndex = 0;
 
@@ -297,13 +298,33 @@ function buildChrome(d: DeviceDescriptor): void {
     const el = createButtonElement(btn.edge, btn.at, bezelEl.clientWidth, bezelEl.clientHeight);
     el.title = `${btn.label} (${btn.edge} @ ${(btn.at * 100).toFixed(0)}%)`;
     bezelEl.appendChild(el);
-    buttonElById.set(btn.id, el);
+
+    // Computed before the chip so the chip's own label can use it below.
+    const key = assignShortcut(btn.id, usedKeys);
+
+    // The toolbox chip: a second, always-reachable place to press the same
+    // logical button, at toolbar scale.
+    const chip = document.createElement("button");
+    chip.className = "toolbox-btn";
+    chip.textContent = key ? key.toUpperCase() : btn.label.slice(0, 1).toUpperCase();
+    chip.title = `${btn.label}${btn.longPressMs ? ` (hold ${btn.longPressMs}ms = long)` : ""}`;
+    buttonToolboxEl.appendChild(chip);
+
+    buttonElById.set(btn.id, [el, chip]);
+
     const events: ButtonEvents = {
       onDown: () => emuButtonDown(index),
       onUp: () => emuButtonUp(index),
       onVerdict: (isLong) => emuButtonVerdict(index, isLong),
     };
-    const wired = wireButton(el, events, btn.longPressMs);
+    // ONE WiredButton driving BOTH elements: pressed/holding/long state is
+    // owned here, once, and applied to the bezel button and the toolbox
+    // chip together (see device.ts's wireButton). A pointer down on either
+    // element presses both; a pointer up (wherever it lands, per pointer
+    // capture) releases both. This is what makes the bezel - the one place
+    // button POSITION is real device geometry - a trustworthy picture of
+    // the device no matter which control was actually clicked.
+    const wired = wireButton([el, chip], events, btn.longPressMs);
     wiredButtons.push(wired);
     wiredButtonById.set(btn.id, wired);
 
@@ -312,21 +333,9 @@ function buildChrome(d: DeviceDescriptor): void {
     // one pointer and can hold at most one button at a time, but two
     // physical keys can be held together on a real keyboard, exactly like
     // two fingers on two side buttons.
-    const key = assignShortcut(btn.id, usedKeys);
     if (key) {
       shortcuts.bindHeld(key, { down: wired.down, up: wired.up });
     }
-
-    // The toolbox chip: a second WiredButton on its own element, same
-    // events, same longPressMs, so a hold started here fires the exact
-    // same real button-down/verdict/up sequence as the bezel and shows the
-    // same pressed/long feedback, just at toolbar scale.
-    const chip = document.createElement("button");
-    chip.className = "toolbox-btn";
-    chip.textContent = key ? key.toUpperCase() : btn.label.slice(0, 1).toUpperCase();
-    chip.title = `${btn.label}${btn.longPressMs ? ` (hold ${btn.longPressMs}ms = long)` : ""}`;
-    wireButton(chip, events, btn.longPressMs);
-    buttonToolboxEl.appendChild(chip);
   });
 
   if (emu) {
@@ -405,16 +414,22 @@ async function performChord(): Promise<void> {
   chordInFlight = true;
   const chordBtn = $<HTMLButtonElement>("#btnChord");
   chordBtn.disabled = true;
-  const pwrEl = buttonElById.get("pwr");
+  const pwrEls = buttonElById.get("pwr") || []; // [bezel element, toolbox chip]
   consoleLog.push("chord: BOOT+PWR (app menu)");
   try {
-    bootWired.down(); // real level, same as a bezel/toolbox BOOT press
-    pwrEl?.classList.add("pressed", "long"); // visual only: PWR's verdict below carries no level to react to
+    bootWired.down(); // real level, same as a bezel/toolbox BOOT press - presses BOTH of boot's elements
+    // Visual only: PWR's verdict below carries no level to react to, so
+    // this is applied directly to both of PWR's elements (bezel + toolbox
+    // chip) rather than going through PWR's own WiredButton. This must be a
+    // real hold across the sleep below, not a flicker: it is the one thing
+    // that makes the chord's gesture ("BOOT held, PWR's long verdict
+    // delivered") legible as a hold rather than a blink.
+    for (const el of pwrEls) el.classList.add("pressed", "long");
     emuButtonVerdict(pwrIndex, true); // PWR's long-press verdict, delivered directly
     await sleep(CHORD_RELEASE_DELAY_MS);
     bootWired.up();
   } finally {
-    pwrEl?.classList.remove("pressed", "long");
+    for (const el of pwrEls) el.classList.remove("pressed", "long");
     chordBtn.disabled = false;
     chordInFlight = false;
   }
@@ -975,6 +990,10 @@ async function boot(): Promise<void> {
   getDevice: () => device,
   getRecorder: () => recorder,
   getSoundPlayer: () => soundPlayer,
+  // [bezel element, toolbox chip] for a declared button id, so a headless
+  // check can assert the bezel actually moves when the toolbox is clicked
+  // (and vice versa) instead of trusting that the two stayed in sync.
+  getButtonElements: (id: string) => buttonElById.get(id) || [],
 };
 
 void boot();

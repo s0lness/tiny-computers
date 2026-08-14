@@ -79,41 +79,69 @@ export interface WiredButton {
 // wonder whether a five-second hold registered, and a CSS transition timed
 // to the real threshold cannot drift from it the way a hand-rolled JS
 // progress loop could.
-export function wireButton(el: HTMLElement, events: ButtonEvents, longPressMs?: number): WiredButton {
+//
+// `elements` is every DOM element that represents this one logical button
+// (today: the bezel button, which is real device geometry, and the
+// toolbox chip, a second always-reachable way to press it). Pressed state
+// lives ONCE, in this closure's `pressed`/`longFired`/`longTimer`, and is
+// applied to every element in lockstep: whichever element receives the
+// pointer event, all of them show the same pressed/holding/long classes,
+// and pointer capture is taken on the element that was actually grabbed so
+// a real drag-off-and-release still resolves correctly no matter which
+// element started the press. Two elements is not two copies of the state
+// to keep in sync by hand, it is one state fanned out to two renderings of
+// it - the bug this replaces was exactly that: a second WiredButton on the
+// chip, owning its OWN pressed/holding/long classes, agreeing with the
+// bezel's only by coincidence of identical wiring, never by construction.
+export function wireButton(elements: HTMLElement[], events: ButtonEvents, longPressMs?: number): WiredButton {
+  let pressed = false;
   let longFired = false;
   let longTimer: ReturnType<typeof setTimeout> | null = null;
 
-  if (longPressMs !== undefined) el.style.setProperty("--hold-ms", `${longPressMs}ms`);
+  if (longPressMs !== undefined) {
+    for (const el of elements) el.style.setProperty("--hold-ms", `${longPressMs}ms`);
+  }
 
   function clearTimer() {
     if (longTimer) { clearTimeout(longTimer); longTimer = null; }
   }
 
   function down() {
-    if (el.classList.contains("pressed")) return; // already down (e.g. key auto-repeat)
+    if (pressed) return; // already down (key auto-repeat, or the other control already pressed it)
+    pressed = true;
     longFired = false;
-    el.classList.add("pressed");
-    if (longPressMs !== undefined) el.classList.add("holding");
+    for (const el of elements) {
+      el.classList.add("pressed");
+      if (longPressMs !== undefined) el.classList.add("holding");
+    }
     events.onDown?.();
     if (longPressMs !== undefined) {
       longTimer = setTimeout(() => {
         longFired = true;
-        el.classList.add("long");
+        for (const el of elements) el.classList.add("long");
         events.onVerdict?.(true);
       }, longPressMs);
     }
   }
   function up() {
-    if (!el.classList.contains("pressed")) return;
-    el.classList.remove("pressed", "long", "holding");
+    if (!pressed) return;
+    pressed = false;
+    for (const el of elements) el.classList.remove("pressed", "long", "holding");
     clearTimer();
     events.onUp?.();
     if (!longFired) events.onVerdict?.(false);
   }
 
-  el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); down(); e.preventDefault(); });
-  el.addEventListener("pointerup", up);
-  el.addEventListener("pointercancel", up);
+  for (const el of elements) {
+    // Pointer capture is per-element and taken on whichever one was
+    // actually grabbed, so a real hold-and-drag-off still routes its
+    // eventual pointerup/pointercancel back here even if the cursor ends
+    // up nowhere near the control (or over the OTHER element for this same
+    // button) by the time it releases.
+    el.addEventListener("pointerdown", (e) => { el.setPointerCapture(e.pointerId); down(); e.preventDefault(); });
+    el.addEventListener("pointerup", up);
+    el.addEventListener("pointercancel", up);
+  }
 
   return { down, up };
 }

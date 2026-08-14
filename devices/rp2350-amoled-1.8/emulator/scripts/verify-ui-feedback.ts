@@ -150,6 +150,90 @@ try {
   if (appAfterChord === appBefore) fail("the chord button did not change the running app (expected it to open the app menu)");
   console.log("PASS: the chord button drove the real BOOT+PWR gesture and the app changed");
 
+  // ---- 5. bezel button visibly presses when driven from the toolbox chip
+  // (the owner's actual ask: "when clicking on the P or B button it should
+  // actually visually press the buttons"). Reads via the __debug hook's
+  // getButtonElements(id), which returns [bezel element, toolbox chip] for
+  // one declared button id, so this checks the ACTUAL bezel button element,
+  // not just the chip that was clicked. -----------------------------------
+  async function classesFor(id: string): Promise<{ bezel: string[]; chip: string[] }> {
+    return page.evaluate((buttonId) => {
+      const dbg = (window as unknown as { __debug: { getButtonElements(id: string): HTMLElement[] } }).__debug;
+      const [bezel, chip] = dbg.getButtonElements(buttonId);
+      return { bezel: bezel ? Array.from(bezel.classList) : [], chip: chip ? Array.from(chip.classList) : [] };
+    }, id);
+  }
+  async function centerOfToolboxButton(letter: string): Promise<{ x: number; y: number }> {
+    const box = await page.evaluate((l) => {
+      const el = Array.from(document.querySelectorAll<HTMLElement>("#buttonToolbox .toolbox-btn")).find((b) => b.textContent === l);
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }, letter);
+    if (!box) fail(`no toolbox button labelled "${letter}"`);
+    return box;
+  }
+
+  const bPos = await centerOfToolboxButton("B");
+  await page.mouse.move(bPos.x, bPos.y);
+  await page.mouse.down();
+  const bootWhileHeld = await classesFor("boot");
+  console.log(`BOOT classes while the toolbox B chip is held: bezel=[${bootWhileHeld.bezel.join(" ")}] chip=[${bootWhileHeld.chip.join(" ")}]`);
+  if (!bootWhileHeld.bezel.includes("pressed")) fail("bezel BOOT button did not visually press when the toolbox B chip was clicked and held");
+  if (!bootWhileHeld.chip.includes("pressed")) fail("toolbox B chip itself did not show pressed while held (test setup problem, not the owner's bug)");
+
+  // Mouse leaving the control while still held must not drop the pressed
+  // state early: releasing happens on pointer up, wherever it lands, not on
+  // pointer leave (see device.ts's wireButton, pointer capture per element).
+  await page.mouse.move(bPos.x + 250, bPos.y + 250);
+  const bootAfterLeave = await classesFor("boot");
+  if (!bootAfterLeave.bezel.includes("pressed")) fail("bezel BOOT button lost its pressed state when the mouse left the toolbox chip while still held");
+  await page.mouse.up();
+  const bootAfterUp = await classesFor("boot");
+  if (bootAfterUp.bezel.includes("pressed") || bootAfterUp.chip.includes("pressed")) {
+    fail(`BOOT stayed pressed after mouse-up off-control (bezel=[${bootAfterUp.bezel.join(" ")}] chip=[${bootAfterUp.chip.join(" ")}])`);
+  }
+  console.log("PASS: clicking the toolbox B chip presses the bezel BOOT button, and releasing (even off-control) clears both");
+
+  // ---- 6. the chord shows a genuine hold, not a flicker -----------------
+  // The chord is the one case with a real 50ms hold (CHORD_RELEASE_DELAY_MS
+  // in main.ts) between BOOT going down and coming back up, and it drives
+  // PWR's pressed/long classes directly on both of PWR's elements (bezel +
+  // toolbox chip) rather than through PWR's own WiredButton. A naive
+  // implementation flickers this or only updates one element; this checks
+  // both elements, for both buttons, mid-hold and after release.
+  await page.click("#btnChord");
+  // Read immediately: performChord() runs synchronously up to its first
+  // `await sleep(...)`, so by the time page.click() has resolved the
+  // synchronous portion (BOOT down, PWR's pressed+long classes) has
+  // already run, same reasoning the mute-icon check above already relies
+  // on with no extra wait.
+  const bootMidHold = await classesFor("boot");
+  const pwrMidHold = await classesFor("pwr");
+  console.log(`mid-chord: boot bezel=[${bootMidHold.bezel.join(" ")}] chip=[${bootMidHold.chip.join(" ")}]`);
+  console.log(`mid-chord: pwr  bezel=[${pwrMidHold.bezel.join(" ")}] chip=[${pwrMidHold.chip.join(" ")}]`);
+  if (!bootMidHold.bezel.includes("pressed") || !bootMidHold.chip.includes("pressed")) {
+    fail("chord: BOOT is not shown held (pressed) on both the bezel and the toolbox chip mid-chord");
+  }
+  if (!pwrMidHold.bezel.includes("pressed") || !pwrMidHold.bezel.includes("long")) {
+    fail("chord: PWR bezel button does not show the completed long-press verdict (pressed+long) mid-chord");
+  }
+  if (!pwrMidHold.chip.includes("pressed") || !pwrMidHold.chip.includes("long")) {
+    fail("chord: PWR toolbox chip does not show the completed long-press verdict (pressed+long) mid-chord");
+  }
+  console.log("PASS: the chord shows a genuine hold on BOOT and PWR, on both the bezel and the toolbox");
+
+  await new Promise((r) => setTimeout(r, 400)); // chord's own ~50ms release delay, plus a couple of ticks
+  const bootAfterChord = await classesFor("boot");
+  const pwrAfterChord = await classesFor("pwr");
+  if (bootAfterChord.bezel.includes("pressed") || bootAfterChord.chip.includes("pressed")) {
+    fail(`chord: BOOT still shows pressed after the chord finished (bezel=[${bootAfterChord.bezel.join(" ")}] chip=[${bootAfterChord.chip.join(" ")}])`);
+  }
+  if (pwrAfterChord.bezel.includes("pressed") || pwrAfterChord.bezel.includes("long") || pwrAfterChord.chip.includes("pressed") || pwrAfterChord.chip.includes("long")) {
+    fail(`chord: PWR still shows pressed/long after the chord finished (bezel=[${pwrAfterChord.bezel.join(" ")}] chip=[${pwrAfterChord.chip.join(" ")}])`);
+  }
+  console.log("PASS: the chord's hold clears on both BOOT and PWR, on both the bezel and the toolbox, once it finishes");
+
   console.log("\nALL PASS");
 } finally {
   if (browser) await browser.close();
