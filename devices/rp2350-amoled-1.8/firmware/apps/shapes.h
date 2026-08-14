@@ -186,4 +186,20 @@ void shapes_fill_tapered_quad_aa_land(float x0, float y0, float r0,
                                        float x1, float y1, float r1,
                                        uint16_t colorPx);
 
+// A CONSTANT-width stroke along an open polyline of `count` points -
+// count-1 calls to shapes_fill_capsule_aa_land, chained the same way
+// shapes_fill_tapered_quad_aa_land's own comment describes (consecutive
+// calls share an endpoint exactly, so the chain reads as one continuous
+// line with no facet at the joins - the round caps at every interior
+// join do that work here, since there is no tapering profile to blend
+// them). Unlike every other stroke primitive in this file, the radius
+// does not vary along the path: this is what a Lucide icon's own "light
+// consistent stroke weight" actually is once flattened - see menu.c's
+// Lucide-derived icons (2026-08-14) and tools/lucide-convert.ts, which
+// flattens each vendored <path>/<line> into exactly the point list this
+// function wants. `count` must be at least 2; a single point has no
+// primitive here (see shapes_fill_disc_aa_land for that case).
+void shapes_stroke_polyline_aa_land(const float *xs, const float *ys, int count,
+                                     float radius, uint16_t colorPx);
+
 #endif // SHAPES_H

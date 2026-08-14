@@ -69,3 +69,39 @@ a pixel grid.
 - `shapes_fill_between_curves_aa_land` stays, because a genuinely straight
   edge is still the cheapest way to draw a genuinely straight edge. Its
   header should say what it cannot do.
+
+## Exception, added 2026-08-14: the three menu icons
+
+Hours after the rule above was written, the owner asked for the opposite of
+it in one specific place: **"essayez de redessiner nos icones de zero en
+utilisant Lucide"** - Lucide, the icon set behind Cursor's own, in the
+"lines at 0/45/90 degrees, corners rounded until the shape reads, round caps
+on every stroke" spirit he sent an article about. That is a ruler. Lucide's
+grid, its fixed corner radii and its constant stroke weight are drawn
+exactly the way this document's own title says nothing on this device should
+be drawn.
+
+The tension was named to him directly before anything was built, and he
+chose Lucide anyway. That makes it decided, not an oversight this document
+should quietly contradict.
+
+**Why the exception holds up rather than just being permitted:** this
+document's actual complaint was never against straightness as geometry, it
+was against a hard edge, a right angle or a dead line reading as a
+*mismatched* object - "a different object from a different program" - next
+to ink that bows and tapers. Lucide is disciplined, not careless: every
+corner is rounded by a fixed radius, every stroke ends in a round cap,
+weight never varies. That is a different kind of softness from a hand's bow
+(deliberate and legible rather than organic), but it is still softness, and
+it is consistently one thing across all three icons rather than one hand-
+inked icon sitting next to two ruler-drawn ones. What this document forbids
+is an inconsistent mix, not a ruler used everywhere on purpose.
+
+**Scope: the three menu icons only.** The sketchpad's live strokes and the
+timer's own wound coil are not icons, they are the apps' actual output, and
+this document's rule keeps applying to both exactly as written above -
+`shapes_fill_capsule_aa_land`/`shapes_fill_tapered_quad_aa_land`, bowed and
+tapered, never a ruler. If a future icon is ever added outside Lucide's own
+set (no source silhouette exists for it there), it goes back to this
+document's original rule - the float brush, not a ruler - since Lucide only
+covers the case where a matching Lucide source exists to convert.

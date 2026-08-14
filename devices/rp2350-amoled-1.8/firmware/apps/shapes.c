@@ -274,3 +274,10 @@ void shapes_fill_tapered_quad_aa_land(float x0, float y0, float r0,
         prevX = bx; prevY = by; prevR = br;
     }
 }
+
+void shapes_stroke_polyline_aa_land(const float *xs, const float *ys, int count,
+                                     float radius, uint16_t colorPx) {
+    for (int i = 1; i < count; i++) {
+        shapes_fill_capsule_aa_land(xs[i - 1], ys[i - 1], radius, xs[i], ys[i], radius, colorPx);
+    }
+}

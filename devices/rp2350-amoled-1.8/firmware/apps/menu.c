@@ -975,11 +975,213 @@ static void draw_icon_timer_coil(int ox, int oy, uint16_t color) {
 // dial that morning. The hourglass stays compiled and one edit away.
 #define TIMER_ICON_USE_COIL 1
 
+/* =======================================================================
+ * LUCIDE-DERIVED CANDIDATES, 2026-08-14. The owner's direction, which
+ * replaces every icon rather than refining what is there: "essayez de
+ * redessiner nos icones de zero en utilisant Lucide" - the icon language
+ * behind the Cursor set he referenced, ISC licensed, vendored at
+ * third_party/lucide/ (see that directory's own README.md for exactly
+ * which files and why, and LICENSE for the licence text the ISC terms
+ * require to travel with the source).
+ *
+ * CONVERSION, NOT TRACING. Lucide icons are exactly the vocabulary
+ * shapes.h already speaks: <circle> is shapes_fill_annulus_aa_land, and
+ * every <line>/<path> is a chain of round-capped, CONSTANT-width
+ * segments - shapes_stroke_polyline_aa_land (new this pass, see shapes.h;
+ * it is shapes_fill_tapered_quad_aa_land's own chaining argument without
+ * the taper, since Lucide never tapers). tools/lucide-convert.ts parses
+ * each vendored SVG's <line>/<circle>/<path> (M/L/H/V/A/Z, flattening
+ * arcs to points) and tools/gen-lucide-menu-icons.ts prints the point
+ * arrays below - generated, then hand-pasted, the same discipline every
+ * other baked-constant table in this file already uses (draw_icon_sketch's
+ * fx/fy/fr, the chrono icon's hand-wobble tables): a design decision made
+ * once, not a build-time dependency on a third file.
+ *
+ * SCALE: Lucide's own viewBox is always 24x24 at a 2px stroke; this
+ * device's icon box is 96x96, so 4x lands every coordinate exactly on
+ * this file's own ICON_W/ICON_H, and the FAITHFUL conversion is therefore
+ * 2px*4=8px (LUCIDE_STROKE_HALF=4.0f) - close to the chrono ring's old
+ * 10px band, which is why it was expected to land naturally. This is
+ * exactly the legibility question the coordinator raised before anything
+ * was rendered: Lucide lives at 16px in an IDE with a thin line, this icon
+ * lives at 96px read by a child who cannot read yet - a thin outline can
+ * say "precision tool" where this device wants "object". LUCIDE_STROKE_HALF
+ * is set to 5.0f (10px) below, heavier than the faithful conversion,
+ * because the design-time approximate raster (tools/gen-lucide-menu-icons.ts,
+ * NOT anti-aliased, NOT the real firmware) already looked thin at 4.0f
+ * side by side with the ring/coil's own boldness - but that is a
+ * quick-iteration tool's opinion, not the real panel's. See this pass's
+ * own report for what the pixel-accurate wasm-emulator capture actually
+ * showed at both weights, and whether 5.0f was the right call or needed
+ * a further pass.
+ *
+ * NEITHER SET IS WIRED AS THE DEFAULT. draw_icon_for() below still
+ * paints the current shipped icons; the *_ICON_LUCIDE defines are 0
+ * (off) until the owner has looked at the preview and chosen - see this
+ * pass's own report for the PNGs and which candidate is recommended
+ * where more than one was rendered.
+ * ----------------------------------------------------------------------
+ * NAMING NOTE, worth having in mind reading the constant names below:
+ * Lucide's own icon called "timer" is shaped like what THIS device calls
+ * chrono (a stopwatch - a dial, a crown, a hand), and Lucide has no icon
+ * for this device's timer app's own coil dial at all. The match below is
+ * by SILHOUETTE, never by Lucide's own filename - s_lucideChronoTimer*
+ * draws from timer.svg because chrono is the stopwatch, not because the
+ * names happen to agree.
+ * ======================================================================= */
+#define LUCIDE_STROKE_HALF 5.0f
+
+// ---- chrono candidate: timer.svg (Lucide), sole candidate. alarm-clock.svg
+// and watch.svg were also fetched and considered - rejected because both
+// carry a specific OTHER object's silhouette (an alarm clock's bell-ear
+// legs, a wristwatch's strap lugs) that says something this device's
+// stopwatch does not do (ring an alarm, strap to a wrist); clock.svg was
+// rejected for the opposite reason, too generic (a bare clock face reads
+// as "tells the time", not "counts elapsed time"). timer.svg's own dial +
+// crown + hand is the closest thing Lucide has to a stopwatch pictogram.
+static const float s_lucideChronoRingCx = 48.00f, s_lucideChronoRingCy = 56.00f, s_lucideChronoRingR = 32.00f;
+static const float s_lucideChronoCrownX[2] = { 40.00f, 56.00f };
+static const float s_lucideChronoCrownY[2] = { 8.00f, 8.00f };
+static const float s_lucideChronoHandX[2] = { 48.00f, 60.00f };
+static const float s_lucideChronoHandY[2] = { 56.00f, 44.00f };
+
+static void draw_icon_lucide_chrono(int ox, int oy, uint16_t color) {
+    float dx = (float)ox, dy = (float)oy;
+    shapes_fill_annulus_aa_land(dx + s_lucideChronoRingCx, dy + s_lucideChronoRingCy,
+                                 s_lucideChronoRingR + LUCIDE_STROKE_HALF, s_lucideChronoRingR - LUCIDE_STROKE_HALF, color);
+    float cx[2] = { dx + s_lucideChronoCrownX[0], dx + s_lucideChronoCrownX[1] };
+    float cy[2] = { dy + s_lucideChronoCrownY[0], dy + s_lucideChronoCrownY[1] };
+    shapes_stroke_polyline_aa_land(cx, cy, 2, LUCIDE_STROKE_HALF, color);
+    float hx[2] = { dx + s_lucideChronoHandX[0], dx + s_lucideChronoHandX[1] };
+    float hy[2] = { dy + s_lucideChronoHandY[0], dy + s_lucideChronoHandY[1] };
+    shapes_stroke_polyline_aa_land(hx, hy, 2, LUCIDE_STROKE_HALF, color);
+}
+
+// ---- sketch candidates: pencil.svg and pencil-line.svg. pen-tool.svg
+// (a vector-editor bezier-pen glyph) and brush.svg/paintbrush.svg (both
+// say "colour", which this monochrome ink display never has) were
+// rejected as the wrong tool's icon, not a style variant of the right
+// one. Two are rendered because they are genuinely close: pencil-line
+// adds a short mark under the pencil's own tip, which argues for itself
+// on THIS app specifically (it draws, so a mark it already made is a
+// fair thing to show) but costs a little of the plain pencil's own
+// quiet minimalism ("invisible" per the owner's own goal for this set).
+static const float s_lucidePencilBodyX[69] = { 84.70f, 86.10f, 87.14f, 87.78f, 88.00f, 87.78f, 87.14f, 86.10f, 84.70f, 82.99f, 81.04f, 78.93f, 76.73f, 74.53f, 72.41f, 70.46f, 68.75f, 15.37f, 15.20f, 15.03f, 14.87f, 14.72f, 14.57f, 14.43f, 14.29f, 14.16f, 14.04f, 13.92f, 13.81f, 13.71f, 13.62f, 13.53f, 13.44f, 13.37f, 8.08f, 8.02f, 8.00f, 8.01f, 8.06f, 8.14f, 8.26f, 8.41f, 8.59f, 8.79f, 9.01f, 9.26f, 9.51f, 9.78f, 10.05f, 10.31f, 10.58f, 27.99f, 28.22f, 28.45f, 28.68f, 28.90f, 29.12f, 29.34f, 29.56f, 29.77f, 29.98f, 30.18f, 30.38f, 30.58f, 30.77f, 30.95f, 31.13f, 31.31f, 84.70f };
+static const float s_lucidePencilBodyY[69] = { 27.25f, 25.54f, 23.59f, 21.48f, 19.28f, 17.08f, 14.96f, 13.01f, 11.30f, 9.90f, 8.86f, 8.22f, 8.00f, 8.21f, 8.86f, 9.90f, 11.30f, 64.70f, 64.87f, 65.05f, 65.24f, 65.43f, 65.62f, 65.82f, 66.03f, 66.23f, 66.44f, 66.66f, 66.88f, 67.10f, 67.33f, 67.55f, 67.78f, 68.02f, 85.42f, 85.69f, 85.95f, 86.22f, 86.49f, 86.74f, 86.99f, 87.21f, 87.41f, 87.59f, 87.74f, 87.85f, 87.94f, 87.98f, 88.00f, 87.97f, 87.91f, 82.63f, 82.56f, 82.48f, 82.39f, 82.29f, 82.19f, 82.08f, 81.96f, 81.84f, 81.71f, 81.58f, 81.44f, 81.29f, 81.14f, 80.98f, 80.81f, 80.64f, 27.25f };
+static const float s_lucidePencilTickX[2] = { 60.00f, 76.00f };
+static const float s_lucidePencilTickY[2] = { 20.00f, 36.00f };
+
+static void draw_icon_lucide_sketch_pencil(int ox, int oy, uint16_t color) {
+    float dx = (float)ox, dy = (float)oy;
+    float bx[69], by[69];
+    for (int i = 0; i < 69; i++) { bx[i] = dx + s_lucidePencilBodyX[i]; by[i] = dy + s_lucidePencilBodyY[i]; }
+    shapes_stroke_polyline_aa_land(bx, by, 69, LUCIDE_STROKE_HALF, color);
+    float tx[2] = { dx + s_lucidePencilTickX[0], dx + s_lucidePencilTickX[1] };
+    float ty[2] = { dy + s_lucidePencilTickY[0], dy + s_lucidePencilTickY[1] };
+    shapes_stroke_polyline_aa_land(tx, ty, 2, LUCIDE_STROKE_HALF, color);
+}
+
+static const float s_lucidePencilLineMarkX[2] = { 52.00f, 84.00f };
+static const float s_lucidePencilLineMarkY[2] = { 84.00f, 84.00f };
+
+static void draw_icon_lucide_sketch_pencilline(int ox, int oy, uint16_t color) {
+    draw_icon_lucide_sketch_pencil(ox, oy, color);
+    float dx = (float)ox, dy = (float)oy;
+    float mx[2] = { dx + s_lucidePencilLineMarkX[0], dx + s_lucidePencilLineMarkX[1] };
+    float my[2] = { dy + s_lucidePencilLineMarkY[0], dy + s_lucidePencilLineMarkY[1] };
+    shapes_stroke_polyline_aa_land(mx, my, 2, LUCIDE_STROKE_HALF, color);
+}
+
+// ---- timer candidates: hourglass.svg and loader-circle.svg. NAMING THE
+// TRADE the owner asked not to drop silently: Lucide has nothing shaped
+// like a wound coil - the real dial is this device's own invention, not
+// a stock pictogram, so nothing in Lucide's set can be faithful to it.
+// hourglass.svg is the classic, universally-read "waiting" symbol (a
+// child does not need to have used a coil timer to read it, unlike
+// loader-circle.svg); loader-circle.svg is Lucide's own spinner glyph -
+// an open ring, one continuous stroke - which is a WEAKER symbol on its
+// own (spinners mean "loading", not "counting down") but is honestly the
+// closer relative of the two to what the real dial actually IS (a
+// partial ring that fills as it winds). Both rendered; recommend
+// hourglass for legibility a child needs no context to read, but say so
+// rather than pick quietly - the coil itself is not represented either
+// way, and that loss is real, not papered over by either choice.
+static const float s_lucideHourglassCapTopX[2] = { 20.00f, 76.00f };
+static const float s_lucideHourglassCapTopY[2] = { 8.00f, 8.00f };
+static const float s_lucideHourglassCapBotX[2] = { 20.00f, 76.00f };
+static const float s_lucideHourglassCapBotY[2] = { 88.00f, 88.00f };
+// Lucide's own hourglass is NOT a rounded two-bulb shape like this device's
+// hand-drawn one - it is two flat "V"/"^" wedges, each entirely on its own
+// side of the waist: the BOTTOM wedge runs corner-to-waist-to-corner along
+// the bottom cap only (y in [48,88], never reaching the top), the TOP
+// wedge the mirror. First transcription of these two arrays swapped which
+// array's SECOND half belonged to which, splicing the bottom wedge's own
+// first half onto the top wedge's second half - caught only by rendering
+// it (a lightning-bolt "S" instead of a bowtie X) and re-verified against
+// tools/gen-lucide-menu-icons.ts's own fresh output, not by re-reading the
+// numbers harder. Worth the reminder: bounds-checking a baked table means
+// checking it stays ON ITS OWN SIDE of a shared point like the waist, not
+// just checking its first few entries look plausible.
+static const float s_lucideHourglassBottomWedgeX[37] = { 68.00f, 68.00f, 67.99f, 67.96f, 67.91f, 67.85f, 67.76f, 67.66f, 67.53f, 67.39f, 67.23f, 67.05f, 66.86f, 66.65f, 66.42f, 66.18f, 65.93f, 65.66f, 48.00f, 30.34f, 30.07f, 29.82f, 29.58f, 29.35f, 29.14f, 28.95f, 28.77f, 28.61f, 28.47f, 28.34f, 28.24f, 28.15f, 28.09f, 28.04f, 28.01f, 28.00f, 28.00f };
+static const float s_lucideHourglassBottomWedgeY[37] = { 88.00f, 71.31f, 70.92f, 70.53f, 70.14f, 69.75f, 69.37f, 68.99f, 68.62f, 68.25f, 67.89f, 67.54f, 67.20f, 66.87f, 66.55f, 66.24f, 65.94f, 65.66f, 48.00f, 65.66f, 65.94f, 66.24f, 66.55f, 66.87f, 67.20f, 67.54f, 67.89f, 68.25f, 68.62f, 68.99f, 69.37f, 69.75f, 70.14f, 70.53f, 70.92f, 71.31f, 88.00f };
+static const float s_lucideHourglassTopWedgeX[37] = { 28.00f, 28.00f, 28.01f, 28.04f, 28.09f, 28.15f, 28.24f, 28.34f, 28.47f, 28.61f, 28.77f, 28.95f, 29.14f, 29.35f, 29.58f, 29.82f, 30.07f, 30.34f, 48.00f, 65.66f, 65.93f, 66.18f, 66.42f, 66.65f, 66.86f, 67.05f, 67.23f, 67.39f, 67.53f, 67.66f, 67.76f, 67.85f, 67.91f, 67.96f, 67.99f, 68.00f, 68.00f };
+static const float s_lucideHourglassTopWedgeY[37] = { 8.00f, 24.69f, 25.08f, 25.47f, 25.86f, 26.25f, 26.63f, 27.01f, 27.38f, 27.75f, 28.11f, 28.46f, 28.80f, 29.13f, 29.45f, 29.76f, 30.06f, 30.34f, 48.00f, 30.34f, 30.06f, 29.76f, 29.45f, 29.13f, 28.80f, 28.46f, 28.11f, 27.75f, 27.38f, 27.01f, 26.63f, 26.25f, 25.86f, 25.47f, 25.08f, 24.69f, 8.00f };
+
+static void draw_icon_lucide_timer_hourglass(int ox, int oy, uint16_t color) {
+    float dx = (float)ox, dy = (float)oy;
+    float cx[2] = { dx + s_lucideHourglassCapTopX[0], dx + s_lucideHourglassCapTopX[1] };
+    float cy[2] = { dy + s_lucideHourglassCapTopY[0], dy + s_lucideHourglassCapTopY[1] };
+    shapes_stroke_polyline_aa_land(cx, cy, 2, LUCIDE_STROKE_HALF, color);
+    cx[0] = dx + s_lucideHourglassCapBotX[0]; cx[1] = dx + s_lucideHourglassCapBotX[1];
+    cy[0] = dy + s_lucideHourglassCapBotY[0]; cy[1] = dy + s_lucideHourglassCapBotY[1];
+    shapes_stroke_polyline_aa_land(cx, cy, 2, LUCIDE_STROKE_HALF, color);
+    float bx[37], by[37], tx[37], ty[37];
+    for (int i = 0; i < 37; i++) {
+        bx[i] = dx + s_lucideHourglassBottomWedgeX[i]; by[i] = dy + s_lucideHourglassBottomWedgeY[i];
+        tx[i] = dx + s_lucideHourglassTopWedgeX[i];    ty[i] = dy + s_lucideHourglassTopWedgeY[i];
+    }
+    shapes_stroke_polyline_aa_land(bx, by, 37, LUCIDE_STROKE_HALF, color);
+    shapes_stroke_polyline_aa_land(tx, ty, 37, LUCIDE_STROKE_HALF, color);
+}
+
+static const float s_lucideLoaderX[17] = { 84.00f, 82.24f, 77.12f, 69.16f, 59.12f, 48.00f, 36.87f, 26.84f, 18.88f, 13.76f, 12.00f, 13.76f, 18.88f, 26.84f, 36.88f, 48.00f, 59.12f };
+static const float s_lucideLoaderY[17] = { 48.00f, 59.12f, 69.16f, 77.12f, 82.24f, 84.00f, 82.24f, 77.12f, 69.16f, 59.12f, 48.00f, 36.87f, 26.84f, 18.87f, 13.76f, 12.00f, 13.76f };
+
+static void draw_icon_lucide_timer_loadercircle(int ox, int oy, uint16_t color) {
+    float dx = (float)ox, dy = (float)oy;
+    float xs[17], ys[17];
+    for (int i = 0; i < 17; i++) { xs[i] = dx + s_lucideLoaderX[i]; ys[i] = dy + s_lucideLoaderY[i]; }
+    shapes_stroke_polyline_aa_land(xs, ys, 17, LUCIDE_STROKE_HALF, color);
+}
+
+// 0 = keep painting the current shipped icon for that app; 1 (2 for
+// sketch/timer's second candidate) previews the named Lucide candidate
+// instead. All 0 until the owner has looked - see this pass's own report.
+#define CHRONO_ICON_LUCIDE 0
+#define SKETCH_ICON_LUCIDE 0 // 0=off, 1=pencil, 2=pencil-line
+#define TIMER_ICON_LUCIDE  0 // 0=off, 1=hourglass, 2=loader-circle
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
-    if (app == &g_chronoApp) draw_icon_chrono(ox, oy, color);
-    else if (app == &g_sketchApp) draw_icon_sketch(ox, oy, color);
-    else if (app == &g_timerApp) {
-#if TIMER_ICON_USE_COIL
+    if (app == &g_chronoApp) {
+#if CHRONO_ICON_LUCIDE
+        draw_icon_lucide_chrono(ox, oy, color);
+#else
+        draw_icon_chrono(ox, oy, color);
+#endif
+    } else if (app == &g_sketchApp) {
+#if SKETCH_ICON_LUCIDE == 1
+        draw_icon_lucide_sketch_pencil(ox, oy, color);
+#elif SKETCH_ICON_LUCIDE == 2
+        draw_icon_lucide_sketch_pencilline(ox, oy, color);
+#else
+        draw_icon_sketch(ox, oy, color);
+#endif
+    } else if (app == &g_timerApp) {
+#if TIMER_ICON_LUCIDE == 1
+        draw_icon_lucide_timer_hourglass(ox, oy, color);
+#elif TIMER_ICON_LUCIDE == 2
+        draw_icon_lucide_timer_loadercircle(ox, oy, color);
+#elif TIMER_ICON_USE_COIL
         draw_icon_timer_coil(ox, oy, color);
 #else
         draw_icon_timer(ox, oy, color);
