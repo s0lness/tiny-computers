@@ -65,13 +65,15 @@
 // given radius, on a `rows`-tall grid centred at rows/2.0 (row centre is
 // (row+0.5) - rows/2.0). radius may be smaller than rows/2: rows whose
 // |dy| >= radius come out 0, which is what an annulus's inner-radius table
-// needs on the rows above and below the hole. Call once per shape at file
-// scope, not per frame: this runs sqrtf, same reasoning as timer.c's
-// comment on the same tradeoff. Used directly by timer.c (its own ring).
-// menu.c's chrono icon no longer needs it: the wedge that once used it for
-// its curved edge's row widths was removed 2026-08-14, when that icon was
-// redrawn as plain ink (a ring and a crown, no pie-slice) - see
-// draw_icon_chrono's own header comment.
+// needs on the rows above and below the hole, and what a wedge's row table
+// needs above its apex. Call once per shape at file scope, not per frame:
+// this runs sqrtf, same reasoning as timer.c's comment on the same
+// tradeoff. Used directly by timer.c (its own ring) and by menu.c's chrono
+// icon (the wedge's row widths - see draw_icon_chrono, the ring itself
+// stays on shapes_fill_annulus_aa_land below, which needs no table). The
+// wedge was removed 2026-08-14 and brought back the same day once the
+// owner judged the replacement (see draw_icon_chrono's own header
+// comment) - worth knowing if this comment is ever found stale again.
 void shapes_fill_half_width_table(int16_t *out, int rows, float radius);
 
 // Draws one row of a NON-anti-aliased annulus (a ring) at landscape y,
@@ -135,17 +137,17 @@ void shapes_fill_annulus_aa_land(float cx, float cy, float rOuter, float rInner,
 // too has to ask for one separately (see menu.c's hourglass icon, which
 // deliberately keeps its flat caps).
 //
-// One primitive backs every bulge-shaped menu.c fill: leftX = cx-hw,
-// rightX = cx+hw, a mirrored pair from one half-width table - the
-// hourglass's sand (both the dip's two slivers and the solid mass below
-// it) and its resting heap. Until 2026-08-14 this also carried the
-// stopwatch's quarter-pie wedge (leftX constant, rightX a circular arc)
-// and its small diamond tab (hw = R-|dy|, a straight-sided tent); both
-// were dropped when that icon was redrawn as plain ink - see
-// draw_icon_chrono's header comment - which is why only the bulge case
-// remains as a caller today. Nothing about the fill loop cared which
-// shape it was drawing either way: it only ever reads x-per-row samples,
-// circular, elliptical or straight-edged alike.
+// One primitive covers several different-looking menu.c shapes because
+// they all reduce to the same one: a bulge (leftX = cx-hw, rightX = cx+hw,
+// a mirrored pair from one half-width table - the hourglass's sand and its
+// resting heap) and a wedge (leftX a hand-wobbled table, rightX a circular
+// arc - the stopwatch's quarter-pie, back as of 2026-08-14 after a
+// round-trip: dropped when that icon was first redrawn as plain ink, then
+// restored once the owner judged the plain version and preferred the old
+// silhouette - see draw_icon_chrono's own header comment for the full
+// history). Nothing about the fill loop cares which shape it is drawing:
+// it only ever reads x-per-row samples, circular, elliptical, hand-wobbled
+// or straight-edged alike.
 void shapes_fill_between_curves_aa_land(int topY, int rows,
                                          const int16_t *leftX, const int16_t *rightX,
                                          uint16_t colorPx);
@@ -157,11 +159,12 @@ void shapes_fill_between_curves_aa_land(int topY, int rows,
 // path: call it once per straight span, or chain several for a polyline -
 // menu.c's hourglass outline chains a march of these along its own curve
 // table, the same way its old, non-AA version marched
-// shapes_fill_thick_segment_land calls. menu.c's chrono icon uses a single
-// call for its crown, deliberately started centred inside the ring's own
-// annulus rather than touching its edge, so the two shapes are guaranteed
-// to overlap; its proposed coil alternative chains many calls the same
-// way the hourglass does, along a spiral instead of the bulb table.
+// shapes_fill_thick_segment_land calls. menu.c's chrono icon chains a
+// short march for its crown and another for its tab, each one started
+// centred inside the ring's own annulus rather than touching its edge, so
+// every chain is guaranteed to overlap the ring before it draws its first
+// wobble; its proposed coil alternative chains many calls the same way
+// the hourglass does, along a spiral instead of the bulb table.
 void shapes_fill_capsule_aa_land(float x0, float y0, float r0,
                                   float x1, float y1, float r1,
                                   uint16_t colorPx);

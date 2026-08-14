@@ -112,71 +112,184 @@ static int column_hit_test(int lx) {
  * ------------------------------------------------------------------- */
 
 /* ---------------------------------------------------------------------
- * The chrono icon: REDRAWN 2026-08-14 as ink, not as parts. The owner's
- * rule for this pass, verbatim: "no spare pixel, everything should be
- * linked, no stray pixel", and naming this icon specifically, "the
- * stopwatch must have nothing sticking out."
+ * The chrono icon: THIRD PASS, 2026-08-14. The owner's verdict on round 2
+ * (a plain annulus plus one crown flick, commit e8e1548 - the ring/wedge/
+ * crown-rect/neck-rect/tab-diamond silhouette replaced rather than fixed):
+ * "j'aimais bien celui qu'on avait avant" - he preferred the OLD icon,
+ * still on the device at the time he judged this. The coordinator's read,
+ * which holds up: the filled WEDGE is what said "a dial with something on
+ * it"; a plain ring with a nub reads as a ring with a nub.
  *
- * The earlier version was four independent geometric primitives glued
- * together - a ring, a filled quarter-wedge, a rectangular crown on a
- * narrower neck, and a small diamond TAB held deliberately "clear of the
- * ring" near one-thirty. That tab is the rule's own offender, named by
- * its own former comment: a mark floating off the ring's edge on purpose.
- * The wedge is gone too, not because it was disconnected but because it
- * read as a pie-chart progress indicator - a diagram's vocabulary, not a
- * hand's - and a stopwatch pictogram does not need it to be legible (the
- * Unicode stopwatch glyph itself is just a circle and a knob).
+ * So the old silhouette is back - ring, wedge, crown+neck, tab - but built
+ * two ways round 1 never was:
  *
- * What is left is the simplest stopwatch there is, built from exactly
- * two ink marks:
+ *   - "des traits moins droits" (less straight lines): round 1's wedge had
+ *     one dead-straight vertical edge, its crown+neck were two exact
+ *     rectangles, and its tab was an exact diamond. All three are now
+ *     HAND-WOBBLED constant tables instead - see tools/gen-chrono-icon.ts,
+ *     which generates them from a seeded RNG smoothed through tldraw's own
+ *     streamline pass (ingest(), tools/tldraw-freehand/core.ts - the
+ *     vendored pipeline), the same technique gen-strokes.ts already uses
+ *     to humanise Hershey letterforms. Baked as fixed constants rather
+ *     than recomputed on device, the same call draw_icon_sketch's own
+ *     fx/fy/fr waypoints already made: a wobble chosen once at design
+ *     time, not a device-cycle expense.
+ *   - "les pixels qui sortent" (the rule that also cost the hourglass its
+ *     two floating grains): round 1's tab was held deliberately
+ *     CHRONO_TAB_GAP px "clear of the ring" - it floated, touching
+ *     nothing, on purpose. Rebuilt below as a short connected stroke
+ *     chain whose BASE DISC is centred on the ring's own painted band
+ *     (CHRONO_R_MID) - the exact join technique round 2's crown flick
+ *     already proved (the base overlaps the ring's own solid ink before
+ *     MIN composition ever has to decide anything, so there is no seam to
+ *     trap), now used for both the crown and the tab.
  *
- *   - the DIAL: shapes_fill_annulus_aa_land, unchanged technique from
- *     before - it already reads as ink, not as an outline (shapes.h's
- *     own header comment: "an anti-aliased stroke is ALSO an aplat").
- *   - the CROWN: one shapes_fill_capsule_aa_land call, a single tapered
- *     flick from a point ON the ring's own centreline (CHRONO_R_MID,
- *     the middle of the painted band - not its outer edge) straight up
- *     to a thinner tip. Starting the capsule's own round cap centred
- *     INSIDE the ring's solid ink, rather than touching its outer edge,
- *     is what makes the join unconditional: the two shapes overlap by a
- *     full half-band-width before MIN composition ever has to decide
- *     anything, so there is no seam to trap. Contrast the old wedge's
- *     WEDGE_SEAM_OVERLAP hack, needed only because that geometry ever
- *     touched the ring at one computed edge, not because overlap is hard
- *     to arrange when you choose to start well inside the other shape.
- *
- * No half-width table, no per-row loop, no seam correction: two calls,
- * both exact, both anti-aliased by construction, and provably one
- * connected piece of ink (the crown's base disc is a strict subset of
- * the ring's own painted annulus).
+ * The ring itself is unchanged from round 2: shapes_fill_annulus_aa_land,
+ * a true circle. It has no straight edge for "moins droits" to apply to
+ * and it was never the part that floated.
  * ------------------------------------------------------------------- */
 #define CHRONO_R_OUT       (ICON_W * 17 / 48)                    // 34
 #define CHRONO_STROKE      10                                    // ring band width - "pretty thick"
 #define CHRONO_R_IN        (CHRONO_R_OUT - CHRONO_STROKE)        // 24
 #define CHRONO_R_MID       ((CHRONO_R_OUT + CHRONO_R_IN) / 2)    // 29, the ring's own centreline
-#define CHRONO_CROWN_LEN   16
-#define CHRONO_CROWN_TIP_R 2
-#define CHRONO_CROWN_BASE_R (CHRONO_STROKE / 2)                  // 5, matches the ring's own half-width
+#define CHRONO_CROWN_LEN   14                                    // crown path's own extent, see s_chronoCrownDy
 
 // Crown tip to ring bottom, centred in ICON_H.
-#define CHRONO_COMP_H (CHRONO_R_MID + CHRONO_CROWN_LEN + CHRONO_R_OUT) // 79
+#define CHRONO_COMP_H (CHRONO_R_MID + CHRONO_CROWN_LEN + CHRONO_R_OUT) // 77
+
+// Wedge: top-right quarter of the INNER disc (radius CHRONO_R_IN), apex at
+// the ring's own centre - needs the inner circle's own per-row half-widths
+// for its curved edge, same table shapes.h's own header comment says
+// timer.c also depends on (shapes_fill_half_width_table itself is generic
+// and stays regardless of what this file does with it).
+static int16_t s_chronoHwInner[2 * CHRONO_R_OUT];
+static bool s_chronoTablesReady = false;
+
+static void ensure_chrono_tables(void) {
+    if (s_chronoTablesReady) return;
+    shapes_fill_half_width_table(s_chronoHwInner, 2 * CHRONO_R_OUT, (float)CHRONO_R_IN);
+    s_chronoTablesReady = true;
+}
+
+// The wedge's one straight edge, hand-wobbled - tools/gen-chrono-icon.ts,
+// seed 20260814. One entry per row of the wedge (CHRONO_R_OUT - rowStart
+// rows; works out to 24 at today's CHRONO_R_OUT/CHRONO_R_IN), added to ccx
+// in place of the old dead-straight `leftX[i] = ccx`. Indexed defensively
+// in draw_icon_chrono() below in case CHRONO_R_OUT/CHRONO_R_IN are ever
+// retuned without regenerating this table.
+static const int8_t s_chronoWedgeWobble[24] = {
+    -3, -2, -2, -1, -1, 0, 0, 1, 1, 0, -1, -2, -1, -1, 0, 1, 1, 1, 2, 2, 3, 3, 3, 3
+};
+
+// Crown path, hand-wobbled - tools/gen-chrono-icon.ts, same seed. Offsets
+// from the base point (ccx, ccy - CHRONO_R_MID), +x right, +y down (this
+// file's own landscape convention); the generator prints "+y = up" and
+// this is its negation, already applied.
+//
+// SHORTENED after the first render (checked against the actual rendered
+// PNG, not by eye on the numbers alone): at the original 20px reach with
+// a taper down to a 2px point, this and the tab below read as two thin
+// spikes off the top of the ring - "horns", not "a crown and a tab". See
+// tools/gen-chrono-icon.ts's own "SHORTENED AND CALMED" comment for the
+// shorter, gentler regeneration; draw_icon_chrono() below also stopped
+// tapering either stroke all the way to a point, for the same reason.
+#define CHRONO_CROWN_STEPS 6
+static const float s_chronoCrownDx[CHRONO_CROWN_STEPS] = { 0.0f, -0.2f, -0.5f, -0.7f, -0.7f, -0.8f };
+static const float s_chronoCrownDy[CHRONO_CROWN_STEPS] = { 0.0f, -2.7f, -5.4f, -8.1f, -10.9f, -13.6f };
+
+// Tab path, hand-wobbled - tools/gen-chrono-icon.ts, same seed, same
+// shortening as the crown above. Local frame: `along` is the outward
+// radius direction at one-thirty (45 degrees clockwise from 12), `perp`
+// is that direction rotated 90 degrees; s_chronoTabAlong/s_chronoTabPerp
+// are the local (x, y) coordinates draw_icon_chrono() below projects into
+// world space - `along` carries the reach (the large values), `perp` the
+// small perpendicular wobble (a mislabelling of exactly this pair was
+// caught and fixed in the same pass that shortened the reach: the first
+// render's tab travelled mostly TANGENT to the ring instead of outward,
+// because the generator's own printed column order - wobble first, reach
+// second - had been transcribed into the wrong array).
+#define CHRONO_TAB_STEPS 4
+static const float s_chronoTabAlong[CHRONO_TAB_STEPS] = { 0.0f, 2.8f, 5.6f, 8.4f };
+static const float s_chronoTabPerp[CHRONO_TAB_STEPS]  = { 0.0f, 0.2f, 0.4f, 0.5f };
 
 static void draw_icon_chrono(int ox, int oy, uint16_t color) {
+    ensure_chrono_tables();
+
     int top = oy + (ICON_H - CHRONO_COMP_H) / 2;
     int ccx = ox + ICON_W / 2;
     int ccy = top + CHRONO_R_MID + CHRONO_CROWN_LEN;
+    float strokeHalf = (float)CHRONO_STROKE / 2.0f; // 5 - both the ring's own half-width and the
+                                                       // radius every stroke below starts at, so
+                                                       // every base disc sits inside the ring's ink
 
     // Dial: a true circular annulus, both edges anti-aliased, analytic -
     // no per-row table needed at all.
     shapes_fill_annulus_aa_land((float)ccx, (float)ccy, (float)CHRONO_R_OUT, (float)CHRONO_R_IN, color);
 
-    // Crown: one tapered flick, base centred on the ring's own painted
-    // band (see this block's header comment for why that guarantees the
-    // join rather than merely hoping for one).
-    int crownBaseY = ccy - CHRONO_R_MID;
-    int crownTipY  = crownBaseY - CHRONO_CROWN_LEN;
-    shapes_fill_capsule_aa_land((float)ccx, (float)crownBaseY, (float)CHRONO_CROWN_BASE_R,
-                                 (float)ccx, (float)crownTipY, (float)CHRONO_CROWN_TIP_R, color);
+    // Wedge: top-right quarter of the inner disc, apex at the ring's own
+    // centre - back from round 1, its curved edge from s_chronoHwInner
+    // (padded outward by one pixel past the ring's own inner edge, the
+    // same seam trap round 1 needed - two independent AA computations of
+    // the "same" circle round to different sub-pixel edges otherwise, and
+    // the ring's own AA fringe peeks through as scattered grey dots along
+    // the seam), its straight edge now s_chronoWedgeWobble instead of a
+    // constant ccx.
+    {
+        int rowStart = 0;
+        while (rowStart < CHRONO_R_OUT && s_chronoHwInner[rowStart] <= 0) rowStart++;
+        int wedgeRows = CHRONO_R_OUT - rowStart;
+        int ringTop = ccy - CHRONO_R_OUT;
+        const int wedgeSeamOverlap = 1;
+        int wobCount = (int)(sizeof(s_chronoWedgeWobble) / sizeof(s_chronoWedgeWobble[0]));
+        if (wedgeRows > 0) {
+            int16_t leftX[CHRONO_R_OUT], rightX[CHRONO_R_OUT];
+            for (int i = 0; i < wedgeRows; i++) {
+                int wob = s_chronoWedgeWobble[i < wobCount ? i : wobCount - 1];
+                leftX[i] = (int16_t)(ccx + wob);
+                rightX[i] = (int16_t)(ccx + s_chronoHwInner[rowStart + i] + wedgeSeamOverlap);
+            }
+            shapes_fill_between_curves_aa_land(ringTop + rowStart, wedgeRows, leftX, rightX, color);
+        }
+    }
+
+    // Crown: a hand-wobbled stroke chain, base centred ON the ring's own
+    // painted band so the join is unconditional (see this block's header
+    // comment) - CHRONO_CROWN_STEPS-1 segments instead of round 2's one
+    // straight flick. Tapers strokeHalf -> 3.5px, NOT to a point: a taper
+    // all the way down is what made the first render's crown read as a
+    // thin spike rather than a knob (see s_chronoCrownDx's own comment).
+    {
+        float baseX = (float)ccx, baseY = (float)ccy - (float)CHRONO_R_MID;
+        float prevX = baseX, prevY = baseY, prevR = strokeHalf;
+        for (int i = 1; i < CHRONO_CROWN_STEPS; i++) {
+            float x = baseX + s_chronoCrownDx[i];
+            float y = baseY + s_chronoCrownDy[i];
+            float r = strokeHalf + (3.5f - strokeHalf) * (float)i / (float)(CHRONO_CROWN_STEPS - 1);
+            shapes_fill_capsule_aa_land(prevX, prevY, prevR, x, y, r, color);
+            prevX = x; prevY = y; prevR = r;
+        }
+    }
+
+    // Tab: round 1's diamond, held deliberately "clear of the ring" - the
+    // exact floating mark the owner named this pass ("les pixels qui
+    // sortent"). Rebuilt as a short connected, hand-wobbled stroke chain:
+    // base ON the ring's own band at one-thirty, same join technique as
+    // the crown above, tip out near where the old tab sat. Tapers
+    // strokeHalf -> 3px, same "not to a point" reasoning as the crown.
+    {
+        float alongX = 0.70710678f, alongY = -0.70710678f; // one-thirty, clockwise from 12
+        float perpX = 0.70710678f, perpY = 0.70710678f;    // `along` rotated 90 degrees
+        float baseX = (float)ccx + alongX * (float)CHRONO_R_MID;
+        float baseY = (float)ccy + alongY * (float)CHRONO_R_MID;
+        float prevX = baseX, prevY = baseY, prevR = strokeHalf;
+        for (int i = 1; i < CHRONO_TAB_STEPS; i++) {
+            float x = baseX + alongX * s_chronoTabAlong[i] + perpX * s_chronoTabPerp[i];
+            float y = baseY + alongY * s_chronoTabAlong[i] + perpY * s_chronoTabPerp[i];
+            float r = strokeHalf + (3.0f - strokeHalf) * (float)i / (float)(CHRONO_TAB_STEPS - 1);
+            shapes_fill_capsule_aa_land(prevX, prevY, prevR, x, y, r, color);
+            prevX = x; prevY = y; prevR = r;
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------
