@@ -1,45 +1,45 @@
 // repro-sketch-palette-animation-starved: headless reproduction of the
-// owner's report on real hardware, 2026-08-14, the day after the
-// watchdog-reset fix landed and worked ("ça marche !"). One thing left:
+// owner's reports on real hardware, 2026-08-14, across two rounds of the
+// same underlying bug shape.
 //
-//   "L'animation est super super saccadée. Concretement j'ai qu'une frame
-//   intermediaire avant que ça fasse les carrés en gros."
+//   THIRD ROUND, the day after the watchdog-reset fix landed and worked
+//   ("ça marche !"): "L'animation est super super saccadée. Concretement
+//   j'ai qu'une frame intermediaire avant que ça fasse les carrés en gros."
+//   One intermediate frame across the whole ~280ms pop-in.
 //
-// One intermediate frame across the whole ~280ms pop-in, not the eight or
-// nine PALETTE_RENDER_MIN_MS (33ms, ~30fps) was sized to produce.
+//   FOURTH ROUND, after the third round's own fix (palette_advance_
+//   animation(), driving the pop-in from wall-clock time every tick) landed
+//   and was flashed: "L'animation s'arrete a moitie, puis si je fais passer
+//   mon doigt sur un rectangle, le rectangle finit de grossir." The
+//   animation freezes partway, and only a discrete touch event (moving onto
+//   a new cell) finishes growing that ONE cell - exactly what a render
+//   trigger that is still secretly gated on something discrete looks like
+//   from outside, even though the underlying state was, in fact, advancing
+//   every tick as intended (see sketch.c's own palette_advance_animation()
+//   and palette_render_animating() comments for the full account of both
+//   causes and both fixes).
 //
-// THE CAUSE. palette_render_frame() was only ever reached from inside
-// sketch_tick's touch-sample drain loop - called once per drained sample,
-// throttled (after the watchdog fix) to at most once every 33ms. That
-// throttle assumed samples would keep arriving often enough to have
-// something to throttle. The palette's own gesture is a finger held
-// still, and this controller - the owner's own account - "répète les
-// mêmes coordonnées, le dedupe les jette, et il n'arrive presque rien":
-// almost nothing reaches the drain loop at all while the position
-// genuinely is not changing. Before the watchdog fix, a FLOOD of samples
-// during the animation (that fix's own subject) hid this: hundreds of
-// calls landing regardless meant a handful landing at useful moments was
-// enough to look smooth. Bounding the call count correctly is what made
-// the sample dependency visible - a case no earlier test covered, because
-// every earlier test (including this one's own sibling,
-// repro-sketch-palette-watchdog-reset.ts) drives the palette by FEEDING a
-// stream of samples, which is exactly the condition that was masking
-// this.
-//
-// THE FIX, in sketch.c: palette_advance_animation(), called once per
-// sketch_tick() AFTER the drain loop - so on every tick, sample or not -
-// reads whichever cell the last known touch position falls over and
-// advances the animation from wall-clock time (f->nowMs) alone. The
-// throttle and per-cell scoping palette_render_frame() already had are
-// untouched; only how often it gets a CHANCE to do that check changed.
-//
-// THIS FILE reproduces the exact scenario no other test does: a genuine
-// long press that opens the palette, then ZERO further touch samples -
-// not even repeats - for the rest of the animation, only continued
-// tick()s (which is what a real device does regardless of input; the
-// emulator's own touch queue is purely event-driven, see touchsim's own
-// header comment, so simply not calling touch() again is the emulator's
-// exact equivalent of "the controller stopped producing anything new").
+// WHY THIS FILE'S OWN FRAME-COUNT ASSERTION DID NOT CATCH THE FOURTH ROUND,
+// AND WHY IT NOW DOES SOMETHING DIFFERENT. The original version of this
+// file only ever counted "palette: frame" LOG LINES and asserted there were
+// several. That line is written from inside the render function only once
+// whiten+draw actually ran, which sounds like exactly the right thing to
+// count - and in the fourth round's actual build, it WAS right: the buggy
+// version's shared gate meant almost no lines got logged at all during a
+// starved run, so a frame-count-only version of this file would in fact
+// have failed against that build too. It is still the wrong thing to build
+// a standing regression test around, for a reason independent of whether
+// THIS particular bug happened to trip it: a logged line proves the
+// firmware BELIEVES it drew something, never that the panel's own pixels
+// changed. A future regression with a different shape - a scale calculation
+// that silently saturates, a stale nowMs, a candidate that never updates -
+// could log a perfectly healthy-looking frame count while drawing the same
+// picture over and over, and a line-count assertion would wave it through.
+// THE FIX BELOW: snapshot the actual framebuffer (emu_fb(), the same
+// mechanism feature-sketch-palette.ts's own residue checks use) around
+// every tick, and assert the PIXELS THEMSELVES changed at every logged
+// frame and across multiple genuinely distinct visible states - what the
+// owner can see on the panel, not what the firmware's own log claims.
 //
 // Run with (after `bun run emulator/wasm/build.ts`):
 //
@@ -49,6 +49,8 @@ import { join } from "node:path";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const APP_DRAW = 1; // g_apps[] = { chrono, sketch("draw"), timer, four }
+const PANEL_W = 368;
+const PANEL_H = 448;
 
 const CONFIRM_MS = 40;
 const LONG_PRESS_MS = 550;
@@ -90,11 +92,17 @@ async function loadDevice() {
     const exp = instance.exports as any;
     if (exp.emu_init() !== 1) throw new Error("emu_init() failed - see fw log lines above");
 
+    function fbSnapshot(): Uint8Array {
+        const ptr = exp.emu_fb();
+        return new Uint8Array(memory.buffer, ptr, PANEL_W * PANEL_H * 2).slice();
+    }
+
     return {
         tick(nowMs: number) { exp.emu_tick(nowMs); },
         touch(down: boolean, x: number, y: number) { exp.emu_touch(down ? 1 : 0, Math.round(x), Math.round(y)); },
         appSwitch(index: number) { exp.emu_app_switch(index); },
         drainLog(): string[] { const out = fwLog.slice(); fwLog.length = 0; return out; },
+        fbSnapshot,
     };
 }
 
@@ -104,8 +112,29 @@ function parseFrameLine(line: string): { kind: string; whitenPx: number; coverag
     return { kind: m[1]!, whitenPx: Number(m[2]), coverageEvals: Number(m[3]) };
 }
 
+// Every cell drawn onto white (0xFFFF, little-endian bytes FF FF) darkens
+// at least one byte away from that (MIN-composited ink, never lightened -
+// decision 0009 / draw_capsule's own header comment), so counting bytes
+// that are not 0xFF is a cheap, geometry-free proxy for "how much ink is on
+// screen right now" - used below only to prove several genuinely DIFFERENT
+// states occurred, not to assert any particular direction or rate of
+// growth (the pop-in's own overshoot, PALETTE_POP_PEAK_SCALE, can make a
+// cell briefly larger than its final size and then recede a little as it
+// settles, which is correct, expected behaviour, not a regression).
+function inkPixelCount(fb: Uint8Array): number {
+    let count = 0;
+    for (let i = 0; i < fb.length; i++) if (fb[i] !== 0xff) count++;
+    return count;
+}
+
+function fbEqual(a: Uint8Array, b: Uint8Array): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+}
+
 async function main() {
-    console.log("=== reproduction + regression: the pop-in animation must not starve without touch samples ===\n");
+    console.log("=== reproduction + regression: the pop-in animation must not starve without touch samples, and every frame it logs must actually be VISIBLE on the panel ===\n");
 
     const dev = await loadDevice();
     dev.tick(0);
@@ -133,31 +162,50 @@ async function main() {
     // device's own main loop keeps calling tick() regardless of whether
     // core1 queued anything; this is that, with the touch queue left
     // completely empty (see this file's own header comment on why that is
-    // the emulator's honest equivalent of "the controller produced
-    // nothing new"). ------------------------------------------------------
+    // the emulator's honest equivalent of "the controller produced nothing
+    // new"). Every tick is snapshotted, so every "palette: frame" log line
+    // can be checked against what it actually drew, not just that it
+    // fired. -----------------------------------------------------------
     const TICK_STEP_MS = 10; // a plausible main-loop cadence, unrelated to any report rate
     const WINDOW_MS = PALETTE_ANIM_TOTAL_MS + 80;
     const frames: { kind: string; whitenPx: number; coverageEvals: number }[] = [];
+    const framePixelDeltas: number[] = []; // count of changed bytes, one per logged "frame" line
+    const inkTrace: number[] = []; // inkPixelCount() right after each logged frame, in order
+    let prevFb = dev.fbSnapshot();
+    let framesThatChangedNothing = 0;
+
     for (let elapsed = 0; elapsed < WINDOW_MS; elapsed += TICK_STEP_MS) {
         t += TICK_STEP_MS;
-        dev.tick(t); // no dev.touch() call - the queue stays empty
-        for (const l of dev.drainLog()) {
+        dev.tick(t);
+        const log = dev.drainLog();
+        let loggedFrame = false;
+        for (const l of log) {
             const f = parseFrameLine(l);
-            if (f) frames.push(f);
+            if (f) { frames.push(f); loggedFrame = true; }
+        }
+        if (loggedFrame) {
+            const nowFb = dev.fbSnapshot();
+            let delta = 0;
+            for (let i = 0; i < nowFb.length; i++) if (nowFb[i] !== prevFb[i]) delta++;
+            framePixelDeltas.push(delta);
+            inkTrace.push(inkPixelCount(nowFb));
+            if (delta === 0) framesThatChangedNothing++;
+            prevFb = nowFb;
         }
     }
 
     const ticksInWindow = Math.ceil(WINDOW_MS / TICK_STEP_MS);
-    console.log(`    ${ticksInWindow} tick()s over ${WINDOW_MS}ms, ZERO touch samples after the one that opened it ` +
-        `-> ${frames.length} "palette: frame" lines`);
+    console.log(`    ${ticksInWindow} tick()s over ${WINDOW_MS}ms, ZERO touch samples after the one that opened it -> ${frames.length} "palette: frame" lines`);
+    console.log(`    per-frame pixel-byte deltas: [${framePixelDeltas.join(", ")}]`);
+    console.log(`    ink byte count at each frame: [${inkTrace.join(", ")}]`);
 
-    // THE REGRESSION THIS CATCHES: the report was "one intermediate
-    // frame". A minimum comfortably above that, and comfortably below
-    // what the throttle alone would allow if every tick rendered (which
-    // would itself be the watchdog bug's own shape again), pins the
-    // animation to actually animating without pinning it to an exact
-    // frame count that a legitimate future retune of PALETTE_POP_MS or
-    // PALETTE_RENDER_MIN_MS would then break for no real reason.
+    // THE THIRD ROUND'S OWN REGRESSION: the report was "one intermediate
+    // frame". A minimum comfortably above that, and comfortably below what
+    // the throttle alone would allow if every tick rendered (which would
+    // itself be the watchdog bug's own shape again), pins the animation to
+    // actually animating without pinning it to an exact frame count that a
+    // legitimate future retune of PALETTE_POP_MS or PALETTE_RENDER_MIN_MS
+    // would then break for no real reason.
     const expectedFrames = Math.ceil(PALETTE_ANIM_TOTAL_MS / PALETTE_RENDER_MIN_MS); // ~9
     const minFrames = 5; // well above the reported "1", well below expectedFrames
     const maxFrames = ticksInWindow; // sanity: can never exceed one render per tick
@@ -166,21 +214,46 @@ async function main() {
     check(`frame count still stays within what the throttle allows (<=${maxFrames})`,
         frames.length <= maxFrames, `${frames.length} frames over ${ticksInWindow} ticks`);
 
-    // ---- and once settled, continuing to tick with still no touch
-    // samples must produce ZERO further frames - "the right number of
-    // renders per second is zero, not thirty" once nothing is changing,
-    // the same invariant the watchdog fix's own settled-path scoping
-    // established, now checked specifically under a starved trace rather
-    // than a fed one. ------------------------------------------------------
+    // THE FOURTH ROUND'S OWN REGRESSION, the point of this file's rewrite:
+    // every single logged "palette: frame" line must correspond to pixels
+    // that ACTUALLY CHANGED on the panel. A build with the fourth round's
+    // bug (or one shaped like it) could, in principle, still log a
+    // healthy-looking frame count while drawing the same frozen picture
+    // over and over (the owner's own report, "the animation stops
+    // halfway") - this is the assertion that catches that shape of bug even
+    // when the log-line count itself still looks normal.
+    check("every logged animation frame actually changed pixels on the panel (not a no-op that merely announced itself)",
+        framesThatChangedNothing === 0, `${framesThatChangedNothing} of ${framePixelDeltas.length} logged frames changed nothing`);
+
+    // THE OWNER'S OWN ACCEPTANCE CRITERION, in plain words: "the rectangles
+    // should arrive the way they leave" - several genuinely different
+    // in-between states, not a freeze followed by one jump straight to the
+    // finished picture. Proxied here by how many DISTINCT ink levels the
+    // animation passes through - deliberately not asserted to be monotonic
+    // (the pop-in's own overshoot can make it dip briefly as a cell settles
+    // back from past its final size, which is correct behaviour, not a
+    // regression), only that there are genuinely several of them.
+    const distinctInkLevels = new Set(inkTrace).size;
+    check(`the visible picture passes through multiple distinct states, not a freeze-then-jump (>=${minFrames} distinct ink levels expected)`,
+        distinctInkLevels >= minFrames, `${distinctInkLevels} distinct ink levels across ${inkTrace.length} frames`);
+
+    // ---- and once settled, continuing to tick with still no touch samples
+    // must produce ZERO further frames AND an unchanged framebuffer - "the
+    // right number of renders per second is zero, not thirty" once nothing
+    // is changing, the same invariant the watchdog fix's own settled-path
+    // scoping established, now checked at the pixel level too. ------------
     const IDLE_TICKS = 50;
     let idleFrames = 0;
+    const beforeIdle = dev.fbSnapshot();
     for (let i = 0; i < IDLE_TICKS; i++) {
         t += TICK_STEP_MS;
         dev.tick(t);
         for (const l of dev.drainLog()) if (parseFrameLine(l)) idleFrames++;
     }
+    const afterIdle = dev.fbSnapshot();
     console.log(`    ${IDLE_TICKS} more idle tick()s, settled, still zero touch samples -> ${idleFrames} more frames`);
     check("once settled, idling with no touch samples produces zero further frames", idleFrames === 0, `${idleFrames} frames`);
+    check("once settled, the framebuffer itself is unchanged too (not just unlogged)", fbEqual(beforeIdle, afterIdle));
 
     console.log(`\n${passCount} passed, ${failCount} failed`);
     if (failCount > 0) process.exit(1);
