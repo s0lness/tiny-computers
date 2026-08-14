@@ -9,53 +9,41 @@
 //
 //   bun run emulator/wasm/tests/repro-ring-shrink-residue.ts
 //
-// Root cause (see firmware/apps/timer.c's CAP_SWEEP_MARGIN_DEG comment):
-// NOT the incremental repaint's row-range bound being too small for a big
-// single jump - ring_sweep_row_range's own bound is exact for any single
-// old-angle/new-angle pair, jump size does not matter (checked by brute
-// force against every pixel the true angle range touches). The bug is that
-// the arc's moving end cap is a real disc (drawn a few degrees wide on
-// BOTH sides of its exact angle, on purpose, for the rounded-end look), and
-// update_ring_to's very next call computes its row range from the EXACT
-// old/new angles with no allowance for the previous call's cap having
-// physically painted a little past the "old" edge. Once the arc has moved
-// on, nothing ever sweeps that sliver again: for a shrinking arc, every
-// later call's angle range only gets smaller, so a sliver left just past
-// an old edge is stuck for good.
+// Root cause of the ORIGINAL bug: an incremental repaint computing its own
+// row range from exact old/new angles with no allowance for something
+// drawn a little past the exact edge on purpose (then: a rounded cap's own
+// bulge) not being swept again once the arc has moved past it. That defect
+// CLASS, not that specific cause, is what this file has guarded ever since
+// - see timer.c's own header for two more times it recurred as the coil's
+// drawing changed shape.
 //
-// UPDATED 2026-08-14 FOR THE COIL REDESIGN, SEVERAL TIMES THE SAME DAY. This
-// test is kept and extended, not replaced: the underlying defect class (a
-// rounded cap's own overshoot getting stranded by an incremental repaint
-// that does not account for it) is exactly what the coil's
-// update_ring_to() still has to get right. Earlier passes of this file
-// mirrored: the original single ring; six 10-minute-lap bands; two
-// 30-minute-lap bands twice as thick; then two EQUAL-width turns separated
-// by a thin outline (BAND_GAP_PX). All of those put the two laps SIDE BY
-// SIDE, radially - see timer.c's header, "CORRECTED 2026-08-14 (A THIRD
-// TIME, THE SAME DAY)", for why that was wrong twice in a row: the owner
-// sent a picture (Apple Fitness's own activity ring past 100%) that settled
-// it as ONE annulus, both laps at the SAME radius, lap 2 painted ON TOP of
-// lap 1 and told apart by a HALO (a thin band of bare paper) rather than by
-// position. This file's own mirrors below are rewritten, not just retuned,
-// for that reason: there is no longer a fixed "gap" or "outline" radius to
-// scan for residue in - the halo appears and disappears with lap 2's own
-// fillDeg[1], so this file's old findStrayBlackPixels()/findGapResidue()
-// pair (built around fixed, disjoint per-band radii) no longer describes
-// anything real. They are replaced by one comparator, scanViolations(),
-// that predicts the expected colour of every coil pixel from the coil's
-// current fillDeg[0]/fillDeg[1] and flags any actual pixel that disagrees -
-// see that function's own header for the full reasoning.
+// UPDATED 2026-08-14 FOR THE COIL REDESIGN, SEVERAL TIMES THE SAME DAY.
+// Earlier passes of this file mirrored: the original single ring; six
+// 10-minute-lap bands; two 30-minute-lap bands twice as thick; two EQUAL-
+// width turns with a thin outline; an overlapping annulus with a halo and
+// rounded caps. See timer.c's header, "CORRECTED 2026-08-14 (A FOURTH TIME,
+// THE SAME DAY)", for the latest correction: the owner had the actual
+// build in his hands and rejected the halo (width changing as it winds)
+// and the rounded caps ("gros points") both. What replaced them: ONE
+// constant-width ring for both laps, no inset, no caps at all, and exactly
+// ONE cue - a thin white cut mark across the ring's full radial width at
+// lap 2's own current leading edge. This file's own mirrors below are
+// rewritten again for that: expectedAt()/scanViolations() (added for the
+// halo pass) still work here almost unchanged in SHAPE (an independent
+// reference model compared pixel-by-pixel against the real framebuffer),
+// just against a much simpler expected picture - solid ink or track,
+// interrupted only by the marker where lap 2 has one. Scenario D changes
+// again too: there is no halo along the overlap to measure any more, so it
+// now asserts the marker's own existence, position and (critically, since
+// a moving marker is exactly the shape that leaves residue - see this
+// file's own history above) that it leaves no trace behind as it advances.
 //
 // What did NOT change across any of these passes: the actual regression
 // being guarded (no dense cluster of leftover ink after the arc/coil
 // moves), the "worst 5-degree bucket" metric that told the original
 // reported bug (42) apart from pre-existing rounding noise (2), and the two
 // original scenarios (a real multi-sample drag up-then-down, and a smooth
-// RUNNING countdown with no drag at all). A fourth scenario, added for the
-// two-equal-turns pass and kept (in updated form) for this one, proves a
-// one-lap and a two-lap coil are actually DISTINGUISHABLE in the
-// framebuffer - see that scenario's own header for what changed about how
-// it measures that.
+// RUNNING countdown with no drag at all).
 //
 // This loads the REAL firmware compiled to wasm (emulator/wasm/dist/emu.wasm,
 // built by emulator/wasm/build.ts) and drives it through emu_tick() with a
@@ -75,21 +63,22 @@ const BTN_PWR = 1;
 
 // timer.c's coil geometry, landscape coordinates - lifted, not re-derived,
 // same convention every repro test in this directory uses. See timer.c's
-// "Ring geometry: the coil, CURRENT (overlapping annulus)" section for the
-// derivation of every number here.
+// "Ring geometry: the coil, CURRENT (a fourth time: constant width, one cut
+// mark)" section for the derivation of every number here.
 const RING_CX = 224, RING_CY = 184;
 const DEG2RAD = Math.PI / 180;
 
 const LAPS_MAX = 2;
 const RING_OUTER_R = 173;
 const RING_INNER_R = 141;
-const RING_THICK_PX = RING_OUTER_R - RING_INNER_R;      // 32, unchanged for the third time today
-const RING_HALF_THICK_PX = RING_THICK_PX / 2;            // 16 - lap 1's own cap/halo-disc radius
-const RING_CENTERLINE_R = (RING_OUTER_R + RING_INNER_R) / 2; // 157 - both laps' caps sit here now
-const HALO_PX = 4;                                        // THE KNOB - halo width per edge, see timer.c's header
-const INSET_OUTER_R = RING_OUTER_R - HALO_PX;             // 169
-const INSET_INNER_R = RING_INNER_R + HALO_PX;             // 145
-const INSET_HALF_THICK_PX = RING_HALF_THICK_PX - HALO_PX; // 12 - lap 2's own ink-disc radius
+const RING_THICK_PX = RING_OUTER_R - RING_INNER_R; // 32, unchanged for the fourth time today
+
+// timer.c's own cut-mark knob - see that file's "THE CUT MARKER" section
+// for the full derivation (8px of arc length at the ring's own midline
+// radius, 157, chosen because a single LOCALISED mark needs to clear a
+// higher legibility bar than the circumferential bands this file's earlier
+// passes validated at 4px).
+const MARKER_HALF_DEG = 1.5;
 
 // timer.c's flat, uniform tick step (2026-08-14 on) - see TICK_STEP_S/
 // TICKS_PER_LAP/MAX_TICKS in timer.c.
@@ -100,9 +89,9 @@ const TIMER_MAX_SECONDS = MAX_TICKS * TICK_STEP_S; // 1800
 
 // Mirror of timer.c's compute_band_fill_degs(): each lap's own fraction of
 // TICKS_PER_LAP, from a continuous total-ticks value. Unchanged mechanics -
-// this is exactly as true for the overlapping-annulus coil as for every
-// earlier layout, since fillDeg[0]/fillDeg[1] describe WHAT the coil means,
-// not how it is painted.
+// this is exactly as true for the marker-only coil as for every earlier
+// layout, since fillDeg[0]/fillDeg[1] describe WHAT the coil means, not how
+// it is painted.
 function fillDegsForTicks(ticks: number): number[] {
     const t = Math.max(0, Math.min(MAX_TICKS, ticks));
     const out: number[] = [];
@@ -164,21 +153,15 @@ class DragSim {
 
 // Generous tolerances for the table-based renderer's own rounding noise -
 // see expectedAt()'s own header for exactly what these absorb.
-// ANGLE_TOL_DEG covers both a cap's own intentional rounded bulge past the
-// arc's exact edge (timer.c's CAP_SWEEP_MARGIN_DEG is 9.0deg as of this
-// pass - see that constant's own derivation - so 6deg here is comfortably
-// in the same order, not independently re-derived) and ordinary per-row
-// half-width table rounding near a boundary.
 const ANGLE_TOL_DEG = 6;
 const RADIUS_TOL_PX = 2;
 
-// The worst single (zone, 5-degree) bucket's violation count that the
-// PRE-EXISTING, direction-independent cap/ring rounding noise alone can
-// produce. Measured empirically below (kept as a named constant, same
-// discipline every earlier version of this file used) rather than demanded
-// to be exactly zero, since a handful of single-pixel roundings between a
-// cap's own half-width table and the ring's own outer-radius table are a
-// known, separate, non-regressing source of noise.
+// The worst single 5-degree bucket's violation count that the PRE-EXISTING,
+// direction-independent rounding noise alone can produce. Measured
+// empirically below (kept as a named constant, same discipline every
+// earlier version of this file used) rather than demanded to be exactly
+// zero, since a handful of single-pixel roundings in the half-width table
+// are a known, separate, non-regressing source of noise.
 const MAX_VIOLATIONS_PER_BUCKET = 10;
 
 let passCount = 0;
@@ -270,16 +253,6 @@ function panelTouchForAngle(deg: number, R = 150): [number, number] {
     return [Math.round(px), Math.round(py)];
 }
 
-// landscape (lx,ly) for a point at the given angle/radius from the coil's
-// own centre - the inverse of panelTouchForAngle's own geometry, but
-// landing directly in LANDSCAPE space (no panel-coordinate round trip)
-// since every pixel this file reads comes from classify()/isBlackAtLand(),
-// which already expect landscape input.
-function landAtAngleRadius(deg: number, r: number): [number, number] {
-    const theta = deg * DEG2RAD;
-    return [Math.round(RING_CX + r * Math.sin(theta)), Math.round(RING_CY - r * Math.cos(theta))];
-}
-
 // Classifies a landscape pixel as pure black (PX_BLACK, 0x0000), pure white
 // (PX_WHITE, 0xFFFF) or "other" (the grey track colour, or - if something
 // is genuinely wrong - some other value neither of the two flat inks this
@@ -307,22 +280,17 @@ function angularDist(a: number, b: number): number {
 /* ---------------------------------------------------------------------
  * expectedAt(): an independent reference model of what colour a given
  * landscape pixel SHOULD be, given the coil's current fillDeg[0]/fillDeg[1]
- * - mirrors timer.c's paint_band_row() (lap 1, full-width ink/track) and
- * paint_overlay_row() (lap 2, halo margins + inset ink) EXACTLY in
- * CONTINUOUS geometry (true radius/angle from a float centre), not the
- * firmware's own per-row half-width TABLE, which rounds to the nearest
- * pixel per row (shapes_fill_half_width_table, lroundf) - a genuine circle
- * at the row level, not the pixel-corner level, the same rounding this
- * file's own history (timer.c's cap-clipping fix) has already had to
- * account for once. RADIUS_TOL_PX/ANGLE_TOL_DEG mark pixels close enough to
- * a genuine zone boundary (a radius equal to RING_INNER_R/RING_OUTER_R/
- * INSET_INNER_R/INSET_OUTER_R, or an angle equal to 0/360/fillDeg0/
- * fillDeg1) that the table-based renderer could legitimately land either
- * side of the true continuous line - those pixels come back `ambiguous`
- * and the scan below skips them, exactly the same "generous tolerance
- * around a real, expected rounding edge" discipline every earlier version
- * of this file used, just computed from a model instead of read off a
- * fixed radius band.
+ * - mirrors timer.c's paint_band_row() (lap 1's own ink/track, the only ink
+ * layer left) and paint_marker_row() (the cut mark, painted on top wherever
+ * lap 2 has one) EXACTLY in CONTINUOUS geometry (true radius/angle from a
+ * float centre), not the firmware's own per-row half-width TABLE, which
+ * rounds to the nearest pixel per row (shapes_fill_half_width_table,
+ * lroundf) - a genuine circle at the row level, not the pixel-corner level.
+ * RADIUS_TOL_PX/ANGLE_TOL_DEG mark pixels close enough to a genuine zone
+ * boundary (a radius equal to RING_INNER_R/RING_OUTER_R, or an angle equal
+ * to 0/360/fillDeg0/the marker's own two edges) that the table-based
+ * renderer could legitimately land either side of the true continuous line
+ * - those pixels come back `ambiguous` and the scan below skips them.
  * ------------------------------------------------------------------- */
 function expectedAt(
     lx: number,
@@ -336,40 +304,35 @@ function expectedAt(
         return { inRing: false, ambiguous: false };
     }
 
-    const nearRadiusBoundary = [RING_INNER_R, RING_OUTER_R, INSET_INNER_R, INSET_OUTER_R].some(
-        (b) => Math.abs(r - b) <= RADIUS_TOL_PX,
-    );
+    const nearRadiusBoundary = Math.abs(r - RING_INNER_R) <= RADIUS_TOL_PX || Math.abs(r - RING_OUTER_R) <= RADIUS_TOL_PX;
 
     let deg = Math.atan2(dx, -dy) * (180 / Math.PI);
     if (deg < 0) deg += 360;
-    const nearAngleBoundary = [0, 360, fillDeg0, fillDeg1].some((b) => angularDist(deg, b) <= ANGLE_TOL_DEG);
+
+    const markerLo = Math.max(0, fillDeg1 - MARKER_HALF_DEG);
+    const markerHi = Math.min(360, fillDeg1 + MARKER_HALF_DEG);
+    const nearAngleBoundary = [0, 360, fillDeg0, markerLo, markerHi].some((b) => angularDist(deg, b) <= ANGLE_TOL_DEG);
 
     if (nearRadiusBoundary || nearAngleBoundary) return { inRing: true, ambiguous: true };
     if (r < RING_INNER_R || r > RING_OUTER_R) return { inRing: false, ambiguous: false };
 
-    const coveredByLap2 = deg < fillDeg1;
-    const coveredByLap1 = deg < fillDeg0;
-    const inInset = r >= INSET_INNER_R && r <= INSET_OUTER_R;
+    const hasMarker = fillDeg1 > 0 && deg >= markerLo && deg < markerHi;
+    if (hasMarker) return { inRing: true, ambiguous: false, expected: "white" };
 
-    if (coveredByLap2) return { inRing: true, ambiguous: false, expected: inInset ? "black" : "white" };
-    if (coveredByLap1) return { inRing: true, ambiguous: false, expected: "black" };
-    return { inRing: true, ambiguous: false, expected: "grey" };
+    const coveredByLap1 = deg < fillDeg0;
+    return { inRing: true, ambiguous: false, expected: coveredByLap1 ? "black" : "grey" };
 }
 
-type Violation = { lx: number; ly: number; deg: number; zone: string; expected: string; actual: string };
+type Violation = { lx: number; ly: number; deg: number; expected: string; actual: string };
 
 // Scans the coil's own bounding square (radius RING_OUTER_R+3, comfortably
 // past the ring's own outer edge - the digit block's own radius tops out
 // well inside RING_INNER_R, see timer.c's digit-clearance derivation, so it
-// is excluded by expectedAt()'s own `inRing` check by construction, not by
-// special-casing "black pixels near the centre are fine" here) and flags
-// every pixel whose ACTUAL colour disagrees with expectedAt()'s prediction
-// for the GIVEN fillDeg[0]/fillDeg[1] - the direct generalisation of the
-// old findStrayBlackPixels()/findGapResidue() pair into one comparator that
-// covers the halo margins, the inset ink, lap 1's own full-width ink and
-// the plain grey track all at once. This has to be state-aware (unlike the
-// old gap check, which was a fixed radius band checked unconditionally)
-// because the halo itself is state-dependent now - see this file's header.
+// is excluded by expectedAt()'s own `inRing` check by construction) and
+// flags every pixel whose ACTUAL colour disagrees with expectedAt()'s
+// prediction for the GIVEN fillDeg[0]/fillDeg[1]. Has to be state-aware
+// (the marker is state-dependent, not a fixed radius band) - see this
+// file's header.
 function scanViolations(fb: Uint8Array, fillDeg0: number, fillDeg1: number): Violation[] {
     const out: Violation[] = [];
     const scan = RING_OUTER_R + 3;
@@ -386,28 +349,52 @@ function scanViolations(fb: Uint8Array, fillDeg0: number, fillDeg1: number): Vio
             const dx = lx - RING_CX, dy = ly - RING_CY;
             let deg = Math.atan2(dx, -dy) * (180 / Math.PI);
             if (deg < 0) deg += 360;
-            const r = Math.sqrt(dx * dx + dy * dy);
-            const zone = r >= INSET_INNER_R && r <= INSET_OUTER_R ? "ink" : "margin-or-track";
-            out.push({ lx, ly, deg, zone, expected: e.expected!, actual });
+            out.push({ lx, ly, deg, expected: e.expected!, actual });
         }
     }
     return out;
 }
 
-// Worst single (zone, 5-degree) bucket among the violations - the metric
-// this test actually gates on (see header comment on why a dense cluster,
-// not a bare non-zero count, is what distinguishes a real regression from
-// pre-existing rounding noise).
-function worstBucket(violations: Violation[]): { key: string; count: number } {
-    const buckets = new Map<string, number>();
+// Worst single 5-degree bucket among the violations - the metric this test
+// actually gates on (see header comment on why a dense cluster, not a bare
+// non-zero count, is what distinguishes a real regression from pre-existing
+// rounding noise).
+function worstBucket(violations: Violation[]): { key: number; count: number } {
+    const buckets = new Map<number, number>();
     for (const v of violations) {
         const b = Math.floor(v.deg / 5) * 5;
-        const key = `${v.zone}:${b}`;
-        buckets.set(key, (buckets.get(key) ?? 0) + 1);
+        buckets.set(b, (buckets.get(b) ?? 0) + 1);
     }
-    let worst = { key: "n/a", count: 0 };
+    let worst = { key: -1, count: 0 };
     for (const [key, c] of buckets) if (c > worst.count) worst = { key, count: c };
     return worst;
+}
+
+// Finds every WHITE pixel within the ring's own CORE radial span (inset
+// from the outer/inner edge by RADIUS_TOL_PX) - used by scenario D to find
+// the cut marker directly. Deliberately excludes the outer/inner edge
+// itself: that is scanViolations()'s own job (ordinary table-rounding noise
+// there is a separate, already-covered concern), and the marker spans the
+// ring's FULL radial width by construction, so a real marker shows up
+// across virtually this entire core span regardless of the small edge
+// exclusion.
+function findWhiteInRing(fb: Uint8Array): { lx: number; ly: number; deg: number; r: number }[] {
+    const found: { lx: number; ly: number; deg: number; r: number }[] = [];
+    const scan = RING_OUTER_R + 1;
+    const coreOuter = RING_OUTER_R - RADIUS_TOL_PX;
+    const coreInner = RING_INNER_R + RADIUS_TOL_PX;
+    for (let ly = RING_CY - scan; ly <= RING_CY + scan; ly++) {
+        for (let lx = RING_CX - scan; lx <= RING_CX + scan; lx++) {
+            const dx = lx - RING_CX, dy = ly - RING_CY;
+            const r = Math.sqrt(dx * dx + dy * dy);
+            if (r < coreInner || r > coreOuter) continue;
+            if (classify(fb, lx, ly) !== "white") continue;
+            let deg = Math.atan2(dx, -dy) * (180 / Math.PI);
+            if (deg < 0) deg += 360;
+            found.push({ lx, ly, deg, r });
+        }
+    }
+    return found;
 }
 
 // Drags the coil's touch point smoothly from fromDeg to toDeg (an UNWRAPPED
@@ -516,32 +503,27 @@ async function main() {
         );
     }
 
-    // ---- scenario C: a clean drag (no dropouts, no lifts) sweeping caps
-    // through a wide range of angles - including well into lap 2, so both
-    // lap 1's own cap AND lap 2's own halo+ink cap sweep past many angles -
-    // must leave no residue anywhere in the ring, checked with the SAME
-    // comparator as scenarios A/B. This is the direct descendant of the
-    // old findGapResidue() check (added for the owner's second report, "sur
-    // le minuteur j'ai des pixels qui stray autour de l'anneau" - see
-    // timer.c's header, "BUG 2", for the original mechanism this
-    // reproduces: a rounded cap's own rasterisation overshoot landing a
-    // pixel just past its own band's declared radius): that check scanned
-    // one FIXED radius band forever, because the two-band coil's own gap
-    // never moved. The overlapping annulus has no such fixed band any more
-    // - the halo margin IS the thing this scenario has to prove clean, and
-    // it only exists where lap 2 currently covers, so this scenario now
-    // goes through scanViolations() like A/B rather than its own bespoke
-    // gap scan. Deliberately a CLEAN drag (a plain mouse-style touch
-    // stream, same as dragTo() used everywhere else in this file): the
-    // owner's original report reproduced this way directly, with no
-    // dropouts or touch imperfection involved at all. -------------------
+    // ---- scenario C: a clean drag (no dropouts, no lifts) sweeping through
+    // a wide range of angles - including well into lap 2, so the cut marker
+    // sweeps through many positions - must leave no residue anywhere in the
+    // ring, checked with the SAME comparator as scenarios A/B. This is the
+    // direct descendant of this file's old gap-residue check (added for the
+    // owner's second report on the two-band coil, "sur le minuteur j'ai des
+    // pixels qui stray autour de l'anneau"): that check scanned one FIXED
+    // radius band forever, because the two-band coil's own gap never moved.
+    // Neither the halo pass's margin nor this pass's marker sit at a fixed
+    // radius any more, so this scenario goes through scanViolations() like
+    // A/B rather than a bespoke fixed-band scan. Deliberately a CLEAN drag
+    // (a plain mouse-style touch stream, same as dragTo() used everywhere
+    // else in this file): the owner's original report reproduced this way
+    // directly, with no dropouts or touch imperfection involved at all. ---
     {
         const dev = await loadDevice();
         dev.tick(0);
         dev.appSwitch(APP_TIMER);
         dev.tick(1000);
 
-        console.log("\n-- clean drag through almost two full laps, sweeping every cap angle at least once --");
+        console.log("\n-- clean drag through almost two full laps, sweeping the marker through many positions --");
         const sim = new DragSim();
         // 10 -> 700deg: crosses the lap boundary once and sweeps close to a
         // full second lap besides, the same wide angular coverage that
@@ -554,137 +536,140 @@ async function main() {
         const worst = worstBucket(violations);
         console.log(`    total violations=${violations.length}, worst bucket=${worst.key} count=${worst.count}`);
         check(
-            "a clean drag sweeping both laps' caps through many angles leaves no dense residue cluster",
+            "a clean drag sweeping the marker through many angles leaves no dense residue cluster",
             worst.count <= MAX_VIOLATIONS_PER_BUCKET,
             `worst bucket=${worst.key} count=${worst.count}, threshold=${MAX_VIOLATIONS_PER_BUCKET}, total=${violations.length}`,
         );
     }
 
-    // ---- scenario D: one lap and two laps must be DISTINGUISHABLE in the
-    // framebuffer - the entire point of the halo. THE MEASUREMENT CHANGED
-    // AGAIN FROM THE PREVIOUS (equal-turns) PASS: that version told one lap
-    // from two by RUN COUNT in a radial scan (one black run vs two, since
-    // the turns sat side by side with an outline between them). The
-    // overlapping annulus puts both laps at the SAME radius, so a radial
-    // scan through a covered angle shows exactly ONE black run either way -
-    // what differs is that run's own WIDTH and POSITION (a one-lap coil's
-    // run spans close to the FULL ring, RING_INNER_R to RING_OUTER_R; a
-    // two-lap coil's own run is HALO_PX narrower on each side, inset to
-    // INSET_INNER_R..INSET_OUTER_R) - and, measured directly rather than
-    // inferred from width alone, a SPECIFIC sample point at the halo's own
-    // radius: solid black on a one-lap coil (lap 1's own ink, nothing has
-    // narrowed it), pure white on a two-lap coil AT THE SAME ANGLE (the
-    // halo itself, the white separation the task asks to prove exists) -
-    // this is the direct measurement of "the halo produces a white
-    // separation inside the ink that a single lap does not have". ---------
+    // ---- scenario D: distinguishability, rewritten a third time for the
+    // marker-only design (this file's header, "CORRECTED... A FOURTH
+    // TIME"). There is no halo along the overlap to measure any more - lap
+    // 1's ink and lap 2's ink are the SAME black, everywhere, except at lap
+    // 2's own leading edge. So this asserts exactly what the task names:
+    // on a one-lap coil (fillDeg[1] == 0) there is no white band anywhere
+    // in the ring; on a two-lap coil the ring is fully inked except for one
+    // thin radial white band at the head, that band sits at fillDeg[1]'s
+    // own angle, spans the ring's FULL radial width, and - the part this
+    // dial has gotten wrong twice before (see this file's own header) -
+    // leaves NO TRACE behind at its old position as it advances, checked
+    // through both a long continuous drag (many small incremental updates)
+    // and a subsequent large JUMP (a fresh touch-down landing far from the
+    // marker's last position, the same shape of update the ORIGINAL bug in
+    // this file needed). ---------------------------------------------------
     {
-        function radialProfile(fb: Uint8Array, angleDeg: number, rFrom: number, rTo: number): { r: number; black: boolean }[] {
-            const out: { r: number; black: boolean }[] = [];
-            for (let r = rFrom; r <= rTo; r++) {
-                const [lx, ly] = landAtAngleRadius(angleDeg, r);
-                out.push({ r, black: classify(fb, lx, ly) === "black" });
-            }
-            return out;
-        }
-
-        function blackRuns(profile: { r: number; black: boolean }[]): { rStart: number; rEnd: number }[] {
-            const runs: { rStart: number; rEnd: number }[] = [];
-            let open: { rStart: number; rEnd: number } | null = null;
-            for (const p of profile) {
-                if (p.black) {
-                    if (!open) open = { rStart: p.r, rEnd: p.r };
-                    else open.rEnd = p.r;
-                } else if (open) {
-                    runs.push(open);
-                    open = null;
-                }
-            }
-            if (open) runs.push(open);
-            return runs;
-        }
-
-        const SCAN_R_FROM = RING_INNER_R - 3;
-        const SCAN_R_TO = RING_OUTER_R + 3;
-        const ANGLE = 180; // straight down (dx=0, dy>0) - clear of both caps in both scenarios below (the fixed
-                            // start cap sits near 0deg/12 o'clock, and neither moving tip below lands near 180),
-                            // so every sample here comes from the plain per-row bar/overlay painter, not cap
-                            // rasterisation - a clean read of the two-layer structure itself.
-        const HALO_SAMPLE_R = Math.round((INSET_OUTER_R + RING_OUTER_R) / 2); // ~171, inside the halo's own outer margin
-
-        // ONE LAP: fully wind lap 1 and stop comfortably short of lap 2
-        // reaching 180deg - any ticks in [TICKS_PER_LAP, TICKS_PER_LAP +
-        // TICKS_PER_LAP/2) keeps fillDeg[1] under 180 (see
-        // fillDegsForTicks), so the exact commit point (subject to drag
-        // hysteresis) does not matter, only that it lands in that generous
-        // window.
-        const oneLap = await loadDevice();
-        oneLap.tick(0);
-        oneLap.appSwitch(APP_TIMER);
-        oneLap.tick(1000);
-        const oneSim = new DragSim();
-        dragTo(oneLap, oneSim, 0, 370, 1100, 200); // one lap (360deg) + a small margin
-        console.log(`\n-- scenario D, one-lap coil: ${oneSim.ticks} ticks (${(oneSim.ticks * TICK_STEP_S / 60).toFixed(2)} min) --`);
+        // ONE LAP, MID-WIND: fillDeg[1] is 0 throughout lap 1, whether or
+        // not lap 1 itself has finished winding - no marker should exist at
+        // any point during lap 1. Checked mid-lap (90 ticks, half of
+        // TICKS_PER_LAP) rather than only at completion, since "no marker
+        // during lap 1" is a claim about fillDeg[1], not about how much of
+        // lap 1 has wound.
+        const midLap1 = await loadDevice();
+        midLap1.tick(0);
+        midLap1.appSwitch(APP_TIMER);
+        midLap1.tick(1000);
+        const midSim = new DragSim();
+        dragTo(midLap1, midSim, 0, 180, 1100, 100); // half a lap
+        console.log(`\n-- scenario D, mid-lap-1: ${midSim.ticks} ticks (${(midSim.ticks * TICK_STEP_S / 60).toFixed(2)} min) --`);
         check(
-            "one-lap drag actually wound past one full lap, short of lap 2 reaching 180deg",
-            oneSim.ticks >= TICKS_PER_LAP && oneSim.ticks < TICKS_PER_LAP + TICKS_PER_LAP / 2,
-            `ticks=${oneSim.ticks}`,
+            "mid-lap-1 drag actually stayed within lap 1",
+            midSim.ticks > 0 && midSim.ticks < TICKS_PER_LAP,
+            `ticks=${midSim.ticks}`,
         );
-        const oneFb = oneLap.fbBytes();
-        const oneRuns = blackRuns(radialProfile(oneFb, ANGLE, SCAN_R_FROM, SCAN_R_TO));
-        console.log(`    radial profile runs (r=${SCAN_R_FROM}..${SCAN_R_TO} at angle ${ANGLE}deg): ${JSON.stringify(oneRuns)}`);
+        const midWhites = findWhiteInRing(midLap1.fbBytes());
         check(
-            "one lap paints ONE black run spanning close to the FULL ring width (no halo narrowing it)",
-            oneRuns.length === 1 && (oneRuns[0].rEnd - oneRuns[0].rStart) >= RING_THICK_PX - 1 - 2 * RADIUS_TOL_PX,
-            `runs=${JSON.stringify(oneRuns)}, full width=${RING_THICK_PX}`,
-        );
-        const oneHaloSample = classify(oneFb, ...landAtAngleRadius(ANGLE, HALO_SAMPLE_R));
-        check(
-            "at the halo's own radius, a single-lap coil (not double-covered here) shows solid ink, no halo yet",
-            oneHaloSample === "black",
-            `sample=${oneHaloSample} at r=${HALO_SAMPLE_R}`,
+            "no white band anywhere in the ring during lap 1 (fillDeg[1] == 0, no marker needed)",
+            midWhites.length === 0,
+            `found ${midWhites.length} white pixel(s)${midWhites.length > 0 ? ", e.g. " + JSON.stringify(midWhites[0]) : ""}`,
         );
 
-        // TWO LAPS: wind well into the second lap, comfortably past the
-        // point where lap 2's own fillDeg reaches 180deg (needs
-        // within-lap-2 ticks > TICKS_PER_LAP/2 = 90).
+        // TWO LAPS, VIA A LONG CONTINUOUS DRAG: 0 -> 600deg in one
+        // unbroken touch context (many small incremental updates, the same
+        // shape RUNNING's own per-frame shrink and a real winding finger
+        // both take) - if the marker ever left a trace behind an earlier
+        // position along the way, it would still be sitting in the final
+        // frame as a stray white pixel far from the FINAL fillDeg[1].
         const twoLap = await loadDevice();
         twoLap.tick(0);
         twoLap.appSwitch(APP_TIMER);
         twoLap.tick(1000);
         const twoSim = new DragSim();
-        dragTo(twoLap, twoSim, 0, 600, 1100, 300); // ~1.67 laps
-        console.log(`-- scenario D, two-lap coil: ${twoSim.ticks} ticks (${(twoSim.ticks * TICK_STEP_S / 60).toFixed(2)} min) --`);
+        let t2 = dragTo(twoLap, twoSim, 0, 600, 1100, 300); // ~1.67 laps, many samples
+        const [fillDeg0, fillDeg1] = fillDegsForTicks(twoSim.ticks);
+        console.log(`-- scenario D, two-lap coil after a long continuous drag: ${twoSim.ticks} ticks (${(twoSim.ticks * TICK_STEP_S / 60).toFixed(2)} min), fillDeg1=${fillDeg1.toFixed(1)} --`);
         check(
-            "two-lap drag actually wound past lap 2's own 180deg point",
-            twoSim.ticks > TICKS_PER_LAP + TICKS_PER_LAP / 2,
-            `ticks=${twoSim.ticks}, need > ${TICKS_PER_LAP + TICKS_PER_LAP / 2}`,
+            "two-lap drag actually wound past lap 2's own start",
+            twoSim.ticks > TICKS_PER_LAP,
+            `ticks=${twoSim.ticks}`,
         );
-        const twoFb = twoLap.fbBytes();
-        const twoRuns = blackRuns(radialProfile(twoFb, ANGLE, SCAN_R_FROM, SCAN_R_TO));
-        console.log(`    radial profile runs (r=${SCAN_R_FROM}..${SCAN_R_TO} at angle ${ANGLE}deg): ${JSON.stringify(twoRuns)}`);
+
+        const twoFb1 = twoLap.fbBytes();
+        const whites1 = findWhiteInRing(twoFb1);
+        console.log(`    white pixels found: ${whites1.length}`);
         check(
-            "two laps paint ONE black run, INSET to the ink zone only - narrower than the one-lap coil's own run",
-            twoRuns.length === 1 &&
-                twoRuns[0].rStart >= INSET_INNER_R - RADIUS_TOL_PX && twoRuns[0].rStart <= INSET_INNER_R + RADIUS_TOL_PX &&
-                twoRuns[0].rEnd >= INSET_OUTER_R - RADIUS_TOL_PX && twoRuns[0].rEnd <= INSET_OUTER_R + RADIUS_TOL_PX,
-            `runs=${JSON.stringify(twoRuns)}, expected inset=[${INSET_INNER_R},${INSET_OUTER_R}]`,
+            "a two-lap coil DOES have a white band somewhere in the ring",
+            whites1.length > 0,
+            `found ${whites1.length}`,
         );
-        const twoHaloSample = classify(twoFb, ...landAtAngleRadius(ANGLE, HALO_SAMPLE_R));
+        const offBand1 = whites1.filter((w) => angularDist(w.deg, fillDeg1) > MARKER_HALF_DEG + ANGLE_TOL_DEG);
         check(
-            "at the SAME halo-margin radius, a two-lap coil (double-covered here) shows WHITE - the halo itself, measured directly, not eyeballed",
-            twoHaloSample === "white",
-            `sample=${twoHaloSample} at r=${HALO_SAMPLE_R}`,
+            "every white pixel found sits within the marker's own angular window at fillDeg1 - nothing left behind by the long drag that got it here",
+            offBand1.length === 0,
+            `${offBand1.length} pixel(s) outside the marker's window, e.g. ${JSON.stringify(offBand1[0])}`,
+        );
+        if (whites1.length > 0) {
+            const radii = whites1.map((w) => w.r);
+            const spanPx = Math.max(...radii) - Math.min(...radii);
+            check(
+                "the white band spans close to the ring's FULL radial width (RING_OUTER_R to RING_INNER_R), not a partial strip",
+                spanPx >= RING_THICK_PX - 1 - 4 * RADIUS_TOL_PX,
+                `radial span=${spanPx}px, full width=${RING_THICK_PX}px`,
+            );
+        }
+
+        // A LARGE JUMP FROM HERE: a fresh touch-down (point_touch(), not a
+        // continuing drag) landing far from the marker's current position -
+        // the same shape of update (an incremental repaint driven by a big
+        // angle change, not a smooth walk through every intermediate angle)
+        // that produced the ORIGINAL bug this file exists to catch. Still
+        // inside lap 2 (a tap preserves the current lap - see timer.c's
+        // point_touch() comment) so the marker should simply relocate.
+        const [px, py] = panelTouchForAngle(90);
+        twoLap.touch(true, px, py);
+        t2 += 16;
+        twoLap.tick(t2);
+        twoLap.touch(false, 0, 0);
+        t2 += 50;
+        twoLap.tick(t2);
+
+        const twoFb2 = twoLap.fbBytes();
+        const whites2 = findWhiteInRing(twoFb2);
+        // point_touch()'s own contract (timer.c): a tap preserves whichever
+        // lap is currently wound and sets the SUB-LAP position to the
+        // tapped angle - sub_lap_ticks_for_angle(90) at TICKS_PER_LAP=180 is
+        // round(90/360*180)=45. Mirrored here from twoSim.ticks (not
+        // hardcoded) so this stays correct however the preceding drag
+        // actually landed.
+        const lapAtTap = Math.floor(twoSim.ticks / TICKS_PER_LAP);
+        const newTotalAfterTap = Math.min(MAX_TICKS, lapAtTap * TICKS_PER_LAP + 45);
+        const expectedFillDeg1After = fillDegsForTicks(newTotalAfterTap)[1];
+        console.log(`    after a large jump to angle 90deg: white pixels found=${whites2.length}, expected marker near ${expectedFillDeg1After.toFixed(1)}deg`);
+        const offBand2 = whites2.filter((w) => angularDist(w.deg, expectedFillDeg1After) > MARKER_HALF_DEG + ANGLE_TOL_DEG);
+        check(
+            "after a large jump, the marker relocates cleanly - nothing left behind at the old position",
+            whites2.length > 0 && offBand2.length === 0,
+            `found ${whites2.length}, ${offBand2.length} outside the new window, e.g. ${JSON.stringify(offBand2[0])}`,
         );
 
         // Sanity check the same conclusion holds at the cheap whole-frame
-        // level too, not just at one sampled angle/radius: a one-lap and a
-        // two-lap coil must not hash identically.
-        const oneHash = Bun.hash(oneFb);
-        const twoHash = Bun.hash(twoFb);
+        // level too: the mid-lap-1 coil (no marker) and the two-lap coil
+        // (a marker) must not hash identically.
+        const midHash = Bun.hash(midLap1.fbBytes());
+        const twoHash = Bun.hash(twoFb2);
         check(
-            "a one-lap and a two-lap coil produce different framebuffers overall",
-            oneHash !== twoHash,
-            `oneHash=${oneHash} twoHash=${twoHash}`,
+            "a mid-lap-1 coil and a two-lap coil produce different framebuffers overall",
+            midHash !== twoHash,
+            `midHash=${midHash} twoHash=${twoHash}`,
         );
     }
 
