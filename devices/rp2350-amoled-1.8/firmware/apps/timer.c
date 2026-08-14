@@ -411,6 +411,79 @@
 // both, and are the function to touch if a future reading needs the two
 // turns to stop being equal width, rather than a formula living somewhere
 // else in this file working from stale assumptions.
+//
+// =========================================================================
+// CORRECTED 2026-08-14 (A THIRD TIME, THE SAME DAY): ONE ANNULUS, LAP 2
+// PAINTED OVER LAP 1 AT THE SAME RADIUS, TOLD APART BY A HALO, NOT POSITION.
+// =========================================================================
+//
+// The two-equal-turns-plus-outline layout directly above was ALSO wrong,
+// and for the same root cause as the reading before it: both were guesses
+// at a picture rather than the picture itself. The owner has now sent one:
+// "en enroulant il faut que ça ressemble à ça, pour savoir qu'on est en
+// train d'enrouler" - Apple Fitness's own activity ring past 100%. That
+// reference settles what two readings in a row could not: one ring, at ONE
+// radius, occupying the full width. Past a full lap, the second lap draws
+// ON TOP of the first, AT THE SAME RADIUS, not beside it. What tells you a
+// second lap is under way is that the leading head visibly rides over the
+// body beneath it - a rounded cap sitting proud, with a drop shadow cast
+// onto the ink underneath - reading as a ribbon overlapping itself. So BOTH
+// of this file's earlier passes today put the laps side by side radially
+// (nested turns, then equal turns plus a thin outline) when the reference
+// puts them ON TOP OF EACH OTHER. Kept above, unedited, as the record of
+// two real, deliberate readings that both turned out to be guesses at a
+// description rather than the thing itself - not dead prose to delete.
+//
+// THE DEPTH CUE, TRANSLATED INTO THIS PANEL'S OWN IDIOM. Apple's reference
+// uses a drop shadow, which needs greys and a dark background underneath -
+// neither exists here: this panel is black ink on white paper, and the
+// owner has been explicit that the whole device draws in flat colour only,
+// "que des aplats de couleur, comme si tout était fait avec de l'encre." A
+// drop shadow has no ink equivalent; what a flat-ink medium CAN do, that a
+// shadow also does, is separate one shape from another by a visible edge -
+// so the halo here is a thin band of bare PAPER between lap 2's own ink and
+// whatever lap 1 already painted beneath it, exactly the way a cut-paper
+// collage shows one piece lying on another: not by shading, by a sliver of
+// the surface underneath showing through around it. Applied only where lap
+// 2 actually covers ground lap 1 already inked - around its own leading cap
+// and along the straight edges of the overlapping stretch - never where lap
+// 2 crosses bare paper (which this mechanism cannot actually produce today:
+// see paint_overlay_row()'s own comment for why fillDeg[1] > 0 always
+// implies fillDeg[0] == 360, i.e. the entire ring is already lap 1's ink by
+// the time lap 2 ever draws anything).
+//
+// WHAT ACTUALLY GETS BUILT: RING_OUTER_R/RING_INNER_R stay 173/141, ONE
+// annulus, unchanged for the third time today (every reading has agreed the
+// outer diameter never grows and the total span is the same 32px - only
+// where inside it the ink for each lap lives has moved). Lap 1 paints that
+// full 32px span normally - the exact code the ORIGINAL, pre-band single
+// ring used, since that IS what this is again: one ring, one arc, full
+// width - see paint_band_row(), called only for band 0 from this point on.
+// Lap 2 paints OVER the same annulus, INSET by HALO_PX on both its outer
+// and inner edge wherever its own fillDeg[1] covers - see HALO_PX and
+// paint_overlay_row() below for the width chosen and why, and this file's
+// header note on isolation: HALO_PX is the one knob, paint_overlay_row()
+// is the one function, for if this reading is also wrong.
+//
+// KEEP THE ISOLATION - THIS IS THE SECOND CORRECTION TO THIS FILE'S OWN
+// COIL-DRAWING TASK IN ONE DAY, so the odds of a third are not zero either.
+// HALO_PX below is the single named constant that controls the halo's
+// width. paint_overlay_row() (and the two small helpers it calls,
+// paint_overlay_bar()/paint_overlay_zone()) is the one place the actual
+// overlap TREATMENT lives - a future correction to a different depth cue
+// (a grey fill instead of a white halo, say, if flat ink ever stops being
+// the constraint) replaces that function's body, not scattered call sites
+// elsewhere in this file. draw_lap2_cap() is the disc equivalent of the
+// same idea for the leading/fixed caps specifically - see its own comment.
+//
+// EVERY MECHANIC SURVIVES THIS PASS UNCHANGED, AGAIN: winding, lap
+// accumulation, dropout bridging, the branch cut, the 15 minute lap, the 30
+// minute ceiling, pointing, pause-then-edit, shake-to-clear. Nothing below
+// this point in the file's tick-geometry or touch-handling sections changes
+// because of this correction - only how the coil is PAINTED does, for the
+// third time today, and the owner's own verdict on the mechanics ("c'est
+// très très bien tel que c'est et là j'arrive bien à enrouler") is exactly
+// as true after this pass as before it.
 #include <math.h>
 #include <stdio.h>
 
@@ -692,6 +765,16 @@
  * even glanced at quickly.
  * ------------------------------------------------------------------- */
 /* ---------------------------------------------------------------------
+ * Ring geometry: the coil - SUPERSEDED 2026-08-14 (A THIRD TIME: overlapping
+ * annulus with a halo, not two nested turns), kept verbatim as the record
+ * of the equal-turns/thin-outline coil this project built (and, per this
+ * file's header, never actually shipped to hardware) before the owner's
+ * reference picture settled it. See this file's header, "CORRECTED
+ * 2026-08-14 (A THIRD TIME, THE SAME DAY)", for why: BAND_GAP_PX/
+ * BAND_THICK_PX/BAND_STRIDE_PX below are RETIRED, not retuned this time -
+ * the two laps no longer sit at different radii at all, so there is no
+ * "turn width" or "gap" left to divide the ring's span between; see
+ * HALO_PX in the CURRENT section immediately below for what replaces them.
  * Ring geometry: the coil, CURRENT (2026-08-14, single-ring merge). Two
  * turns, EQUAL width, wound inward, separated by a thin outline rather than
  * the previous pass's fat gap - see this file's header for the correction
@@ -745,23 +828,78 @@
  * shared half-thickness, and so one shared cap table, is correct again; see
  * the cap section below, which needed no structural change for this pass.
  * ------------------------------------------------------------------- */
-#define RING_THICK_PX      32                                     // total ring span, UNCHANGED from 2*12+8
-#define BAND_GAP_PX        4                                      // THE KNOB - outline weight; SUPERSEDED FROM 8
-#define BAND_THICK_PX      ((RING_THICK_PX - BAND_GAP_PX) / LAPS_MAX) // 14, DERIVED - SUPERSEDED FROM 12 (hand-picked)
-#define BAND_STRIDE_PX     (BAND_THICK_PX + BAND_GAP_PX)          // 18, SUPERSEDED FROM 20
-#define RING_OUTER_R       173
-#define RING_INNER_R       (RING_OUTER_R - RING_THICK_PX)         // 141, unchanged in VALUE from the previous pass
-#define RING_ROWS          (2 * RING_OUTER_R)                      // 346
-#define BAND_HALF_THICK_PX (BAND_THICK_PX / 2)                     // 7, exact (BAND_THICK_PX is even) - SUPERSEDED FROM 6
+/* ---------------------------------------------------------------------
+ * Ring geometry: the coil, CURRENT (2026-08-14, overlapping annulus). ONE
+ * ring, full 32px width, both laps painting the SAME radii - see this
+ * file's header for the reference (Apple Fitness past 100%) that settled
+ * this and retired the two-side-by-side-turns readings above.
+ *
+ * RING_OUTER_R/RING_INNER_R stay 173/141 - UNCHANGED for the third time
+ * today. Every reading this file has tried has agreed the outer diameter
+ * never grows and the ring's total span is the same 32px; only where
+ * inside that span each lap's own ink lives has moved each time.
+ *
+ * RING_THICK_PX = 32, RING_HALF_THICK_PX = 16: lap 1's own full-width ink
+ * and cap radius - this IS the ORIGINAL, pre-band single ring's own
+ * geometry, unchanged, because that is what lap 1 alone looks like again:
+ * one ring, one arc, full width, no bands to divide it with.
+ *
+ * HALO_PX = 4, THE KNOB, CHOSEN AND JUSTIFIED THE SAME WAY AS BEFORE. Not a
+ * new number: it is this file's OWN previously-measured "real boundary, not
+ * a hairline, at a glance" pixel width (see the six-band coil's retained
+ * comment further up, and the SUPERSEDED section immediately above, both of
+ * which used exactly 4px for a separating margin and confirmed it reads at
+ * a glance on this exact panel). Reused a third time rather than invented
+ * fresh, now in yet another role: not a gap between two side-by-side turns,
+ * but a halo margin on EACH of lap 2's own two radial edges (outer and
+ * inner) where it overlaps lap 1 - 4px removed from BOTH edges leaves
+ * RING_THICK_PX - 2*HALO_PX = 24px of lap 2's own ink, still three-quarters
+ * of the full ring's own width and comfortably past every earlier "reads as
+ * a substantial ring, not a hairline" threshold this file has measured
+ * (12-16px). A wider halo was rejected for the same "without eating the
+ * ink" reason the task itself names: at, say, 8px per edge, lap 2's own ink
+ * would shrink to 16px, half the ring - visually correct still, but with no
+ * margin of its own left over the "substantial ring" threshold, and no
+ * reason to spend it when 4px is already a proven, comfortable choice. A
+ * narrower halo (2px) was rejected for the SAME reason it was rejected as
+ * an outline width in the SUPERSEDED section above: it sits close to the
+ * ~1px worst-case slack this file's own per-row lroundf rounding already
+ * produces (see the rounded-cap history below), risking the halo locally
+ * closing to nothing on some rows - exactly the "does not read at arm's
+ * length" failure the task warns against.
+ *
+ * INSET_OUTER_R/INSET_INNER_R/INSET_HALF_THICK_PX are lap 2's own ink
+ * radii, HALO_PX narrower on each side than lap 1's: 173-4=169, 141+4=145,
+ * (169-145)/2=12. Both bands' own per-row half-width tables (s_hwOuter[b]/
+ * s_hwInner[b]) are still built exactly as before, just against these two
+ * DIFFERENT radius pairs now (band 0 = the full ring, band 1 = the inset
+ * ink) rather than against two side-by-side bands - see band_outer_r()/
+ * band_inner_r() below, and paint_overlay_row() further down for how the
+ * inset tables and the full tables TOGETHER define the halo margin as the
+ * difference between them, row by row.
+ *
+ * RING_CENTERLINE_R = 157, the midline of the FULL ring - both lap 1's own
+ * cap and lap 2's own (halo disc + inset ink disc) sit at this SAME radius
+ * now, since they are the same annulus, not two annuli at different radii;
+ * see cap_center() below, which no longer takes a band argument for exactly
+ * this reason.
+ * ------------------------------------------------------------------- */
+#define RING_OUTER_R        173
+#define RING_INNER_R        141
+#define RING_THICK_PX       (RING_OUTER_R - RING_INNER_R)         // 32, unchanged for the third time today
+#define RING_ROWS           (2 * RING_OUTER_R)                     // 346
+#define RING_HALF_THICK_PX  (RING_THICK_PX / 2)                    // 16 - lap 1's own cap/halo-disc radius
+#define RING_CENTERLINE_R   ((RING_OUTER_R + RING_INNER_R) / 2)    // 157 - BOTH laps' caps sit here now
+#define HALO_PX             4                                      // THE KNOB - halo width per edge
+#define INSET_OUTER_R       (RING_OUTER_R - HALO_PX)               // 169
+#define INSET_INNER_R       (RING_INNER_R + HALO_PX)                // 145
+#define INSET_HALF_THICK_PX (RING_HALF_THICK_PX - HALO_PX)         // 12 - lap 2's own ink-disc radius
 
 static inline float band_outer_r(int band) {
-    return (float)RING_OUTER_R - (float)band * (float)BAND_STRIDE_PX;
+    return band == 0 ? (float)RING_OUTER_R : (float)INSET_OUTER_R;
 }
 static inline float band_inner_r(int band) {
-    return band_outer_r(band) - (float)BAND_THICK_PX;
-}
-static inline float band_centerline_r(int band) {
-    return band_outer_r(band) - (float)BAND_HALF_THICK_PX;
+    return band == 0 ? (float)RING_INNER_R : (float)INSET_INNER_R;
 }
 
 // Track (the always-visible full ring under the arc) and tick marks: light
@@ -1141,10 +1279,20 @@ static void paint_ring_bar(int y, int dxLo, int dxHi, float dyCenter, float fill
 // up to two bars (left, right) plus the single dx=0 column on rows with no
 // hole for THIS band (its own caps, where hwInner is 0): the single-ring
 // version's paint_ring_row body, unchanged in substance, just parameterised
-// over which band's tables and fillDeg to read. Bands whose hwOuter is 0 at
-// this row (the row is outside that band's own radius) are skipped - the
-// whole reason LAPS_MAX independent per-band tables exist rather than one
-// shared one.
+// over which band's tables and fillDeg to read.
+//
+// CALLED FOR BAND 0 ONLY, as of the overlapping-annulus pass (this file's
+// header, "CORRECTED... A THIRD TIME"): band 0's own tables are now the
+// FULL ring (RING_OUTER_R/RING_INNER_R), so this function alone paints lap
+// 1's own full-width ink and track - literally the ORIGINAL, pre-band
+// single ring's own paint_ring_row body, unmodified even in name. Lap 2's
+// own painting is a DIFFERENT function, paint_overlay_row() below, because
+// lap 2 does not get a flat black-or-grey choice the way lap 1 does: where
+// lap 2 has not reached, it must leave lap 1's ink untouched rather than
+// paint anything (not even grey), and where it has, it paints three radial
+// zones (halo/ink/halo), not one flat colour - see that function's own
+// header for why this could not just be a second call to this same
+// function.
 static void paint_band_row(int y, int rowIdx, int band, float fillDeg) {
     int hwOuter = s_hwOuter[band][rowIdx];
     int hwInner = s_hwInner[band][rowIdx];
@@ -1166,18 +1314,138 @@ static void paint_band_row(int y, int rowIdx, int band, float fillDeg) {
     if (rightLo <= rightHi) paint_ring_bar(y, rightLo, rightHi, dyCenter, fillDeg);
 }
 
-// Paints every band's portion of landscape row y, at each band's own
-// fillDeg (fillDeg[0] = outermost/lap 1 .. fillDeg[LAPS_MAX-1] =
-// innermost/last lap). The white gap between bands is never written by
-// this function (only each band's own [hwInner, hwOuter] shell is): it is
-// established once, correctly, by the runtime clearing the framebuffer to
-// white before enter() (app.h), and stays correct forever because the
-// coil's geometry is static - no band ever changes size, only its own
-// arc's fillDeg does - so nothing ever needs to repaint the gap.
+/* ---------------------------------------------------------------------
+ * THE OVERLAP TREATMENT - the one place lap 2's own "ride over lap 1, with
+ * a halo" idea actually lives. See this file's header for the correction
+ * that produced this and the isolation promise: HALO_PX (above) is the
+ * only named constant that controls the halo's width; paint_overlay_row()
+ * and its two small helpers below are the only place the RENDERING of the
+ * overlap lives, so a future correction to a different depth cue replaces
+ * this block, not scattered call sites elsewhere in this file.
+ *
+ * For every pixel lap 2's own progress covers (its own clockwise-from-12
+ * angle < fillDeg1), paints a THREE-ZONE radial split at that pixel's own
+ * row: a white outer-margin halo, black ink, a white inner-margin halo -
+ * HALO_PX narrower on each radial edge than lap 1's own full-width ink.
+ * For every pixel lap 2 has not reached yet, this writes NOTHING AT ALL:
+ * lap 1's own base pass (paint_band_row, called first, always, for band 0)
+ * has already painted the correct ink there, and this function must leave
+ * it exactly alone.
+ *
+ * THIS NEVER ACTUALLY PAINTS OVER BARE PAPER, though the logic below does
+ * not assume that: compute_band_fill_degs (unchanged mechanics, see this
+ * file's header) only ever gives fillDeg[1] > 0 once fillDeg[0] == 360 -
+ * lap 2 cannot start until lap 1 has fully wound the whole ring - so every
+ * angle this function might cover is, by construction, ground lap 1 has
+ * already inked. An uncovered angle is simply left alone regardless of
+ * what is under it, which happens to always be lap 1's own solid black.
+ *
+ * THE THREE ZONE BOUNDARIES, per row, computed once and reused for both
+ * the left and right side: zInner = this row's own FULL-ring inner
+ * half-width (0 if this row has no hole); zInkLo/zInkHi = the INSET ring's
+ * own half-widths at this row, clamped so they can never invert. Near the
+ * very top/bottom of the ring, the inset ring's own vertical reach ends
+ * before the full ring's does (INSET_OUTER_R < RING_OUTER_R), which the
+ * clamp resolves by collapsing the ink zone to empty - the whole covered
+ * range at such a row is pure halo, matching a thin sliver of white right
+ * at the ring's own cap-like closure, with no ink peeking through at all.
+ * ------------------------------------------------------------------- */
+
+// Fills [magLo, magHi] (an UNSIGNED magnitude range, inclusive, possibly
+// empty) on the given side (sign=-1 left, +1 right) of row y with `color`.
+// The magnitude/sign split lets paint_overlay_bar() below reason about the
+// three radial zones once, in unsigned terms, and use this same helper on
+// either side without duplicating the sign logic per zone.
+static void paint_overlay_zone(int y, int sign, int magLo, int magHi, uint16_t color) {
+    if (magLo > magHi) return;
+    int dx0 = sign > 0 ? magLo : -magHi;
+    int w = magHi - magLo + 1;
+    gfx_fill_rect_land(RING_CX + dx0, y, w, 1, color);
+}
+
+// Same binary-search technique paint_ring_bar() uses (phi(dx) is monotonic
+// across a same-sign bar - see that function's own comment) to find the
+// sub-range of [dxLo,dxHi] lap 2's own fillDeg1 actually covers, then
+// slices ONLY that covered sub-range into the halo's three radial zones
+// (zInkLo/zInkHi mark the ink zone's own unsigned bounds within this same
+// bar) - unlike paint_ring_bar, the UNCOVERED sub-range is never painted at
+// all, on purpose, so lap 1's own ink shows through untouched wherever lap
+// 2 has not reached yet.
+static void paint_overlay_bar(int y, int dxLo, int dxHi, float dyCenter, float fillDeg1, int zInkLo, int zInkHi) {
+    float phiLo = phi_deg_for_col(dxLo, dyCenter);
+    float phiHi = phi_deg_for_col(dxHi, dyCenter);
+    bool loCovered = phiLo < fillDeg1;
+    bool hiCovered = phiHi < fillDeg1;
+
+    int covLo, covHi;
+    if (loCovered && hiCovered) {
+        covLo = dxLo; covHi = dxHi;
+    } else if (!loCovered && !hiCovered) {
+        return;
+    } else {
+        int lo = dxLo, hi = dxHi; // lo stays on the loCovered side, hi on the other
+        while (hi - lo > 1) {
+            int mid = (lo + hi) / 2;
+            bool midCovered = phi_deg_for_col(mid, dyCenter) < fillDeg1;
+            if (midCovered == loCovered) lo = mid; else hi = mid;
+        }
+        if (loCovered) { covLo = dxLo; covHi = lo; } else { covLo = hi; covHi = dxHi; }
+    }
+
+    int sign = dxLo < 0 ? -1 : 1;
+    int a = covLo < 0 ? -covLo : covLo;
+    int b = covHi < 0 ? -covHi : covHi;
+    int magLo = a < b ? a : b;
+    int magHi = a < b ? b : a;
+
+    paint_overlay_zone(y, sign, magLo, (magHi < zInkLo - 1 ? magHi : zInkLo - 1), PX_WHITE); // near/inner margin
+    int inkLo = magLo > zInkLo ? magLo : zInkLo;
+    int inkHi = magHi < zInkHi - 1 ? magHi : zInkHi - 1;
+    paint_overlay_zone(y, sign, inkLo, inkHi, PX_BLACK);
+    int farLo = magLo > zInkHi ? magLo : zInkHi;
+    paint_overlay_zone(y, sign, farLo, magHi, PX_WHITE); // far/outer margin
+}
+
+static void paint_overlay_row(int y, int rowIdx, float fillDeg1) {
+    if (fillDeg1 <= 0.0f) return;
+    int hwOuterFull = s_hwOuter[0][rowIdx];
+    int hwInnerFull = s_hwInner[0][rowIdx];
+    if (hwOuterFull <= 0) return;
+    int hwOuterInset = s_hwOuter[1][rowIdx];
+    int hwInnerInset = s_hwInner[1][rowIdx];
+    float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R;
+
+    int zInner = hwInnerFull > 0 ? hwInnerFull : 0;
+    int zInkLo = hwInnerInset > zInner ? hwInnerInset : zInner;
+    int zInkHi = hwOuterInset > zInkLo ? hwOuterInset : zInkLo;
+    int zOuter = hwOuterFull;
+
+    if (hwInnerFull <= 0) {
+        float phi0 = dyCenter < 0.0f ? 0.0f : 180.0f;
+        if (phi0 < fillDeg1) {
+            uint16_t c0 = (0 >= zInkLo && 0 < zInkHi) ? PX_BLACK : PX_WHITE;
+            gfx_fill_rect_land(RING_CX, y, 1, 1, c0);
+        }
+    }
+
+    int leftLo = -zOuter;
+    int leftHi = zInner > 0 ? -zInner : -1;
+    if (leftLo <= leftHi) paint_overlay_bar(y, leftLo, leftHi, dyCenter, fillDeg1, zInkLo, zInkHi);
+
+    int rightLo = zInner > 0 ? zInner : 1;
+    int rightHi = zOuter;
+    if (rightLo <= rightHi) paint_overlay_bar(y, rightLo, rightHi, dyCenter, fillDeg1, zInkLo, zInkHi);
+}
+
+// Paints lap 1's own full-width ink/track (band 0) for landscape row y,
+// then lap 2's own overlay (halo + inset ink) ON TOP for the same row if
+// it has anything to draw - the order matters, and is what makes lap 2
+// read as lying over lap 1 rather than beside it (see this file's header).
 static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
     int rowIdx = y - (RING_CY - RING_OUTER_R);
     if (rowIdx < 0 || rowIdx >= RING_ROWS) return;
-    for (int b = 0; b < LAPS_MAX; b++) paint_band_row(y, rowIdx, b, fillDeg[b]);
+    paint_band_row(y, rowIdx, 0, fillDeg[0]);
+    paint_overlay_row(y, rowIdx, fillDeg[1]);
 }
 
 /* ---------------------------------------------------------------------
@@ -1238,50 +1506,65 @@ static void paint_ring_row(int y, const float fillDeg[LAPS_MAX]) {
  * is being measured against the identical yardstick - see
  * draw_cap_row_clipped() below.
  *
- * ADDENDUM, 2026-08-14 (single-ring merge): this pass's own retune
- * (BAND_GAP_PX down, BAND_THICK_PX derived - see this file's header and the
- * "Ring geometry" section above) changes BAND_HALF_THICK_PX from 6 to 7 but
- * keeps it the SAME for both bands, unlike a rejected earlier reading of
- * the owner's instruction that would have given the two laps different
- * thicknesses (see the header's "FIRST READING, TRIED AND REJECTED"). One
- * shared s_capHw table, sized off one shared BAND_HALF_THICK_PX, is
- * therefore still exactly correct here with no structural change needed -
- * only the numbers CAP_TABLE_ROWS/s_capHw compute from move.
+ * ADDENDUM, 2026-08-14 (single-ring merge, since superseded): this pass's
+ * own retune (BAND_GAP_PX down, BAND_THICK_PX derived - see this file's
+ * header and the "Ring geometry" section above) changed BAND_HALF_THICK_PX
+ * from 6 to 7 while keeping it the SAME for both bands, one shared cap
+ * table. That whole reading (two turns side by side) is itself now
+ * SUPERSEDED - see the next ADDENDUM.
+ *
+ * ADDENDUM, 2026-08-14 (A THIRD TIME: overlapping annulus). The clip
+ * discipline above (draw_cap_row_clipped(), clip every cap row against the
+ * SAME per-row bounds paint_band_row() itself reads) is exactly what still
+ * makes lap 2's own cap safe now that it draws two DIFFERENT-sized discs at
+ * the SAME centreline instead of one disc per band at different centrelines
+ * - see draw_lap2_cap() below. What changes structurally: the two laps no
+ * longer share one cap table (band_centerline_r's per-band divergence is
+ * retired - both laps' caps sit at the SAME RING_CENTERLINE_R now), and lap
+ * 2 needs TWO tables of its own, not one: a FULL-size one (radius
+ * RING_HALF_THICK_PX, 16 - the SAME size as lap 1's own cap, reused for lap
+ * 2's white halo disc, since the halo has to fully cover whatever lap 1
+ * painted underneath before the smaller black disc goes on top of it) and
+ * an INSET one (radius INSET_HALF_THICK_PX, 12 - lap 2's own black ink
+ * disc, clipped against band 1's own inset-ring bounds so it can never
+ * bleed past the halo it sits inside). See draw_disc()/draw_lap2_cap()
+ * below for the two-disc stamp this becomes.
  * ------------------------------------------------------------------- */
-#define CAP_TABLE_ROWS (2 * BAND_HALF_THICK_PX) // 14, exact - BAND_HALF_THICK_PX is a
-                                                 // whole number this time (BAND_THICK_PX
-                                                 // is even), so unlike the six-band
-                                                 // coil's cramped 1.5px half-thickness
-                                                 // this needs no headroom row for a
-                                                 // float ceil() the preprocessor cannot
-                                                 // do - same exact sizing the ORIGINAL
-                                                 // single ring used for its own
-                                                 // 2*RING_HALF_THICK.
-static int16_t s_capHw[CAP_TABLE_ROWS];
+#define CAP_ROWS_FULL  (2 * RING_HALF_THICK_PX)  // 32 - lap 1's own cap, and lap 2's white halo disc (SAME size)
+#define CAP_ROWS_INSET (2 * INSET_HALF_THICK_PX) // 24 - lap 2's own black ink disc, HALO_PX smaller on each side
+static int16_t s_capHwFull[CAP_ROWS_FULL];
+static int16_t s_capHwInset[CAP_ROWS_INSET];
 static bool s_capTableReady = false;
 
 static void ensure_cap_table(void) {
     if (s_capTableReady) return;
-    shapes_fill_half_width_table(s_capHw, CAP_TABLE_ROWS, (float)BAND_HALF_THICK_PX);
+    shapes_fill_half_width_table(s_capHwFull, CAP_ROWS_FULL, (float)RING_HALF_THICK_PX);
+    shapes_fill_half_width_table(s_capHwInset, CAP_ROWS_INSET, (float)INSET_HALF_THICK_PX);
     s_capTableReady = true;
 }
 
-static void cap_center(int band, float deg, int *cx, int *cy) {
+// No `band` argument any more: lap 1's own cap and both of lap 2's own
+// discs (halo + ink) sit at the SAME RING_CENTERLINE_R now, since they are
+// the same annulus at the same radius, not two annuli at different radii -
+// see this file's header for why. Only `deg` (which cap: 0 for the fixed
+// start, fillDeg for the moving tip) and which lap is drawing (handled by
+// the caller picking a colour/clip-band/table, not by this function) vary.
+static void cap_center(float deg, int *cx, int *cy) {
     float mathAngle = (deg - 90.0f) * TIMER_DEG2RAD;
-    float r = band_centerline_r(band);
+    float r = (float)RING_CENTERLINE_R;
     *cx = RING_CX + (int)lroundf(r * cosf(mathAngle));
     *cy = RING_CY + (int)lroundf(r * sinf(mathAngle));
 }
 
 // Draws the portion of [dxLo, dxHi] (RING_CX-relative dx, inclusive) at
 // landscape row y that band `band` actually owns at that row, per
-// s_hwOuter[band]/s_hwInner[band] - the same tables paint_band_row() reads,
-// so a cap can never disagree with what the rest of this file considers
-// that band's own territory. Mirrors paint_band_row's own two-bars-or-solid
-// logic (see that function's comment) rather than calling it, because that
-// function paints EVERY band at a row unconditionally; this one draws only
-// the single band a single cap belongs to, clipped to an arbitrary input
-// range rather than the row's own full width.
+// s_hwOuter[band]/s_hwInner[band] - the same tables paint_band_row()/
+// paint_overlay_row() themselves use, so a cap or halo disc can never
+// disagree with what the rest of this file considers that band's own
+// territory. Mirrors paint_band_row's own two-bars-or-solid logic (see that
+// function's comment) rather than calling it, because that function paints
+// a whole row unconditionally; this one draws only the clipped range a
+// single disc's own row needs.
 static void draw_cap_row_clipped(int band, int y, int rowIdx, int dxLo, int dxHi, uint16_t color) {
     if (rowIdx < 0 || rowIdx >= RING_ROWS) return; // off the shared grid entirely - defensive, should not happen
     int hwOuter = s_hwOuter[band][rowIdx];
@@ -1309,27 +1592,66 @@ static void draw_cap_row_clipped(int band, int y, int rowIdx, int dxLo, int dxHi
     if (rightLo <= rightHi) gfx_fill_rect_land(RING_CX + rightLo, y, rightHi - rightLo + 1, 1, color);
 }
 
-static void draw_cap(int band, float deg) {
+// Generic filled-disc painter, shared by lap 1's own cap and both of lap
+// 2's own discs (halo + ink): stamps `capHw`/`capRows`'s own circle,
+// centred at (cx,cy), in `color`, clipped against `clipBand`'s own per-row
+// territory (draw_cap_row_clipped(), see its own history for why the clip
+// exists at all).
+static void draw_disc(int clipBand, int cx, int cy, const int16_t *capHw, int capRows, uint16_t color) {
+    int cxRel = cx - RING_CX;
+    for (int row = 0; row < capRows; row++) {
+        int hw = capHw[row];
+        if (hw <= 0) continue;
+        int y = cy - capRows / 2 + row;
+        int rowIdx = y - (RING_CY - RING_OUTER_R);
+        draw_cap_row_clipped(clipBand, y, rowIdx, cxRel - hw, cxRel + hw - 1, color);
+    }
+}
+
+// Lap 1's own single cap: a plain black disc, full ring radius, clipped
+// against band 0 (the full ring) - unchanged in effect from every earlier
+// version of this file's single-ring cap.
+static void draw_cap(float deg) {
     ensure_cap_table();
     int cx, cy;
-    cap_center(band, deg, &cx, &cy);
-    int cxRel = cx - RING_CX;
-    for (int row = 0; row < CAP_TABLE_ROWS; row++) {
-        int hw = s_capHw[row];
-        if (hw <= 0) continue;
-        int y = cy - CAP_TABLE_ROWS / 2 + row;
-        int rowIdx = y - (RING_CY - RING_OUTER_R);
-        draw_cap_row_clipped(band, y, rowIdx, cxRel - hw, cxRel + hw - 1, PX_BLACK);
-    }
+    cap_center(deg, &cx, &cy);
+    draw_disc(0, cx, cy, s_capHwFull, CAP_ROWS_FULL, PX_BLACK);
+}
+
+// LAP 2'S OWN CAP - the disc equivalent of paint_overlay_row's straight-edge
+// halo, and the part of this picture that reads most directly as "riding
+// over" lap 1: first stamp a WHITE halo disc the SAME SIZE as lap 1's own
+// cap (clipped against band 0, the full ring, so it can never bleed past
+// the ring's own outer/inner edge - this is what erases whatever lap 1's
+// ink painted directly underneath, the disc equivalent of the straight
+// halo margin), THEN stamp a smaller BLACK ink disc on top (clipped against
+// band 1, the inset ring, so it can never bleed past its own halo) - the
+// two-disc stack IS the "rounded cap sitting proud, with a drop shadow"
+// look, translated into flat ink: no shading, just paper showing through
+// in a ring around a smaller black disc.
+static void draw_lap2_cap(float deg) {
+    ensure_cap_table();
+    int cx, cy;
+    cap_center(deg, &cx, &cy);
+    draw_disc(0, cx, cy, s_capHwFull, CAP_ROWS_FULL, PX_WHITE);
+    draw_disc(1, cx, cy, s_capHwInset, CAP_ROWS_INSET, PX_BLACK);
 }
 
 // Both caps for one band, or none: with no arc for that band (fillDeg <= 0,
 // meaning that lap has not been reached yet) there is nothing to round the
-// end of. Same "both or none" rule the single ring used, per band.
+// end of. Band 0 (lap 1) gets its own plain black cap; band 1 (lap 2) gets
+// the halo+ink two-disc stamp instead - the two bands are no longer
+// interchangeable here (see this file's header): only band 1 needs to look
+// like it is lying on top of something.
 static void draw_arc_caps(int band, float fillDeg) {
     if (fillDeg <= 0.0f) return;
-    draw_cap(band, 0.0f);
-    draw_cap(band, fillDeg);
+    if (band == 0) {
+        draw_cap(0.0f);
+        draw_cap(fillDeg);
+    } else {
+        draw_lap2_cap(0.0f);
+        draw_lap2_cap(fillDeg);
+    }
 }
 
 // Paints every band at its own fillDeg across the coil's full bounding box,
@@ -1350,41 +1672,36 @@ static void paint_ring_full(const float fillDeg[LAPS_MAX]) {
 // repaint that does not account for that overshoot leaves a stuck sliver of
 // stale ink behind it).
 //
-// RECOMPUTED 2026-08-14 (STILL LATER: single-ring merge, thin outline) for
-// this file's current geometry (BAND_HALF_THICK_PX=7, both bands equal
-// again - see this file's header for why the retuning that produced this
-// pass turns BAND_GAP_PX, not BAND_THICK_PX, so both bands stay the same
-// thickness and this margin needs computing only once, not per band;
-// smallest radius at the innermost band, b=1: band_centerline_r(1) =
-// 173 - 1*18 - 7 = 148 - SUPERSEDED FROM 147). Same tangent-line bound as
-// before, max half-angle = asin(BAND_HALF_THICK_PX / radius), evaluated at
-// the SMALLEST radius on purpose (asin grows as radius shrinks for a fixed
-// half-thickness, so the innermost band is every band's worst case, and one
-// shared conservative constant for all bands is simpler and safer than one
-// per band for a quantity this cheap to over-provision): asin(7/148) =
-// asin(0.04730) = 2.711 degrees - SUPERSEDED FROM 2.339, a small increase
-// tracking BAND_HALF_THICK_PX's own small increase (6 -> 7) at a nearly
-// unchanged radius (147 -> 148). Not computed at runtime, same reason as
-// before - asinf is not in this project's emulator ABI (see
+// RECOMPUTED 2026-08-14 (A THIRD TIME: overlapping annulus) for this file's
+// current geometry. Both laps' caps now share ONE radius, RING_CENTERLINE_R
+// (157), and the WORST-CASE half-thickness at that radius is lap 1's own
+// (and lap 2's own halo disc's) RING_HALF_THICK_PX (16) - the full ring's
+// own cap, not the smaller inset ink disc, since a bigger disc bulges
+// further past its own exact angle for the same tangent-line reason every
+// earlier pass of this constant used (asin grows with half-thickness at a
+// fixed radius). Same bound as before, max half-angle = asin(RING_HALF_
+// THICK_PX / RING_CENTERLINE_R) = asin(16/157) = asin(0.10191) = 5.849
+// degrees - SUPERSEDED FROM 2.711, a real increase (not just tracking a
+// small constant change this time): the two-nested-turns reading this pass
+// retires had shrunk each turn's own half-thickness to 7px specifically to
+// fit two turns side by side; the overlapping-annulus reading needs no such
+// shrink (lap 1 is a full 16px-half-thickness ring again, the ORIGINAL
+// single ring's own size), so this margin grows back to roughly what a
+// single 32px-wide ring's own cap always needed. Not computed at runtime,
+// same reason as before - asinf is not in this project's emulator ABI (see
 // emulator/wasm/shim/math.h's header comment) - so this is again one more
-// number computed once by reasoning. Rounded up to 4.5 degrees (roughly
-// 1.66x the analytic value, generously past the ~1.5x headroom discipline
-// every earlier pass of this constant used, since this pass touches the
-// margin for the first time alongside a real change to the outline it has
-// to sweep clear of). Also worth noting:
-// this margin's OWN job shrank with this pass's cap-clipping fix
-// (draw_cap_row_clipped(), see this file's header) - a cap can no longer
-// paint outside its own band's radius regardless of this margin, so
-// CAP_SWEEP_MARGIN_DEG now only has to be wide enough to sweep the rows a
-// cap's TANGENTIAL reach touches, not to prevent a radial leak; kept
-// generously sized anyway rather than trimmed to the new, narrower job, on
-// the same "cheap to over-provision" reasoning as always. Verified
-// sufficient by this file's own regression test (repro-ring-shrink-
-// residue.ts, extended for the coil and again for this pass's own gap-
-// residue defect - see that file), which drives the same drag-up-then-down
-// and smooth-countdown scenarios the single ring's version did, now scanning
-// both bands.
-#define CAP_SWEEP_MARGIN_DEG 4.5f
+// number computed once by reasoning. Rounded up to 9.0 degrees (roughly
+// 1.54x the analytic value, the same ~1.5x headroom discipline every
+// earlier pass of this constant used). Also worth noting: this margin's OWN
+// job shrank with the cap-clipping fix (draw_cap_row_clipped(), see this
+// file's header) - a cap can no longer paint outside its own band's radius
+// regardless of this margin, so CAP_SWEEP_MARGIN_DEG only has to be wide
+// enough to sweep the rows a cap's TANGENTIAL reach touches, not to prevent
+// a radial leak; kept generously sized anyway rather than trimmed to the
+// narrower job, on the same "cheap to over-provision" reasoning as always.
+// Verified sufficient by this file's own regression test (repro-ring-
+// shrink-residue.ts, extended for this pass too - see that file).
+#define CAP_SWEEP_MARGIN_DEG 9.0f
 
 // Bounding landscape row range [*yLo, *yHi] that could contain any pixel,
 // AT THE GIVEN BAND'S OWN RADII, whose angle lies in [fromDeg, toDeg]
@@ -1440,23 +1757,28 @@ static void ring_sweep_row_range(float fromDeg, float toDeg, float outerR, float
 // on how many bands changed or how far, only the SIZE of the work does.
 //
 // WHY EVERY AT-RISK BAND'S CAPS ARE REDRAWN, NOT JUST THE CHANGED ONES'
-// OWN: because bands are concentric, a single landscape row can carry ink
-// from BOTH bands at once (near RING_CY, where |dy| is small, both bands'
-// own hwOuter/hwInner tables are still nonzero). A sweep triggered by band
-// X's change repaints every band's plain bars at the rows it touches
-// (paint_ring_row always loops over all LAPS_MAX bands per row, not just
-// the one that moved), which is correct ink for the OTHER band wherever its
-// own fillDeg did not move - EXCEPT at the specific rows where its own
-// rounded cap used to sit, which a plain bar repaint would flatten back to
-// a sharp cut. So after painting the swept rows, every band whose own
+// OWN: as of the overlapping-annulus reading (this file's header), the two
+// bands share the SAME radii across the ENTIRE ring, not just near RING_CY,
+// so this is now true at EVERY swept row, not merely a special case near
+// the centre. paint_ring_row() always paints band 0's own full-width bars
+// first for a swept row (correct ink for lap 1 wherever its own fillDeg[0]
+// did not move) and then, unconditionally, calls paint_overlay_row() for
+// lap 2 - EXCEPT at the specific rows where either lap's own rounded cap
+// used to sit, which a plain row repaint would flatten back to a sharp cut
+// (lap 1's own cap) or erase entirely (lap 2's own halo+ink disc, which a
+// plain overlay row-paint does not reproduce - see paint_overlay_row's own
+// header). So after painting the swept rows, every band whose own
 // cap-row-span intersects [yLo, yHi] - changed or not - gets its caps
-// redrawn on top, the direct per-band generalisation of the single ring's
-// "both caps redrawn on every call... simpler to get right than proving the
-// sweep already covers them". This costs nothing extra in push-rectangle
-// size when the band's cap was already inside [yLo, yHi] (the whole reason
-// it is "at risk"); it only grows the push rectangle for the rarer case of
-// a band's FIXED start cap sitting outside the current sweep, the same case
-// the single ring's own version already had to grow the rectangle for.
+// redrawn on top, band 0 first and band 1 last (the loop's own natural
+// order), which is what guarantees lap 2's cap always ends up visually ON
+// TOP of lap 1's whenever both get redrawn in the same call - see this
+// file's header for why that Z-order matters here in a way it never did
+// when the two laps occupied disjoint radii. This costs nothing extra in
+// push-rectangle size when the band's cap was already inside [yLo, yHi]
+// (the whole reason it is "at risk"); it only grows the push rectangle for
+// the rarer case of a band's FIXED start cap sitting outside the current
+// sweep, the same case the single ring's own version already had to grow
+// the rectangle for.
 static void update_ring_to(timer_state_t *s, const float newFillDeg[LAPS_MAX]) {
     float clamped[LAPS_MAX];
     bool changed[LAPS_MAX];
@@ -1483,8 +1805,17 @@ static void update_ring_to(timer_state_t *s, const float newFillDeg[LAPS_MAX]) {
         float sweepToDeg = toDeg + CAP_SWEEP_MARGIN_DEG;
         if (sweepFromDeg < 0.0f) sweepFromDeg = 0.0f;
         if (sweepToDeg > 360.0f) sweepToDeg = 360.0f;
+        // FULL ring radii, ALWAYS, regardless of which band `b` changed -
+        // SUPERSEDED from the two-nested-turns reading's own band_outer_r(b)/
+        // band_inner_r(b) here: that was correct when each band occupied its
+        // own disjoint radii, but now band 1's own change (the overlay) can
+        // repaint anywhere within the FULL 32px span (its halo margins reach
+        // all the way to RING_OUTER_R/RING_INNER_R, not just its own inset
+        // ink radii) - see this file's header. Using the full ring's own
+        // radii for both bands' sweeps is simply correct here, not merely a
+        // safe over-approximation.
         int by0, by1;
-        ring_sweep_row_range(sweepFromDeg, sweepToDeg, band_outer_r(b), band_inner_r(b), &by0, &by1);
+        ring_sweep_row_range(sweepFromDeg, sweepToDeg, (float)RING_OUTER_R, (float)RING_INNER_R, &by0, &by1);
         if (by0 < yLo) yLo = by0;
         if (by1 > yHi) yHi = by1;
     }
@@ -1495,10 +1826,17 @@ static void update_ring_to(timer_state_t *s, const float newFillDeg[LAPS_MAX]) {
         if (clamped[b] <= 0.0f) continue; // nothing drawn for this band, nothing to protect
         bool atRisk = changed[b];
         int cx0, cy0, cx1, cy1;
-        cap_center(b, 0.0f, &cx0, &cy0);
-        cap_center(b, clamped[b], &cx1, &cy1);
-        int capLo = (cy0 < cy1 ? cy0 : cy1) - CAP_TABLE_ROWS / 2;
-        int capHi = (cy0 > cy1 ? cy0 : cy1) + CAP_TABLE_ROWS / 2 - 1;
+        // No band argument to cap_center() any more - both laps' caps sit
+        // at the SAME RING_CENTERLINE_R, see this file's header - only
+        // `clamped[b]` (which angle) varies by band here, not the radius.
+        cap_center(0.0f, &cx0, &cy0);
+        cap_center(clamped[b], &cx1, &cy1);
+        // CAP_ROWS_FULL, not a per-band size: lap 1's own cap and lap 2's
+        // own white halo disc are BOTH this size (lap 2's smaller black ink
+        // disc nests inside it), so this is the correct, conservative row
+        // span for either band's own cap-redraw bookkeeping.
+        int capLo = (cy0 < cy1 ? cy0 : cy1) - CAP_ROWS_FULL / 2;
+        int capHi = (cy0 > cy1 ? cy0 : cy1) + CAP_ROWS_FULL / 2 - 1;
         if (!atRisk) atRisk = !(capHi < yLo || capLo > yHi);
         if (!atRisk) continue;
         draw_arc_caps(b, clamped[b]);
