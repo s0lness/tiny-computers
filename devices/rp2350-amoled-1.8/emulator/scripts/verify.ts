@@ -12,7 +12,10 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 
 const ROOT = join(import.meta.dir, "..");
-const PORT = 53309;
+// A fixed scratch port made this test capable of talking to a stale server
+// from an earlier run and reporting its behaviour as the current checkout's.
+// Pick a high random port so a leftover listener cannot falsify the result.
+const PORT = 54000 + Math.floor(Math.random() * 10000);
 const CHROME = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const WASM_FILE = join(ROOT, "wasm", "dist", "emu.wasm");
 
@@ -44,6 +47,23 @@ let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
 try {
   await waitForServer(`http://127.0.0.1:${PORT}/`, 15000);
   console.log("server up");
+
+  for (const path of ["/api/freeze", "/api/trace"]) {
+    const unguarded = await fetch(`http://127.0.0.1:${PORT}${path}`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    if (unguarded.status !== 403) fail(`${path} accepted a write without the anti-CSRF header (HTTP ${unguarded.status})`);
+
+    const guarded = await fetch(`http://127.0.0.1:${PORT}${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-rp2350-emulator": "1" },
+      body: "not json",
+    });
+    if (guarded.status !== 400) fail(`${path} did not reach JSON validation with the anti-CSRF header (HTTP ${guarded.status})`);
+  }
+  console.log("write routes reject unguarded requests");
 
   browser = await puppeteer.launch({ executablePath: CHROME, headless: true });
   const page = await browser.newPage();
