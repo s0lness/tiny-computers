@@ -1644,19 +1644,28 @@ static void paint_head_outline_row(int y, int rowIdx, float deg) {
     cap_centre(deg, &dxCap, &dyCap);
     float dyCenter = ((float)rowIdx + 0.5f) - (float)RING_OUTER_R;
     float dv = dyCenter - dyCap;
-    float outer2 = (float)(CAP_R * CAP_R);
-    float innerR = (float)(CAP_R - HEAD_OUTLINE_PX);
-    float inner2 = innerR * innerR;
-    if (dv * dv >= outer2) return;
-    float half = sqrtf(outer2 - dv * dv);
+    float outerR = (float)CAP_R + 0.5f;
+    float innerR = (float)(CAP_R - HEAD_OUTLINE_PX) - 0.5f;
+    if (dv * dv >= outerR * outerR) return;
+    float half = sqrtf(outerR * outerR - dv * dv);
     int lo = (int)floorf(dxCap - half), hi = (int)ceilf(dxCap + half);
     for (int dx = lo; dx <= hi; dx++) {
         int adx = dx < 0 ? -dx : dx;
         if (adx > hwOuter) continue;
         if (hwInner > 0 && adx < hwInner) continue;
         float du = ((float)dx + 0.5f) - dxCap;
-        float d2 = du * du + dv * dv;
-        if (d2 > outer2 || d2 < inner2) continue;
+        float dist = sqrtf(du * du + dv * dv);
+        // Anti-aliased on both radial edges, same coverage convention as
+        // paint_cap_row and shapes.c. The crescent is white ink laid on lap
+        // 1's solid black, so the blend runs black to white and the pixel is
+        // simply 255 * coverage. Without this the curve that actually reads
+        // as "the end of the hose" stays hard while the ink around it is
+        // smooth, which is the mismatch the owner saw on the panel.
+        float covOut = outerR - dist;
+        float covIn = dist - innerR;
+        float cov = covOut < covIn ? covOut : covIn;
+        if (cov <= 0.0f) continue;
+        if (cov > 1.0f) cov = 1.0f;
         // Keep the leading half only. Measured as a wrapped difference
         // rather than a plain comparison, because at the 30:00 ceiling the
         // head sits at exactly 360 and "ahead of it" means angles just past
@@ -1665,7 +1674,8 @@ static void paint_head_outline_row(int y, int rowIdx, float deg) {
         float ahead = phi_deg_for_col(dx, dyCenter) - deg;
         if (ahead < 0.0f) ahead += 360.0f;
         if (ahead > 180.0f) continue; // trailing side: ink continues
-        gfx_fill_rect_land(RING_CX + dx, y, 1, 1, PX_WHITE);
+        int g = (int)(255.0f * cov + 0.5f);
+        gfx_fill_rect_land(RING_CX + dx, y, 1, 1, gray_to_px((uint8_t)g));
     }
 }
 
