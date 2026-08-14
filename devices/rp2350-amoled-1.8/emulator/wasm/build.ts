@@ -71,6 +71,7 @@ const EMU_EXPORTS = [
   "emu_app_switch",
   "emu_tune_get",
   "emu_tune_set",
+  "emu_tune_reset",
   "emu_sound_sample_rate",
   "emu_sound_play_seq",
   "emu_sound_stop_seq",

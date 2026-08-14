@@ -154,6 +154,12 @@ async function loadDevice() {
         tunables,
         tuneGet(id: string): number { return exp.emu_tune_get(tuneIndex(id)); },
         tuneSet(id: string, value: number): void { exp.emu_tune_set(tuneIndex(id), value); },
+        // Owner ask 2026-08-14: a per-control way back to default, no
+        // reflash. emu_tune_reset is the emulator's twin of the device's
+        // devlink TUNE RESET; not yet wired to a page control
+        // (emulator/src/ is owned elsewhere right now), so this is exercised
+        // directly against the wasm export rather than through the UI.
+        tuneReset(id: string): void { exp.emu_tune_reset(tuneIndex(id)); },
     };
 }
 
@@ -559,7 +565,17 @@ async function main() {
     check("forcing the live-tuned lift knob down measurably breaks stroke survival (the knob is wired to real state)",
         brokenTrials >= E_TRIALS * 0.5, `${brokenTrials}/${E_TRIALS} fragmented`);
 
-    devE.tuneSet("lift", defaultLift); // leave no side effect
+    // ---- scenario F: emu_tune_reset actually restores the declared
+    // default, not just whatever this file happens to pass it. Also
+    // doubles as this file's cleanup (leave no side effect on "lift" for
+    // anything that might run after it in the same process), same as
+    // scenario E's old tuneSet(defaultLift) line, now proven rather than
+    // just asserted by construction. -----------------------------------
+    devE.tuneReset("lift");
+    const afterReset = devE.tuneGet("lift");
+    check("emu_tune_reset restores the tunable's declared default",
+        Math.abs(afterReset - defaultLift) < 0.01,
+        `forced to ${appliedLift}, reset to ${afterReset}, declared default was ${defaultLift}`);
 
     console.log(`\n${passCount} passed, ${failCount} failed`);
     if (failCount > 0) process.exit(1);

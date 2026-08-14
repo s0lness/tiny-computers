@@ -261,9 +261,18 @@ void emu_app_switch(int index);
  * real device's TUNE SET applies), so the host does not have to duplicate
  * that range check; call emu_tune_get afterward if the applied value matters
  * to the caller.
+ *
+ * emu_tune_reset restores tunable `index` to its declared default (the
+ * "default" field in the "tunables" JSON) - the emulator-side twin of the
+ * real device's devlink TUNE RESET (tools/README-devlink.md). Call
+ * emu_tune_get afterward for the restored value; this returns nothing
+ * because, unlike the device's line-oriented reply, the host already has
+ * the declared default in the "tunables" array it read at startup and does
+ * not need it echoed back.
  */
 float emu_tune_get(int index);
 void  emu_tune_set(int index, float value);
+void  emu_tune_reset(int index);
 
 /* ---- sound ----------------------------------------------------------------
  *

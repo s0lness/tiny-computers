@@ -578,6 +578,19 @@ void emu_tune_set(int index, float value) {
     sketch_tune_set(name, value, NULL);
 }
 
+// Owner ask, 2026-08-14: "rajoute un moyen pour remettre chaque bouton a sa
+// valeur par defaut" - a per-control way back to default, mirroring the
+// real device's devlink TUNE RESET. NOT yet wired to a control in the
+// page: emulator/src/ is owned by another agent right now, so this is the
+// export ready for whoever next touches tunables.ts/main.ts to call,
+// exactly the way emu_tune_get/emu_tune_set already were before this file
+// had a caller for them either.
+void emu_tune_reset(int index) {
+    const char *name; float mn, mx, def;
+    if (!sketch_tune_describe(index, &name, &mn, &mx, &def)) return;
+    sketch_tune_set(name, def, NULL);
+}
+
 int emu_sound_sample_rate(void) { return SOUND_SYNTH_SAMPLE_RATE_HZ; }
 uint32_t emu_sound_play_seq(void) { return s_soundPlaySeq; }
 uint32_t emu_sound_stop_seq(void) { return s_soundStopSeq; }

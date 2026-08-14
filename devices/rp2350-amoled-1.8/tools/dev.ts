@@ -655,13 +655,21 @@ async function cmdDraw(args: string[]) {
 
 // TUNE: live-adjusts sketch.c's dropout-tolerance constants on a running
 // device with no reflash (firmware/devlink.c's TUNE command, gated behind
-// the SKETCH_LIVE_TUNE build flag - firmware/CMakeLists.txt). Four shapes:
+// the SKETCH_LIVE_TUNE build flag - firmware/CMakeLists.txt). Five shapes:
 //
 //   tune                     list every declared tunable: name, current,
-//                            min, max, default
+//                            min, max, default. A row whose current value
+//                            differs from its default is marked, so "which
+//                            of these am I still overriding" reads at a
+//                            glance rather than by comparing two columns.
 //   tune get <name>          current value of one tunable
 //   tune set <name> <value>  applies value (clamped to [min, max] on the
 //                            device), prints what was actually applied
+//   tune reset <name>        restores one tunable to its declared default,
+//                            prints what it is now AND what it was a
+//                            moment ago
+//   tune reset               restores every declared tunable to its
+//                            default, same before/after reporting per line
 //   tune freeze              prints every CURRENT value as a
 //                            `#define ..._DEFAULT` line, ready to paste
 //                            over sketch.c's own constants once a value is
@@ -672,6 +680,11 @@ async function cmdDraw(args: string[]) {
 // firmware does not have the knob compiled in.
 const TUNE_LIST_RE = /^TUNE (\S+) (\S+) (\S+) (\S+) (\S+)$/;
 const TUNE_VALUE_RE = /^TUNE (\S+) (\S+)$/;
+// RESET's reply carries one more field than GET/SET's (name, applied) -
+// applied AND previous, per the owner's ask ("a reset that prints the value
+// it restored, and ideally what it was before, is worth more than a silent
+// one") - so it gets its own shape rather than overloading TUNE_VALUE_RE.
+const TUNE_RESET_RE = /^TUNE (\S+) (\S+) (\S+)$/;
 const TUNE_ERR_RE = /^ERR .*$/;
 const TUNE_FREEZE_LINE_RE = /^#define \S+_DEFAULT \S+f$/;
 
@@ -697,11 +710,20 @@ async function cmdTuneList(bridge: Bridge) {
     console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
     return;
   }
-  console.log("name        value      min        max        default");
+  console.log("   name        value      min        max        default");
   for (const line of lines) {
     const m = TUNE_LIST_RE.exec(line)!;
     const [, name, value, min, max, def] = m;
-    console.log(`${name.padEnd(11)} ${value.padEnd(10)} ${min.padEnd(10)} ${max.padEnd(10)} ${def}`);
+    // Marked rather than left to a value/default column comparison: after
+    // ten minutes of turning knobs by feel, "which of these am I still
+    // overriding" is the question that actually gets asked, per the
+    // owner's own framing of why this matters.
+    const overridden = Number(value) !== Number(def);
+    const marker = overridden ? " * " : "   ";
+    console.log(`${marker}${name.padEnd(11)} ${value.padEnd(10)} ${min.padEnd(10)} ${max.padEnd(10)} ${def}`);
+  }
+  if (lines.some((l) => Number(TUNE_LIST_RE.exec(l)![2]) !== Number(TUNE_LIST_RE.exec(l)![5]))) {
+    console.log("\n* overridden from its default - \"tune reset <name>\" or \"tune reset\" to clear");
   }
 }
 
@@ -721,6 +743,38 @@ async function cmdTuneSet(bridge: Bridge, name: string, value: string) {
   const reply = await expectLine(bridge.lines, /^(TUNE \S+ \S+|ERR .*)$/, 3000, "TUNE SET reply");
   console.log(reply);
   if (!reply.startsWith("TUNE")) process.exitCode = 1;
+}
+
+function logTuneReset(line: string) {
+  const m = TUNE_RESET_RE.exec(line);
+  if (!m) { console.log(line); return; }
+  const [, name, applied, previous] = m;
+  if (applied === previous) {
+    console.log(`${name}: already at default (${applied})`);
+  } else {
+    console.log(`${name}: ${previous} -> ${applied} (default)`);
+  }
+}
+
+async function cmdTuneResetOne(bridge: Bridge, name: string) {
+  await bridge.send(`TUNE RESET ${name}`);
+  const reply = await expectLine(bridge.lines, /^(TUNE \S+ \S+ \S+|ERR .*)$/, 3000, "TUNE RESET reply");
+  if (reply.startsWith("TUNE")) {
+    logTuneReset(reply);
+  } else {
+    console.log(reply);
+    process.exitCode = 1;
+  }
+}
+
+async function cmdTuneResetAll(bridge: Bridge) {
+  await bridge.send("TUNE RESET");
+  const lines = await readUntilEnd(bridge, (l) => TUNE_RESET_RE.test(l), "TUNE RESET line");
+  if (lines.length === 0) {
+    console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
+    return;
+  }
+  for (const line of lines) logTuneReset(line);
 }
 
 async function cmdTuneFreeze(bridge: Bridge) {
@@ -751,10 +805,16 @@ async function cmdTune(args: string[]) {
         process.exit(1);
       }
       await cmdTuneSet(bridge, rest[0], rest[1]);
+    } else if (sub === "reset") {
+      if (rest[0]) {
+        await cmdTuneResetOne(bridge, rest[0]);
+      } else {
+        await cmdTuneResetAll(bridge);
+      }
     } else if (sub === "freeze") {
       await cmdTuneFreeze(bridge);
     } else {
-      console.error("usage: bun tools/dev.ts tune [get <name> | set <name> <value> | freeze]");
+      console.error("usage: bun tools/dev.ts tune [get <name> | set <name> <value> | reset [name] | freeze]");
       process.exit(1);
     }
   } finally {
@@ -799,9 +859,12 @@ function printUsage() {
       "  key <press|long|short|release> inject a PMIC key event",
       "  boot <down|up|click>          inject the BOOT button's level or click",
       "  chord                         inject the BOOT+PWR app-menu gesture",
-      "  tune                          list live-tunable constants (name, current, min, max, default)",
+      "  tune                          list live-tunable constants (name, current, min, max, default;",
+      "                                overridden values are marked)",
       "  tune get <name>               read one tunable's current value",
       "  tune set <name> <value>       apply a value now, no reflash (clamped on the device)",
+      "  tune reset <name>             restore one tunable to its default, prints before -> after",
+      "  tune reset                    restore every tunable to its default",
       "  tune freeze                   print current values as #define ..._DEFAULT lines",
       "  log [seconds]                 stream device output (default 10s)",
       "",

@@ -266,14 +266,14 @@ static bool devlink_word_is(const char *s, const char *word) {
 }
 
 /* ---------------------------------------------------------------------
- * TUNE: get/set/list/freeze the firmware's live-tunable constants (today:
- * sketch.c's dropout-tolerance knobs, gated behind SKETCH_LIVE_TUNE - see
- * sensors.h's "DEVELOPMENT: sketchpad live tuning" section). This file
- * never names "sketch", "lift" or any other specific tunable: it only knows
- * the generic name/value shape devlink_hooks_t's tune_* function pointers
- * declare, the same indirection app_current/app_name/app_switch already use
- * so devlink.c stays hardware- and app-blind. See tools/README-devlink.md
- * for the wire grammar this implements.
+ * TUNE: get/set/reset/list/freeze the firmware's live-tunable constants
+ * (today: sketch.c's dropout-tolerance knobs, gated behind SKETCH_LIVE_TUNE
+ * - see sensors.h's "DEVELOPMENT: sketchpad live tuning" section). This
+ * file never names "sketch", "lift" or any other specific tunable: it only
+ * knows the generic name/value shape devlink_hooks_t's tune_* function
+ * pointers declare, the same indirection app_current/app_name/app_switch
+ * already use so devlink.c stays hardware- and app-blind. See
+ * tools/README-devlink.md for the wire grammar this implements.
  * ------------------------------------------------------------------- */
 
 // Prints a tunable value as a plain decimal with up to one fractional digit
@@ -354,6 +354,52 @@ static void devlink_tune_freeze(void) {
     printf("END\r\n");
 }
 
+// Finds the declared index whose protocol name matches `name`, by walking
+// tune_describe() the same way devlink_tune_list()/devlink_tune_freeze() do
+// - there is no name-indexed describe() hook, only tune_get/tune_set are
+// name-based (see devlink.h), so RESET (which needs the declared default,
+// not just the current value) has to look the name up the same way LIST
+// and FREEZE already enumerate every tunable. Returns -1 if none matches or
+// the gate is off.
+static int devlink_tune_index_of(const char *name) {
+    int n = g_hooks.tune_count ? g_hooks.tune_count() : 0;
+    for (int i = 0; i < n; i++) {
+        const char *nm; float mn, mx, def;
+        if (!g_hooks.tune_describe || !g_hooks.tune_describe(i, &nm, &mn, &mx, &def)) continue;
+        if (strcmp(nm, name) == 0) return i;
+    }
+    return -1;
+}
+
+// Restores tunable `idx` to its declared default, printing both what it is
+// now and what it was a moment ago - owner feedback: "a reset that prints
+// the value it restored, and ideally what it was before, is worth more than
+// a silent one. He is going to be reading these lines while holding a
+// finger on the panel." Composed from the existing tune_describe/tune_get/
+// tune_set hooks, the same way CHORD above composes BOOT+KEY rather than
+// getting its own dedicated hook: RESET needs no new state or capability
+// devlink_hooks_t does not already expose.
+static void devlink_tune_reset_index(int idx) {
+    const char *nm; float mn, mx, def;
+    g_hooks.tune_describe(idx, &nm, &mn, &mx, &def);
+    float previous = def;
+    if (g_hooks.tune_get) g_hooks.tune_get(nm, &previous);
+    float applied = def;
+    if (g_hooks.tune_set) g_hooks.tune_set(nm, def, &applied);
+    printf("TUNE %s ", nm);
+    devlink_print_tune_value(applied);
+    printf(" ");
+    devlink_print_tune_value(previous);
+    printf("\r\n");
+}
+
+static void devlink_tune_reset_all(void) {
+    int n = g_hooks.tune_count ? g_hooks.tune_count() : 0;
+    if (n == 0) { printf("ERR no tunables\r\n"); return; }
+    for (int i = 0; i < n; i++) devlink_tune_reset_index(i);
+    printf("END\r\n");
+}
+
 static void devlink_dispatch_tune(const char *args) {
     while (*args == ' ') args++;
     if (*args == '\0') {
@@ -391,6 +437,19 @@ static void devlink_dispatch_tune(const char *args) {
         printf("TUNE %s ", name);
         devlink_print_tune_value(applied);
         printf("\r\n");
+    } else if (strcmp(sub, "RESET") == 0) {
+        char name[24];
+        if (!devlink_word_take(&rest, name, sizeof(name))) {
+            // No name given: reset every declared tunable, same "bare
+            // command means all of them" shape TUNE itself already uses
+            // for LIST.
+            devlink_tune_reset_all();
+            return;
+        }
+        if (!g_hooks.tune_describe) { printf("ERR no tunables\r\n"); return; }
+        int idx = devlink_tune_index_of(name);
+        if (idx < 0) { printf("ERR unknown %s\r\n", name); return; }
+        devlink_tune_reset_index(idx);
     } else {
         printf("ERR args\r\n");
     }

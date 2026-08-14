@@ -140,6 +140,8 @@ giving up the shared console's usefulness to a human.
 | `TUNE` | one `TUNE <name> <value> <min> <max> <default>` line per declared tunable, then `END` |
 | `TUNE GET <name>` | `TUNE <name> <value>`, or `ERR unknown <name>` |
 | `TUNE SET <name> <value>` | `TUNE <name> <applied>` (applied = value clamped to `[min, max]`), or `ERR args` / `ERR unknown <name>` |
+| `TUNE RESET <name>` | `TUNE <name> <applied> <previous>` (applied = the declared default; previous = the value just replaced), or `ERR unknown <name>` |
+| `TUNE RESET` | one `TUNE <name> <applied> <previous>` line per declared tunable, then `END` |
 | `TUNE FREEZE` | one `#define <NAME>_DEFAULT <value>f` line per tunable, then `END` |
 | anything else | `ERR unknown <cmd>` |
 
@@ -194,6 +196,18 @@ arguments lists whatever the running firmware actually declares, which is
 the source of truth, not this list). `TUNE SET` clamps to the declared
 `[min, max]` on the device and echoes back what was actually applied, which
 may differ from what was asked for.
+
+`TUNE RESET` is how a candidate value gets abandoned without a reboot.
+Tuning by feel means wandering: `lift`, then `pendgrace`, then `confirm`,
+losing track of which change is responsible for what the last few strokes
+felt like. `TUNE RESET <name>` restores one tunable to its declared
+default; bare `TUNE RESET` restores all of them. Both print what the value
+is now AND what it was a moment before, on the reasoning that a reset
+someone reads while still holding a finger on the panel is worth more if it
+says what changed, not just that something did. `TUNE` (the bare list)
+marks any row whose current value differs from its default, so "which of
+these am I still overriding" reads at a glance instead of by comparing the
+`value` and `default` columns by eye.
 
 `TUNE FREEZE` is the end state: once a value is settled by feel, it prints
 every current value as a `#define <NAME>_DEFAULT <value>f` line, ready to
@@ -445,6 +459,8 @@ bun tools/dev.ts chord
 bun tools/dev.ts tune
 bun tools/dev.ts tune get lift
 bun tools/dev.ts tune set lift 180
+bun tools/dev.ts tune reset lift
+bun tools/dev.ts tune reset
 bun tools/dev.ts tune freeze
 bun tools/dev.ts log 15
 ```
