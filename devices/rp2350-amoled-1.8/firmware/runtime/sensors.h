@@ -356,12 +356,11 @@ typedef struct {
     uint32_t deviceModeReg; // last read of 0x00 DEVICE_MODE (0 = normal working mode)
     uint32_t powerModeReg;  // last read of 0xA5 REG_POWER_MODE (0 = active, per FT3168_Device_Mode)
     uint32_t intModeReg;    // last read of 0xA4 - see sensors.c for why this address, specifically
-    uint32_t thGroupReg;    // last read of 0x80 ID_G_THGROUP, the touch detection threshold -
-                             // see sensors.c's FT3168_REG_THGROUP comment. This is a live readback
-                             // of whatever touch_set_active()/touch_set_active_to() last wrote
-                             // (FT3168_TOUCH_THRESHOLD), confirming the write is still holding -
-                             // NOT the untouched power-on default, which only ever appears once,
-                             // in the one-time boot printf those two functions' write is guarded by.
+    uint32_t thGroupReg;    // last read of 0x80 - see sensors.c's FT3168_REG_THGROUP comment:
+                             // measured on hardware, this register does not accept a write on
+                             // this part, so neither touch_set_active() nor touch_set_active_to()
+                             // writes it any more. This IS the chip's own live value, not
+                             // something this firmware asserted.
 } sensors_touch_diag_t;
 
 // Reads back the touch poll self-test's published state - see the struct
@@ -436,6 +435,58 @@ typedef struct {
 // has been entered at least once this boot (its counters live in the
 // per-run arena, like the rest of sketch_state_t - see app.h on why).
 void sketch_debug_touch_diag(sketch_touch_diag_t *out);
+
+/* ---- DEVELOPMENT: sketchpad live tuning (SKETCH_LIVE_TUNE) --------------
+ *
+ * Declared here rather than a new header, same reasoning as
+ * sketch_debug_touch_diag() just above: this exists for the same class of
+ * investigation (feeling out sketch.c's dropout-tolerance tuning against
+ * real hardware, live) and is implemented in sketch.c, the only file with
+ * the state to report or change. See sketch.c's own SKETCH_LIVE_TUNE
+ * comment for the full design (what is tunable, why, and the freeze path).
+ *
+ * Unlike the TOUCH_POLL_SELFTEST diagnostics above, these are declared
+ * unconditionally (not inside an #if in this header): sketch.c itself
+ * always defines all five functions below, gated internally on
+ * SKETCH_LIVE_TUNE - the gate-off build returns count()==0 and false from
+ * every describe/get/set call, the same "0 when the gate is off" contract
+ * sensors_debug_touch_poll_selftest() uses. That means callers (devlink's
+ * TUNE command wiring in runtime.c, the emulator's emu_tune_get/set) never
+ * need to know whether the gate is on; they just see "nothing declared"
+ * when it is off.
+ *
+ * Persists across app switches: the tunables are plain file-scope
+ * statics in sketch.c, not part of sketch_state_t's per-run arena (app.h),
+ * specifically so a TUNE command works regardless of which app is currently
+ * showing on screen - the owner can be looking at the menu or the timer and
+ * still dial in the sketchpad's touch tuning for the next time it is drawn
+ * on.
+ */
+
+// How many tunables are declared. 0 when SKETCH_LIVE_TUNE is off.
+int sketch_tune_count(void);
+
+// Describes tunable `index` (0..sketch_tune_count()-1): its devlink/emulator
+// -facing name, its clamp range, and its shipped default. Returns false for
+// an out-of-range index or when the gate is off.
+bool sketch_tune_describe(int index, const char **name, float *min, float *max, float *def);
+
+// The #define this tunable becomes when frozen back into source (e.g.
+// "LIFT_DEBOUNCE_MS", without the _DEFAULT suffix the freeze output adds
+// itself). NULL for an out-of-range index or when the gate is off.
+const char *sketch_tune_define_name(int index);
+
+// Current value of the tunable named `name` (sketch_tune_describe()'s
+// `name` out-param, e.g. "lift"). Returns false, and leaves *out untouched,
+// if no tunable has that name or the gate is off.
+bool sketch_tune_get(const char *name, float *out);
+
+// Sets the tunable named `name` to `value`, clamped to its declared
+// [min, max]. *outApplied (if non-NULL) receives the value actually
+// applied, i.e. after clamping, so a caller can tell a client what really
+// took effect. Returns false, applying nothing, if no tunable has that name
+// or the gate is off.
+bool sketch_tune_set(const char *name, float value, float *outApplied);
 
 /* ---- FT3168 has no pressure signal, measured -----------------------------
  *

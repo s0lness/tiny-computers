@@ -554,6 +554,30 @@ void emu_app_switch(int index) {
     app_switch_to(index);
 }
 
+/* ===========================================================================
+ * Live tunables. Thin index -> name adapters over sketch.c's sketch_tune_*
+ * (sensors.h), which this file already includes. Compiled with
+ * SKETCH_LIVE_TUNE=1 for this target specifically (build.ts), unlike the
+ * board's default build: the emulator IS a development tool end to end, so
+ * there is no "shipped, must not carry a knob" state to protect here the way
+ * there is on real firmware - see emu_abi.h's tunables section for the
+ * bigger caveat (this panel is for iteration speed, not for finding the
+ * right value; TouchSim is kinder than the real controller).
+ * ======================================================================= */
+float emu_tune_get(int index) {
+    const char *name; float mn, mx, def;
+    if (!sketch_tune_describe(index, &name, &mn, &mx, &def)) return 0.0f;
+    float v = def;
+    sketch_tune_get(name, &v);
+    return v;
+}
+
+void emu_tune_set(int index, float value) {
+    const char *name; float mn, mx, def;
+    if (!sketch_tune_describe(index, &name, &mn, &mx, &def)) return;
+    sketch_tune_set(name, value, NULL);
+}
+
 int emu_sound_sample_rate(void) { return SOUND_SYNTH_SAMPLE_RATE_HZ; }
 uint32_t emu_sound_play_seq(void) { return s_soundPlaySeq; }
 uint32_t emu_sound_stop_seq(void) { return s_soundStopSeq; }
@@ -568,11 +592,43 @@ int emu_sound_frames(void) { return SOUND_PREVIEW_FRAMES; }
  * 0003's "adding an app means adding it to one table, and it appears in
  * both" promise. */
 // 512 was tight even before "gestures" existed; the gesture's "how" prose
-// alone is over 200 bytes. 1024 leaves real headroom.
-static char g_deviceJson[1024];
+// alone is over 200 bytes. 1024 was tight again once "tunables" joined it
+// (six entries, each with four numeric fields); 2048 leaves real headroom
+// for either array to grow without this needing to be revisited every time.
+static char g_deviceJson[2048];
 
 static char *json_append(char *p, const char *s) {
     while (*s) *p++ = *s++;
+    return p;
+}
+
+// Formats a non-negative float as a plain JSON number, at most two
+// fractional digits, trailing zero fractional digits trimmed (250 prints as
+// "250", 0.5 prints as "0.5"). Not a general float formatter - every
+// tunable's min/max/default is a small, simple magnitude (see sketch.c's
+// g_sketchTunables) - and deliberately not printf's "%f": this module's own
+// printf (above) supports exactly the specifiers the real firmware sources
+// use, grepped, and none of them is "%f". JSON accepts "250" and "250.0"
+// interchangeably, so trimming is cosmetic, not a parsing requirement.
+static char *json_append_num(char *p, float v) {
+    if (v < 0) { *p++ = '-'; v = -v; }
+    long whole = (long)v;
+    long frac = (long)((v - (float)whole) * 100.0f + 0.5f);
+    if (frac >= 100) { whole += 1; frac -= 100; }
+    char tmp[16];
+    int n = 0;
+    if (whole == 0) tmp[n++] = '0';
+    while (whole > 0) { tmp[n++] = (char)('0' + (whole % 10)); whole /= 10; }
+    while (n > 0) *p++ = tmp[--n];
+    if (frac > 0) {
+        *p++ = '.';
+        if (frac % 10 == 0) {
+            *p++ = (char)('0' + frac / 10);
+        } else {
+            *p++ = (char)('0' + frac / 10);
+            *p++ = (char)('0' + frac % 10);
+        }
+    }
     return p;
 }
 
@@ -603,7 +659,30 @@ int emu_device(void) {
     p = json_append(p, "\"gestures\":[{\"id\":\"menu\",\"label\":\"menu\",");
     p = json_append(p, "\"how\":\"Hold BOOT, then also hold PWR. Keep both held until PWR ");
     p = json_append(p, "registers a long press (about 1.5s): that opens the app menu. ");
-    p = json_append(p, "Do the same chord again to close it and return to what was running.\"}]");
+    p = json_append(p, "Do the same chord again to close it and return to what was running.\"}],");
+    // "tunables": sketch.c's SKETCH_LIVE_TUNE knobs, if this build has them
+    // (see emu_abi.h's tunables section). Declared the same way buttons/
+    // sensors/apps already are above: the page builds its controls from
+    // this, nothing here is hardcoded on the JS side.
+    p = json_append(p, "\"tunables\":[");
+    {
+        int n = sketch_tune_count();
+        for (int i = 0; i < n; i++) {
+            const char *name; float mn, mx, def;
+            if (!sketch_tune_describe(i, &name, &mn, &mx, &def)) continue;
+            if (i > 0) p = json_append(p, ",");
+            p = json_append(p, "{\"id\":\"");
+            p = json_append(p, name);
+            p = json_append(p, "\",\"min\":");
+            p = json_append_num(p, mn);
+            p = json_append(p, ",\"max\":");
+            p = json_append_num(p, mx);
+            p = json_append(p, ",\"default\":");
+            p = json_append_num(p, def);
+            p = json_append(p, "}");
+        }
+    }
+    p = json_append(p, "]");
     p = json_append(p, "}");
     *p = '\0';
     return (int)(intptr_t)g_deviceJson;

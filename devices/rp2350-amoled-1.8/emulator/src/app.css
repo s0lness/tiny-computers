@@ -316,6 +316,12 @@
 .slider-row .row-head span { color: var(--accent-dark); font-variant-numeric: tabular-nums; }
 .slider-row input[type=range] { width: 100%; }
 
+/* Live tunables (tunables.ts): the panel is fast to iterate in, but it is
+   not the authority (emu_abi.h's "tunables" section) - this note says so
+   next to the controls rather than only in a code comment. */
+.tune-note { font-size: 10px; color: var(--muted); line-height: 1.4; margin: 0 0 6px; }
+.tune-note code { font-size: 10px; }
+
 .toggle-row { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; font-size: 12px; }
 .toggle-row input[type=checkbox] { margin: 0; }
 

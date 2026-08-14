@@ -653,6 +653,115 @@ async function cmdDraw(args: string[]) {
   }
 }
 
+// TUNE: live-adjusts sketch.c's dropout-tolerance constants on a running
+// device with no reflash (firmware/devlink.c's TUNE command, gated behind
+// the SKETCH_LIVE_TUNE build flag - firmware/CMakeLists.txt). Four shapes:
+//
+//   tune                     list every declared tunable: name, current,
+//                            min, max, default
+//   tune get <name>          current value of one tunable
+//   tune set <name> <value>  applies value (clamped to [min, max] on the
+//                            device), prints what was actually applied
+//   tune freeze              prints every CURRENT value as a
+//                            `#define ..._DEFAULT` line, ready to paste
+//                            over sketch.c's own constants once a value is
+//                            settled
+//
+// A device built without SKETCH_LIVE_TUNE answers "ERR no tunables" to
+// every one of these - that is not a bug in this tool, it means the running
+// firmware does not have the knob compiled in.
+const TUNE_LIST_RE = /^TUNE (\S+) (\S+) (\S+) (\S+) (\S+)$/;
+const TUNE_VALUE_RE = /^TUNE (\S+) (\S+)$/;
+const TUNE_ERR_RE = /^ERR .*$/;
+const TUNE_FREEZE_LINE_RE = /^#define \S+_DEFAULT \S+f$/;
+
+async function readUntilEnd(bridge: Bridge, lineOk: (line: string) => boolean, what: string): Promise<string[]> {
+  const out: string[] = [];
+  for (;;) {
+    const line = await readLineWithTimeout(bridge.lines, 3000, what);
+    if (line === "END") break;
+    if (TUNE_ERR_RE.test(line)) {
+      console.log(line);
+      return [];
+    }
+    if (!lineOk(line)) continue; // noise sharing the port, same as expectLine()
+    out.push(line);
+  }
+  return out;
+}
+
+async function cmdTuneList(bridge: Bridge) {
+  await bridge.send("TUNE");
+  const lines = await readUntilEnd(bridge, (l) => TUNE_LIST_RE.test(l), "TUNE list line");
+  if (lines.length === 0) {
+    console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
+    return;
+  }
+  console.log("name        value      min        max        default");
+  for (const line of lines) {
+    const m = TUNE_LIST_RE.exec(line)!;
+    const [, name, value, min, max, def] = m;
+    console.log(`${name.padEnd(11)} ${value.padEnd(10)} ${min.padEnd(10)} ${max.padEnd(10)} ${def}`);
+  }
+}
+
+async function cmdTuneGet(bridge: Bridge, name: string) {
+  await bridge.send(`TUNE GET ${name}`);
+  const reply = await expectLine(bridge.lines, /^(TUNE \S+ \S+|ERR .*)$/, 3000, "TUNE GET reply");
+  console.log(reply);
+  if (!reply.startsWith("TUNE")) process.exitCode = 1;
+}
+
+async function cmdTuneSet(bridge: Bridge, name: string, value: string) {
+  if (!Number.isFinite(Number(value))) {
+    console.error(`usage: bun tools/dev.ts tune set <name> <value>`);
+    process.exit(1);
+  }
+  await bridge.send(`TUNE SET ${name} ${value}`);
+  const reply = await expectLine(bridge.lines, /^(TUNE \S+ \S+|ERR .*)$/, 3000, "TUNE SET reply");
+  console.log(reply);
+  if (!reply.startsWith("TUNE")) process.exitCode = 1;
+}
+
+async function cmdTuneFreeze(bridge: Bridge) {
+  await bridge.send("TUNE FREEZE");
+  const lines = await readUntilEnd(bridge, (l) => TUNE_FREEZE_LINE_RE.test(l), "TUNE FREEZE line");
+  if (lines.length === 0) {
+    console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
+    return;
+  }
+  for (const line of lines) console.log(line);
+}
+
+async function cmdTune(args: string[]) {
+  const [sub, ...rest] = args;
+  const bridge = await openBridge();
+  try {
+    if (!sub) {
+      await cmdTuneList(bridge);
+    } else if (sub === "get") {
+      if (!rest[0]) {
+        console.error("usage: bun tools/dev.ts tune get <name>");
+        process.exit(1);
+      }
+      await cmdTuneGet(bridge, rest[0]);
+    } else if (sub === "set") {
+      if (!rest[0] || !rest[1]) {
+        console.error("usage: bun tools/dev.ts tune set <name> <value>");
+        process.exit(1);
+      }
+      await cmdTuneSet(bridge, rest[0], rest[1]);
+    } else if (sub === "freeze") {
+      await cmdTuneFreeze(bridge);
+    } else {
+      console.error("usage: bun tools/dev.ts tune [get <name> | set <name> <value> | freeze]");
+      process.exit(1);
+    }
+  } finally {
+    await bridge.close();
+  }
+}
+
 async function cmdLog(secArg: string | undefined) {
   const seconds = secArg ? Number(secArg) : 10;
   const bridge = await openBridge();
@@ -690,11 +799,19 @@ function printUsage() {
       "  key <press|long|short|release> inject a PMIC key event",
       "  boot <down|up|click>          inject the BOOT button's level or click",
       "  chord                         inject the BOOT+PWR app-menu gesture",
+      "  tune                          list live-tunable constants (name, current, min, max, default)",
+      "  tune get <name>               read one tunable's current value",
+      "  tune set <name> <value>       apply a value now, no reflash (clamped on the device)",
+      "  tune freeze                   print current values as #define ..._DEFAULT lines",
       "  log [seconds]                 stream device output (default 10s)",
       "",
       "key/boot/chord test the runtime and the apps, not the PMIC or the BOOT",
       "pad read themselves: see tools/README-devlink.md, \"What injection",
       "cannot test\".",
+      "",
+      "tune requires a device built with -DSKETCH_LIVE_TUNE=1 (off by default -",
+      "see firmware/CMakeLists.txt); a normal build answers every tune",
+      "subcommand with \"ERR no tunables\".",
       "",
       "Port/baud: DEVLINK_PORT (default COM4), DEVLINK_BAUD (default 115200).",
     ].join("\n")
@@ -733,6 +850,9 @@ async function main() {
       break;
     case "chord":
       await cmdChord();
+      break;
+    case "tune":
+      await cmdTune(rest);
       break;
     case "log":
       await cmdLog(rest[0]);

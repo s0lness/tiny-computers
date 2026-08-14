@@ -84,6 +84,28 @@ typedef struct {
     bool (*app_switch)(int index);      // requests a switch to index;
                                          // returns false, and changes
                                          // nothing, if index is out of range.
+
+    // Live tuning (TUNE command). devlink stays hardware- and app-blind, so
+    // these are generic name/value hooks, not "sketch" or "lift" anywhere in
+    // this file - runtime.c wires them straight to sketch.c's sketch_tune_*
+    // functions (sensors.h), the same indirection app_current/app_name/
+    // app_switch already use for apps in general. NULL is a valid value for
+    // every one of these four (a build with nothing tunable, or one that
+    // never wired this section up): devlink.c checks before calling any of
+    // them and answers "ERR no tunables" rather than crashing, the same
+    // policy g_hooks.erase being NULL already gets away with today.
+    int (*tune_count)(void);
+    bool (*tune_describe)(int index, const char **name, float *min, float *max, float *def);
+    // The #define a tunable freezes back into, for the FREEZE subcommand
+    // (e.g. "LIFT_DEBOUNCE_MS" for protoName "lift") - not derivable from
+    // protoName by a fixed rule (devlink.c stays blind to what the name
+    // even means), so it is its own hook rather than a string transform.
+    const char *(*tune_define_name)(int index);
+    bool (*tune_get)(const char *name, float *out);
+    // outApplied receives the value actually applied after clamping, so a
+    // client can be told what really took effect, not just echo back what
+    // it asked for.
+    bool (*tune_set)(const char *name, float value, float *outApplied);
 } devlink_hooks_t;
 
 // Copies *hooks by value. Call once, after hooks->fb has been allocated and

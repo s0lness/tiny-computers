@@ -337,6 +337,19 @@ int main(void) {
         .app_current = devlink_hook_app_current,
         .app_name = devlink_hook_app_name,
         .app_switch = devlink_hook_app_switch,
+        // Wired straight to sketch.c's sketch_tune_* (sensors.h): no
+        // adapter needed, unlike the hooks above, because their signatures
+        // already match devlink_hooks_t's tune_* shape exactly (see
+        // sensors.h's "DEVELOPMENT: sketchpad live tuning" section). These
+        // are defined unconditionally in sketch.c regardless of
+        // SKETCH_LIVE_TUNE - the gate-off build's versions just return
+        // count()==0 and false, which is what makes it safe to wire them
+        // here with no #if of this file's own.
+        .tune_count = sketch_tune_count,
+        .tune_describe = sketch_tune_describe,
+        .tune_define_name = sketch_tune_define_name,
+        .tune_get = sketch_tune_get,
+        .tune_set = sketch_tune_set,
     };
     devlink_init(&devlinkHooks);
 

@@ -64,25 +64,74 @@
 // (drawing a starting dot), and those taper-and-dot pairs are the "smudging"
 // on fast strokes. So a lift is only believed after this long with no contact;
 // anything shorter is treated as a dropout and the stroke continues across it.
-#define LIFT_DEBOUNCE_MS 80
+//
+// RAISED 80ms -> 220ms, 2026-08-14. The CONFIRM_MS fix below fixed stroke
+// START (401 candidates -> 12/12 confirmed, strays=0, measured on hardware)
+// but not stroke SURVIVAL: the same hardware session showed dropouts=354
+// against strokeStarted=strokeEnded=12 - strokes that started fine were still
+// getting cut into fragments mid-draw, which from the owner's side of the
+// glass reads exactly like "traits qui s'arrêtent subitement" (his own
+// description, 2026-08-14, drawing on real hardware), not like the
+// stray-parasite problem CONFIRM_MS already closed ("j'ai pas de parasite
+// mais j'ai des traits qui s'arrêtent subitement").
+//
+// 80ms only tolerates 4-5 consecutive missed reports at this controller's
+// rate. TouchSim's dropout model (repro-touch-dropout-stroke-start.ts's
+// scenario C), driven at the ~34 dropout-episodes/sec this codebase's other
+// comments already measured on hardware, puts a run that long at roughly a 6
+// percent chance PER EPISODE; at 34 episodes a second that is close to a
+// certainty within the first second of any real stroke, matching what
+// hardware showed. 220ms needs a run about three times as long to trip,
+// which the same model puts at roughly a 0.03 percent chance per episode -
+// the difference between "every stroke fragments" and "most few-second
+// strokes survive intact".
+//
+// NOT raised further than this. The owner's own ask was "augmente UN PEU"
+// (increase it a LITTLE), not "never let a stroke end", and every extra
+// millisecond here is also extra time during which a genuine lift followed
+// by a new touch NEARBY gets silently bridged into one stroke with a
+// straight line joining the two, instead of ending cleanly. A lift-and-
+// retouch far enough away always still splits regardless of this value (see
+// MAX_JUMP_PX below - that half of the trade is not at risk here), but a
+// nearby retouch within this window genuinely IS bridged, on purpose: that is
+// the cost being paid for fewer broken lines. See
+// repro-touch-dropout-stroke-start.ts's scenario D for the check that a
+// prompt, real lift still ends cleanly at this value with no connecting line
+// drawn, and SKETCH_LIVE_TUNE further down for turning this into something
+// the owner can feel out live on the device instead of guessing at one
+// number from a description.
+//
+// GOVERNS THE MID-STROKE CASE ONLY. A not-yet-confirmed candidate's own
+// dropout grace was split off into PENDING_GRACE_MS (further down this
+// file) the same day this was raised: testing this exact change against
+// repro-touch-dropout-stroke-start.ts's scenario B showed that giving an
+// unconfirmed candidate the SAME larger window measurably raised how often
+// a lone stray got mistaken for a real touch - a risk with no MAX_JUMP_PX-
+// style backstop, unlike bridging an already-drawing stroke. See
+// PENDING_GRACE_MS_DEFAULT's comment for the full reasoning.
+#define LIFT_DEBOUNCE_MS_DEFAULT 220.0f
 
 // Glitch rejection as a speed limit rather than a fixed distance, because the
-// allowed jump has to grow with the gap: bridging an 80ms dropout legitimately
-// covers more ground than one 17ms report.
+// allowed jump has to grow with the gap: bridging a dropout legitimately
+// covers more ground than one 17ms report, and LIFT_DEBOUNCE_MS above (220ms,
+// not the 80ms it used to be) is the longest gap this file will still call
+// one stroke.
 //
 // MAX_JUMP_PX is the hard ceiling and it matters more than the speed. Without
-// it the speed limit alone permits a 480px jump across an 80ms dropout, which
-// is most of the panel: lifting and touching down somewhere else then draws a
-// straight line clean across the screen joining the two. Beyond this ceiling
-// the gap is not treated as one stroke at all, it ends the stroke and starts
-// a new one, which is what a lift and re-touch actually is.
+// it the speed limit alone would permit a jump covering most of the panel
+// across a full LIFT_DEBOUNCE_MS gap: lifting and touching down somewhere
+// else would then draw a straight line clean across the screen joining the
+// two. Beyond this ceiling the gap is not treated as one stroke at all, it
+// ends the stroke and starts a new one, which is what a lift and re-touch
+// actually is - and this ceiling is what keeps that true no matter how long
+// LIFT_DEBOUNCE_MS is set to, live or otherwise (see SKETCH_LIVE_TUNE below).
 // Measured from real strokes on this panel: a fast diagonal steps 50 to 61
 // pixels between consecutive reports, so anything below about 4 px/ms rejects
 // ordinary drawing. 6 px/ms leaves headroom; MAX_JUMP_PX is what actually
 // stops a lift-and-retouch being joined by a line across the screen.
-#define MAX_SPEED_PX_PER_MS 6.0f
-#define MIN_JUMP_ALLOW_PX   40.0f
-#define MAX_JUMP_PX         150.0f
+#define MAX_SPEED_PX_PER_MS_DEFAULT 6.0f
+#define MIN_JUMP_ALLOW_PX_DEFAULT   40.0f
+#define MAX_JUMP_PX_DEFAULT         150.0f
 
 // A position that jumped further than a finger could travel is believed to
 // be the finger's real new spot, rather than noise, only once a second
@@ -113,13 +162,13 @@
 // same window. The old rule required the SECOND report to arrive before the
 // FT3168 dropped contact even once; the instant a candidate saw a single
 // zero-finger read, sketch_tick's haveTouch==false branch threw it away as
-// a stray, with none of the grace an already-started stroke gets from
-// LIFT_DEBOUNCE_MS for the exact same phenomenon. Given how often this
-// controller drops out mid-touch (not just mid-stroke), that killed nearly
-// every real touch before it had a chance to move. A one-report blip that
-// genuinely never comes back is still rejected as a stray, just after
-// LIFT_DEBOUNCE_MS of grace instead of instantly - free, since nothing is
-// drawn until a stroke actually starts.
+// a stray, with none of the grace an already-started stroke gets from its
+// own dropout-bridging window for the exact same phenomenon. Given how
+// often this controller drops out mid-touch (not just mid-stroke), that
+// killed nearly every real touch before it had a chance to move. A
+// one-report blip that genuinely never comes back is still rejected as a
+// stray, just after PENDING_GRACE_MS of grace instead of instantly - free,
+// since nothing is drawn until a stroke actually starts.
 //
 // THE TRADE: this believes more candidates than before. A stray that
 // happens to read nonzero on and off for the whole grace window can now be
@@ -127,7 +176,203 @@
 // counter (read alongside `pendingStart` and `strokeStarted`) is what proves
 // whether that actually happens in practice, not reasoning about it in
 // advance.
-#define CONFIRM_MS 40u
+//
+// A SKETCH_LIVE_TUNE default now (see below), not a hardcoded constant; the
+// value and the reasoning above are unchanged by that.
+#define CONFIRM_MS_DEFAULT 40.0f
+
+// The pendingStart dropout-grace window: how long a not-yet-confirmed
+// candidate is allowed to see zero contact before it is given up on as a
+// stray (see the haveTouch==false / !fingerDown branch further down this
+// file). Originally this WAS LIFT_DEBOUNCE_MS - the comment above still
+// describes that original reasoning - until 2026-08-14's fix for stroke
+// FRAGMENTATION (see LIFT_DEBOUNCE_MS_DEFAULT's own comment) raised that
+// constant from 80ms to 220ms for the mid-stroke bridging case and, tested
+// against this file's own dropout-heavy repro (scenario B,
+// repro-touch-dropout-stroke-start.ts), measurably raised the rate of a
+// lone stray getting confirmed too: an unconfirmed candidate got the SAME
+// extra grace an already-drawing stroke did, even though the two carry very
+// different risk. An already-drawing stroke that gets bridged wrongly is
+// bounded by MAX_JUMP_PX (a stray jump far enough away still splits,
+// regardless of the grace window); an unconfirmed candidate that gets
+// wrongly believed just draws a stray mark straight onto the canvas, with
+// no such backstop. So this stays split off at the ORIGINAL 80ms value,
+// which is what scenario B was already passing at before either fix
+// touched it, rather than inheriting LIFT_DEBOUNCE_MS's new, larger number.
+#define PENDING_GRACE_MS_DEFAULT 80.0f
+
+/* ---------------------------------------------------------------------
+ * Live tuning (SKETCH_LIVE_TUNE). Development-only, gated exactly like
+ * TOUCH_POLL_SELFTEST (sensors.h) and PMIC_WRITE_SELFTEST (sensors.c):
+ * default 0, a CMake flag to turn it on (firmware/CMakeLists.txt), and a
+ * shipped build simply does not have this surface. With the gate off, every
+ * macro above resolves straight to its _DEFAULT constant below - there is no
+ * runtime variable, no devlink command reachable, and therefore no way to
+ * leave a knob in a bad position: the constant IS the value, same as before
+ * this section existed.
+ *
+ * WHY THIS EXISTS. Every threshold in this file so far was chosen by
+ * flashing a candidate, drawing on real glass, and reading a diagnostic
+ * counter back over serial - a minute-plus round trip that breaks
+ * concentration and means only two or three values ever actually get tried.
+ * The owner asked to turn these knobs live instead, while drawing, with no
+ * rebuild and no reflash: `bun tools/dev.ts tune lift 180` over devlink
+ * (firmware/devlink.c's TUNE command), applied on the very next tick. A
+ * second, faster-but-less-honest copy of the same knobs is exposed to the
+ * emulator (emu_shim.c's emu_tune_get/emu_tune_set) for quick iteration -
+ * "less honest" because TouchSim's dropout model is measurably kinder than
+ * the real FT3168 (the pre-CONFIRM_MS stroke-start rule scored 63-83 percent
+ * in the emulator against 3.5 percent on real hardware, see
+ * repro-touch-dropout-stroke-start.ts), so a value that feels right in the
+ * browser is a hypothesis, not a result; only the device-side knob, against
+ * a real finger, can promote it to one.
+ *
+ * WHAT IS TUNABLE, and why these six and not the whole file: exactly the
+ * constants that govern the behaviour the owner is judging by feel while
+ * drawing - dropout tolerance and the jump-vs-glitch-vs-split boundary - not
+ * the pen's cosmetic shape (STREAMLINE, PEN_SIZE and friends, top of this
+ * file), which nobody has asked to feel out live. PENDING_GRACE_MS joined
+ * the other five the same day LIFT_DEBOUNCE_MS was raised for stroke
+ * survival (see that constant's own comment): the two used to be one
+ * constant, split once testing showed an unconfirmed candidate and an
+ * already-drawing stroke need different tuning here, not just different
+ * names.
+ *
+ * FREEZING is the end state. When a value is settled, `bun tools/dev.ts tune
+ * freeze` prints every current value as a `#define ..._DEFAULT` line, ready
+ * to paste straight over the six above; the knobs and SKETCH_LIVE_TUNE
+ * itself then get deleted. This file is not the frozen copy of anything
+ * until that happens - the numbers above are still the starting point, not
+ * the last word.
+ * ------------------------------------------------------------------- */
+#ifndef SKETCH_LIVE_TUNE
+#define SKETCH_LIVE_TUNE 0
+#endif
+
+#if SKETCH_LIVE_TUNE
+static float g_tuneLiftDebounceMs  = LIFT_DEBOUNCE_MS_DEFAULT;
+static float g_tuneConfirmMs       = CONFIRM_MS_DEFAULT;
+static float g_tunePendingGraceMs  = PENDING_GRACE_MS_DEFAULT;
+static float g_tuneMinJumpAllowPx  = MIN_JUMP_ALLOW_PX_DEFAULT;
+static float g_tuneMaxJumpPx       = MAX_JUMP_PX_DEFAULT;
+static float g_tuneMaxSpeedPxPerMs = MAX_SPEED_PX_PER_MS_DEFAULT;
+
+#define LIFT_DEBOUNCE_MS     g_tuneLiftDebounceMs
+#define CONFIRM_MS           g_tuneConfirmMs
+#define PENDING_GRACE_MS     g_tunePendingGraceMs
+#define MIN_JUMP_ALLOW_PX    g_tuneMinJumpAllowPx
+#define MAX_JUMP_PX          g_tuneMaxJumpPx
+#define MAX_SPEED_PX_PER_MS  g_tuneMaxSpeedPxPerMs
+
+// One declaration, walked by devlink's TUNE command (runtime.c's wiring) and
+// by the emulator's wasm export (emu_shim.c's emu_tune_get/emu_tune_set) -
+// the same "the firmware declares its own shape, nothing else hardcodes a
+// list" pattern emu_device() already uses for the panel, the buttons and the
+// sensors (emulator/wasm/emu_abi.h). Adding a sixth tunable later is one row
+// here; neither of those two callers needs to change.
+typedef struct {
+    const char *protoName;  // devlink/emulator-facing identifier: short,
+                             // lowercase, no spaces - typed at a prompt and
+                             // sent over the wire, so it stays terse.
+    const char *defineName; // the #define this becomes when frozen back into
+                             // source, e.g. "LIFT_DEBOUNCE_MS" (FREEZE's own
+                             // output adds the _DEFAULT suffix).
+    float *value;
+    float min, max, def;
+} sketch_tunable_t;
+
+static sketch_tunable_t g_sketchTunables[] = {
+    { "lift",      "LIFT_DEBOUNCE_MS",    &g_tuneLiftDebounceMs,   20.0f, 1000.0f, LIFT_DEBOUNCE_MS_DEFAULT },
+    { "confirm",   "CONFIRM_MS",          &g_tuneConfirmMs,         0.0f,  500.0f, CONFIRM_MS_DEFAULT },
+    { "pendgrace", "PENDING_GRACE_MS",    &g_tunePendingGraceMs,   20.0f, 1000.0f, PENDING_GRACE_MS_DEFAULT },
+    { "minjump",   "MIN_JUMP_ALLOW_PX",   &g_tuneMinJumpAllowPx,    0.0f,  300.0f, MIN_JUMP_ALLOW_PX_DEFAULT },
+    // 368 = PANEL_W: a ceiling past the panel's own width allows nothing a
+    // real jump could not already reach.
+    { "maxjump",   "MAX_JUMP_PX",         &g_tuneMaxJumpPx,        10.0f,  368.0f, MAX_JUMP_PX_DEFAULT },
+    { "maxspeed",  "MAX_SPEED_PX_PER_MS", &g_tuneMaxSpeedPxPerMs,   0.5f,   30.0f, MAX_SPEED_PX_PER_MS_DEFAULT },
+};
+#define SKETCH_TUNABLE_COUNT ((int)(sizeof(g_sketchTunables) / sizeof(g_sketchTunables[0])))
+
+// A local strcmp-equivalent rather than <string.h>'s: this file is compiled
+// for two very different targets (the pico-sdk board build, and the
+// wasm32-freestanding emulator build via emulator/wasm/build.ts), and the
+// freestanding target's shim/ directory stands in for stdlib.h/math.h/
+// stdio.h (see that file's header comment) but not string.h - nothing in
+// this codebase needed it before this section. Five short, fixed,
+// hand-written names do not justify adding a fourth shim header for one
+// function.
+static bool sketch_tune_name_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return false;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static sketch_tunable_t *sketch_tune_find(const char *name) {
+    for (int i = 0; i < SKETCH_TUNABLE_COUNT; i++) {
+        if (sketch_tune_name_eq(g_sketchTunables[i].protoName, name)) return &g_sketchTunables[i];
+    }
+    return NULL;
+}
+
+int sketch_tune_count(void) { return SKETCH_TUNABLE_COUNT; }
+
+bool sketch_tune_describe(int index, const char **name, float *min, float *max, float *def) {
+    if (index < 0 || index >= SKETCH_TUNABLE_COUNT) return false;
+    *name = g_sketchTunables[index].protoName;
+    *min = g_sketchTunables[index].min;
+    *max = g_sketchTunables[index].max;
+    *def = g_sketchTunables[index].def;
+    return true;
+}
+
+const char *sketch_tune_define_name(int index) {
+    if (index < 0 || index >= SKETCH_TUNABLE_COUNT) return NULL;
+    return g_sketchTunables[index].defineName;
+}
+
+bool sketch_tune_get(const char *name, float *out) {
+    sketch_tunable_t *t = sketch_tune_find(name);
+    if (!t) return false;
+    *out = *t->value;
+    return true;
+}
+
+bool sketch_tune_set(const char *name, float value, float *outApplied) {
+    sketch_tunable_t *t = sketch_tune_find(name);
+    if (!t) return false;
+    if (value < t->min) value = t->min;
+    if (value > t->max) value = t->max;
+    *t->value = value;
+    if (outApplied) *outApplied = value;
+    return true;
+}
+#else // !SKETCH_LIVE_TUNE
+#define LIFT_DEBOUNCE_MS     LIFT_DEBOUNCE_MS_DEFAULT
+#define CONFIRM_MS           CONFIRM_MS_DEFAULT
+#define PENDING_GRACE_MS     PENDING_GRACE_MS_DEFAULT
+#define MIN_JUMP_ALLOW_PX    MIN_JUMP_ALLOW_PX_DEFAULT
+#define MAX_JUMP_PX          MAX_JUMP_PX_DEFAULT
+#define MAX_SPEED_PX_PER_MS  MAX_SPEED_PX_PER_MS_DEFAULT
+
+// Reads as empty/false in a normal build, the same "0 when the gate is off"
+// contract sensors.h's diagnostic structs already use (e.g.
+// sensors_debug_touch_poll_selftest()): a shipping build's devlink TUNE
+// command and the emulator's tunables panel both see "nothing declared"
+// rather than a stub that pretends to work.
+int sketch_tune_count(void) { return 0; }
+bool sketch_tune_describe(int index, const char **name, float *min, float *max, float *def) {
+    (void)index; (void)name; (void)min; (void)max; (void)def;
+    return false;
+}
+const char *sketch_tune_define_name(int index) { (void)index; return NULL; }
+bool sketch_tune_get(const char *name, float *out) { (void)name; (void)out; return false; }
+bool sketch_tune_set(const char *name, float value, float *outApplied) {
+    (void)name; (void)value; (void)outApplied;
+    return false;
+}
+#endif // SKETCH_LIVE_TUNE
 
 // Touch-stall recovery timeout. Unlike the rest of this block, nothing in
 // this file actually reads it: the FT3168 stall watchdog it used to gate
@@ -591,12 +836,21 @@ static void sketch_tick(const app_frame_t *f) {
                 // this constantly, mid-stroke as much as mid-confirmation
                 // (see dropouts, and CONFIRM_MS's comment for the measured
                 // 798-dropout session that motivated this) - so a candidate
-                // now gets exactly the grace an already-started stroke gets
-                // from LIFT_DEBOUNCE_MS, instead of being thrown away the
-                // instant a single zero-finger read arrives. Nothing was
-                // drawn yet either way, which is what makes the wait free.
+                // gets real grace instead of being thrown away the instant a
+                // single zero-finger read arrives. Nothing was drawn yet
+                // either way, which is what makes the wait free.
+                //
+                // PENDING_GRACE_MS, not LIFT_DEBOUNCE_MS: an unconfirmed
+                // candidate and an already-drawing stroke used to share one
+                // constant here, on the reasoning that they get "exactly the
+                // same grace" for "the exact same phenomenon". They were
+                // split 2026-08-14 (see PENDING_GRACE_MS_DEFAULT's own
+                // comment) once LIFT_DEBOUNCE_MS grew for the mid-stroke
+                // case and measurably raised how often a lone stray got
+                // believed here too - a risk this branch has no MAX_JUMP_PX-
+                // style backstop against, unlike the fingerDown branch below.
                 uint32_t nowMs = smp.tMs;
-                if (nowMs - st->pendLastTouchMs >= LIFT_DEBOUNCE_MS) {
+                if (nowMs - st->pendLastTouchMs >= PENDING_GRACE_MS) {
                     st->pendingStart = false;
                     st->lastReportX = -1; st->lastReportY = -1;
                     st->strays++;

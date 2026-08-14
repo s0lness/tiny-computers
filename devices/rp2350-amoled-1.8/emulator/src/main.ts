@@ -15,6 +15,7 @@ import { TouchOverlay, CONTACT_PRESETS, DEFAULT_PX_PER_MM } from "./touchoverlay
 import { mapClientPoint } from "./rotate";
 import { makeDraggable, wireButton, createButtonElement, applyRotation, type WiredButton, type ButtonEvents } from "./device";
 import { buildSensorControls } from "./sensors";
+import { buildTuneControls } from "./tunables";
 import { buildAppStrip, type AppStripControl } from "./appstrip";
 import { ShortcutRegistry, assignShortcut } from "./shortcuts";
 import { ConsoleLog, type LogLine } from "./consolelog";
@@ -358,6 +359,14 @@ function buildChrome(d: DeviceDescriptor): void {
       if (sensor.id.toLowerCase() === "shake") puckMotion.impulse((Math.random() - 0.5) * 500, (Math.random() - 0.5) * 380);
     });
     appStripControl = buildAppStrip($("#appStrip"), d.apps || [], emu);
+
+    // Live tunables (emu_abi.h's "tunables"): hidden entirely when the
+    // loaded module declares none, same "the wrap only shows up if the
+    // descriptor has something to put in it" rule appStripWrap already
+    // follows for apps just above.
+    const tunables = d.tunables || [];
+    $("#tuneToolboxWrap").classList.toggle("hidden", tunables.length === 0);
+    buildTuneControls($("#tuneToolbox"), tunables, emu);
   }
 
   shakeSensorIndex = (d.sensors || []).findIndex((s) => s.id.toLowerCase() === "shake");

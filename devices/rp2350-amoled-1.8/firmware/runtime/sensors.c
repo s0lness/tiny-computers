@@ -69,37 +69,32 @@
 // neighbours read back alongside it below, same datasheet section: 0x81
 // ID_G_THPEAK ("valid touching peak detect threshold", default 60) and 0x82
 // ID_G_THCAL ("threshold when calculating the focus of touching", default
-// 16). The FT3168 is not the FT5x06 itself (an AMOLED-generation part in the
-// same family, per FT3168.c's own register overlap with this exact
-// datasheet), so treat the *direction* (lower THGROUP = more sensitive) as
-// solid and the absolute default (70) as approximate for this specific chip
-// - which is exactly why FT3168_TOUCH_THRESHOLD below is a tunable, not a
-// hardcoded "correct" value.
+// 16).
+//
+// MEASURED ON HARDWARE, 2026-08-14: this register does not accept a write on
+// this part. touch_set_active() below used to write FT3168_TOUCH_THRESHOLD
+// (0x28) here on every boot and read it back to confirm; the readback came
+// back 0x0A every time, not 0x28, and that function's own "WRITE DID NOT
+// TAKE" check fired on every single boot it was tried. The write is gone now
+// (see touch_set_active() and touch_set_active_to() below) - a call that
+// looks like it configures the hardware and silently does nothing is worse
+// than no call at all, and is exactly the class of defect this project has
+// spent two days removing elsewhere. What this does NOT settle: whether
+// 0x80 is genuinely ID_G_THGROUP on this chip and merely read-only, or is
+// some other function entirely and the address match with the FT5x06 family
+// (real for every OTHER register this codebase uses) is a coincidence here.
+// The FT3168 is already established as not a plain FT5x06 (FT3168.c's own
+// register overlap with that family is partial, not total), so treat "this
+// is a sensitivity threshold at all" as an open question again, not just its
+// numeric default - the previous agent's inferred direction (lower stored
+// byte = more sensitive) was correctly recorded as a hypothesis rather than
+// a fact, and a rejected write is evidence against that hypothesis, not for
+// it. Do not re-add the write to chase this further without new evidence;
+// if a sensitivity knob for this chip exists at all, this is not proven to
+// be it.
 #define FT3168_REG_THGROUP 0x80
 #define FT3168_REG_THPEAK  0x81
 #define FT3168_REG_THCAL   0x82
-
-// The touch detection threshold this firmware actually asserts. Overridable
-// at build time (`cmake --build ... ` picks this up from a prior `cmake -S
-// firmware -B <dir> -DFT3168_TOUCH_THRESHOLD=N`) specifically so it can be
-// swept against the TOUCH_POLL_SELFTEST diagnostic's pendingStart/
-// strokeStarted ratio and strays count without editing this file for every
-// candidate - see docs/decisions for the measurement this was tuned against.
-//
-// 40 is the starting point, not a measured optimum: comfortably below the
-// FT5x06 family's documented default (70, see FT3168_REG_THGROUP above) so
-// it is a genuine sensitivity increase, and independently close to 40, the
-// value a real user of a different-but-related FocalTech part (DustinWatts/
-// FT6236, an Arduino library, `begin(40)`) reports "seems to be a good
-// number" by feel on real glass. Neither source is this exact chip on this
-// exact panel with this exact finger, which is the entire reason this is a
-// tunable rather than a constant: the right way to pick the final value is
-// to flash a few candidates and read the diagnostic, not to reason harder
-// about a register whose scaling on this specific part is inferred, not
-// measured.
-#ifndef FT3168_TOUCH_THRESHOLD
-#define FT3168_TOUCH_THRESHOLD 40
-#endif
 
 // Runs once, on core0, before multicore_launch_core1() - i.e. before any
 // contention over i2c1 can exist. Never call this after core1 has started;
@@ -113,29 +108,22 @@ static void touch_set_active(void) {
     DEV_I2C_Write_Byte(FT3168_I2C_ADDR, REG_POWER_MODE, FT3168_POWER_ACTIVE);
     DEV_I2C_Write_Byte(FT3168_I2C_ADDR, FT3168_REG_PERIOD_ACTIVE, FT3168_PERIOD_MS);
 
-    // Touch sensitivity. FT3168_Init() (the vendor file, FT3168.c) never
-    // configured this - see FT3168_REG_THGROUP's comment above - so until
-    // now the chip ran on whatever its power-on default happened to be,
-    // unmeasured and unmentioned anywhere in this codebase. Read the three
-    // threshold-family registers back BEFORE writing anything and print
-    // them: this is the one point in this firmware's boot where the
-    // untouched hardware default is still visible, since every boot after
-    // this line runs shows this function's own write instead. Same
-    // "do not trust a write, read it back and print both values" discipline
-    // pmic_raise_poweroff_threshold() (above) already uses for AXP2101 0x27.
-    uint8_t thgroupBefore = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP);
+    // Touch sensitivity registers: read-only observation now, not
+    // configuration - see FT3168_REG_THGROUP's comment above for the
+    // measurement (write rejected, readback stuck at 0x0A) that removed the
+    // write that used to be here. Still read and printed once at boot: this
+    // is the one point in this firmware's boot where the chip's own values
+    // are visible at all, and knowing what it actually reports is real
+    // information even though nothing here can change it - same
+    // "do not trust a write, read it back and print it" discipline
+    // pmic_raise_poweroff_threshold() (above) uses for AXP2101 0x27, minus
+    // the write half, which this register does not honour.
+    uint8_t thgroup = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP);
     uint8_t thpeak = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THPEAK);
     uint8_t thcal = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THCAL);
-    printf("FT3168 thresholds before write: THGROUP(0x80)=0x%02X THPEAK(0x81)=0x%02X THCAL(0x82)=0x%02X\r\n",
-           thgroupBefore, thpeak, thcal);
-
-    DEV_I2C_Write_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP, (uint8_t)FT3168_TOUCH_THRESHOLD);
-    uint8_t thgroupAfter = DEV_I2C_Read_Byte(FT3168_I2C_ADDR, FT3168_REG_THGROUP);
-    printf("FT3168 reg 0x80 (THGROUP): before=0x%02X target=0x%02X after=0x%02X\r\n",
-           thgroupBefore, (uint8_t)FT3168_TOUCH_THRESHOLD, thgroupAfter);
-    if (thgroupAfter != (uint8_t)FT3168_TOUCH_THRESHOLD) {
-        printf("FT3168 reg 0x80: WRITE DID NOT TAKE\r\n");
-    }
+    printf("FT3168 thresholds (0x80/0x81/0x82, read-only on this part - see FT3168_REG_THGROUP's comment): "
+           "THGROUP=0x%02X THPEAK=0x%02X THCAL=0x%02X\r\n",
+           thgroup, thpeak, thcal);
 }
 
 /* ---------------------------------------------------------------------
@@ -537,14 +525,17 @@ static inline bool touch_read_xy_to(uint16_t *x, uint16_t *y) {
 // sensors_start(). Never call the plain touch_set_active() past that point.
 // No read-back-and-printf here, unlike touch_set_active(): this runs on
 // core1 after an i2c1 bus recovery, and core1 may never printf (see this
-// file's ownership-rule banner in sensors.h) - it just reasserts the same
-// threshold byte touch_set_active() already logged once at boot.
+// file's ownership-rule banner in sensors.h) - it just reasserts device
+// mode, power mode and scan period, the same way touch_set_active() set
+// them at boot. THGROUP is deliberately not included any more: measured on
+// hardware, that register rejects the write (see FT3168_REG_THGROUP's
+// comment), so re-asserting it after every bus recovery was spending an
+// i2c1 transaction on something that never took effect either time.
 static bool touch_set_active_to(void) {
     bool ok = true;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, 0x00, 0x00) && ok;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, REG_POWER_MODE, (uint8_t)FT3168_POWER_ACTIVE) && ok;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, FT3168_REG_PERIOD_ACTIVE, FT3168_PERIOD_MS) && ok;
-    ok = i2c1_write_reg_to(FT3168_I2C_ADDR, FT3168_REG_THGROUP, (uint8_t)FT3168_TOUCH_THRESHOLD) && ok;
     return ok;
 }
 
@@ -713,10 +704,11 @@ static inline bool inject_q_pop(touch_sample_t *out) {
 // How often to push a synthetic "no finger" sample while Touch_INT_PIN is
 // high, so core0's lift-debounce and stall-watchdog timing (both wall-clock
 // based) keep getting fresh timestamps without core1 spending any I2C time
-// to produce them. Well under LIFT_DEBOUNCE_MS (an app-level constant, 80ms),
-// so a real lift is still noticed promptly; the transition itself is also
-// pushed immediately (see core1_entry), so this interval only governs the
-// steady idle state, not the edge.
+// to produce them. Well under LIFT_DEBOUNCE_MS (an app-level constant,
+// sketch.c's LIFT_DEBOUNCE_MS_DEFAULT, 220ms as of 2026-08-14 - see that
+// file's comment), so a real lift is still noticed promptly; the transition
+// itself is also pushed immediately (see core1_entry), so this interval only
+// governs the steady idle state, not the edge.
 #define TOUCH_IDLE_HEARTBEAT_MS 5
 
 // Touch recovery. The FT3168 can be left in a state where it answers I2C with

@@ -265,6 +265,137 @@ static bool devlink_word_is(const char *s, const char *word) {
     return after == '\0' || after == ' ';
 }
 
+/* ---------------------------------------------------------------------
+ * TUNE: get/set/list/freeze the firmware's live-tunable constants (today:
+ * sketch.c's dropout-tolerance knobs, gated behind SKETCH_LIVE_TUNE - see
+ * sensors.h's "DEVELOPMENT: sketchpad live tuning" section). This file
+ * never names "sketch", "lift" or any other specific tunable: it only knows
+ * the generic name/value shape devlink_hooks_t's tune_* function pointers
+ * declare, the same indirection app_current/app_name/app_switch already use
+ * so devlink.c stays hardware- and app-blind. See tools/README-devlink.md
+ * for the wire grammar this implements.
+ * ------------------------------------------------------------------- */
+
+// Prints a tunable value as a plain decimal with up to one fractional digit
+// (the only fraction any declared tunable's range currently needs - see
+// sketch.c's g_sketchTunables). Deliberately not printf's %f: nothing else
+// in this codebase uses it, so whether this board's linked libc even
+// supports float formatting is unverified, and guessing at linker behaviour
+// is exactly the kind of assumption this project measures instead of
+// trusting. All values in range are non-negative, so this does not need to
+// handle a negative fractional part.
+static void devlink_print_tune_value(float v) {
+    long tenths = (long)(v * 10.0f + 0.5f);
+    long whole = tenths / 10;
+    long frac = tenths % 10;
+    if (frac == 0) {
+        printf("%ld", whole);
+    } else {
+        printf("%ld.%ld", whole, frac);
+    }
+}
+
+// Takes one whitespace-separated word from *s into out (truncated to
+// outCap-1 if longer, with any overflow tail still consumed so parsing
+// resyncs on the next word rather than the leftover characters). Advances
+// *s past the word. Returns false if there was no word to take (immediate
+// end of string). Separate from devlink_parse_two_ints/devlink_word_is
+// above: TUNE's grammar needs to both MATCH a subcommand word and EXTRACT a
+// name that is not one of a fixed set, which neither existing helper does.
+static bool devlink_word_take(const char **s, char *out, size_t outCap) {
+    while (**s == ' ') (*s)++;
+    size_t i = 0;
+    while (**s && **s != ' ') {
+        if (i + 1 < outCap) out[i++] = **s;
+        (*s)++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+static void devlink_tune_list(void) {
+    int n = g_hooks.tune_count ? g_hooks.tune_count() : 0;
+    for (int i = 0; i < n; i++) {
+        const char *name; float mn, mx, def;
+        if (!g_hooks.tune_describe || !g_hooks.tune_describe(i, &name, &mn, &mx, &def)) continue;
+        float cur = def;
+        if (g_hooks.tune_get) g_hooks.tune_get(name, &cur);
+        printf("TUNE %s ", name);
+        devlink_print_tune_value(cur);
+        printf(" ");
+        devlink_print_tune_value(mn);
+        printf(" ");
+        devlink_print_tune_value(mx);
+        printf(" ");
+        devlink_print_tune_value(def);
+        printf("\r\n");
+    }
+    printf("END\r\n");
+}
+
+// Prints every tunable's CURRENT value as a `#define ..._DEFAULT` line,
+// ready to paste over sketch.c's own _DEFAULT constants - see that file's
+// SKETCH_LIVE_TUNE comment, "FREEZING is the end state". Prints the live
+// value, not the shipped default: freezing is specifically how a value
+// found by feel on the device gets promoted into source.
+static void devlink_tune_freeze(void) {
+    int n = g_hooks.tune_count ? g_hooks.tune_count() : 0;
+    for (int i = 0; i < n; i++) {
+        const char *name; float mn, mx, def;
+        if (!g_hooks.tune_describe || !g_hooks.tune_describe(i, &name, &mn, &mx, &def)) continue;
+        const char *defineName = g_hooks.tune_define_name ? g_hooks.tune_define_name(i) : NULL;
+        if (!defineName) defineName = name;
+        float cur = def;
+        if (g_hooks.tune_get) g_hooks.tune_get(name, &cur);
+        printf("#define %s_DEFAULT ", defineName);
+        devlink_print_tune_value(cur);
+        printf("f\r\n");
+    }
+    printf("END\r\n");
+}
+
+static void devlink_dispatch_tune(const char *args) {
+    while (*args == ' ') args++;
+    if (*args == '\0') {
+        devlink_tune_list();
+        return;
+    }
+
+    char sub[16];
+    const char *rest = args;
+    if (!devlink_word_take(&rest, sub, sizeof(sub))) { printf("ERR args\r\n"); return; }
+    for (char *c = sub; *c; c++) *c = (char)toupper((unsigned char)*c);
+
+    if (strcmp(sub, "FREEZE") == 0) {
+        devlink_tune_freeze();
+    } else if (strcmp(sub, "GET") == 0) {
+        char name[24];
+        if (!devlink_word_take(&rest, name, sizeof(name))) { printf("ERR args\r\n"); return; }
+        if (!g_hooks.tune_get) { printf("ERR no tunables\r\n"); return; }
+        float v;
+        if (!g_hooks.tune_get(name, &v)) { printf("ERR unknown %s\r\n", name); return; }
+        printf("TUNE %s ", name);
+        devlink_print_tune_value(v);
+        printf("\r\n");
+    } else if (strcmp(sub, "SET") == 0) {
+        char name[24];
+        if (!devlink_word_take(&rest, name, sizeof(name))) { printf("ERR args\r\n"); return; }
+        while (*rest == ' ') rest++;
+        if (*rest == '\0') { printf("ERR args\r\n"); return; }
+        char *end;
+        float v = strtof(rest, &end);
+        if (end == rest) { printf("ERR args\r\n"); return; }
+        if (!g_hooks.tune_set) { printf("ERR no tunables\r\n"); return; }
+        float applied;
+        if (!g_hooks.tune_set(name, v, &applied)) { printf("ERR unknown %s\r\n", name); return; }
+        printf("TUNE %s ", name);
+        devlink_print_tune_value(applied);
+        printf("\r\n");
+    } else {
+        printf("ERR args\r\n");
+    }
+}
+
 static void devlink_dispatch(char *line) {
     char *p = line;
     while (*p == ' ') p++;
@@ -362,6 +493,8 @@ static void devlink_dispatch(char *line) {
         if (!devlink_parse_one_int(args, &idx)) { printf("ERR args\r\n"); return; }
         bool ok = g_hooks.app_switch ? g_hooks.app_switch(idx) : false;
         printf(ok ? "OK\r\n" : "ERR range\r\n");
+    } else if (strcmp(cmd, "TUNE") == 0) {
+        devlink_dispatch_tune(args);
     } else {
         printf("ERR unknown %s\r\n", cmd);
     }

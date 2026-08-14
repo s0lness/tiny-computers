@@ -147,6 +147,33 @@
  *                 gesture beyond its individual buttons/sensors omits this,
  *                 and the emulator says plainly that none is declared
  *                 rather than guessing at one.
+ *
+ *   tunables      optional. Development-only knobs a firmware exposes for
+ *                 live iteration - this device's sketchpad dropout-tolerance
+ *                 constants, gated behind SKETCH_LIVE_TUNE
+ *                 (firmware/apps/sketch.c), are the first user of this.
+ *                 Each entry is `{ "id": "lift", "min": 20, "max": 1000,
+ *                 "default": 220 }`. Read-only here (the JSON is a
+ *                 declaration, not a value); the emulator reads and writes
+ *                 the LIVE value through emu_tune_get(index)/
+ *                 emu_tune_set(index, value) below, indexed into this same
+ *                 array, the same "declare the shape in JSON, act on it
+ *                 through an indexed call" pattern buttons[] and
+ *                 emu_button() already use. A firmware that declares no
+ *                 tunables omits this key entirely and the emulator shows no
+ *                 tuning panel, same as an app-less firmware omitting
+ *                 "apps".
+ *
+ *                 THIS PANEL IS FOR FAST ITERATION, NOT FOR FINDING THE
+ *                 RIGHT VALUE. The emulator's input-defect model (TouchSim)
+ *                 is measurably kinder than a real touch controller - see
+ *                 sketch.c's SKETCH_LIVE_TUNE comment for the 63-83 percent
+ *                 (emulator) against 3.5 percent (hardware) figure that
+ *                 proved it - so a value tuned here is a hypothesis, not a
+ *                 result, until it is also tried on the device (devlink's
+ *                 TUNE command, tools/README-devlink.md). The emulator's own
+ *                 UI is expected to say this next to the controls, not just
+ *                 this header comment.
  */
 int emu_device(void);
 
@@ -218,6 +245,25 @@ void emu_sensor_event(int index);
  */
 int  emu_app_current(void);
 void emu_app_switch(int index);
+
+/* ---- optional: live tunables ---------------------------------------------
+ *
+ * Only meaningful if emu_device() declared a "tunables" array (see above). A
+ * firmware with nothing tunable leaves these unimplemented and the emulator
+ * will not call them, same as emu_app_current/emu_app_switch when there is
+ * no "apps" array.
+ *
+ * index is the tunable's position in the declared "tunables" array, the same
+ * indexing convention emu_button()/emu_button_verdict() already use against
+ * "buttons". emu_tune_get returns the CURRENT value (not necessarily the
+ * declared default - a previous emu_tune_set call may have changed it).
+ * emu_tune_set clamps to the declared [min, max] itself (the same clamp the
+ * real device's TUNE SET applies), so the host does not have to duplicate
+ * that range check; call emu_tune_get afterward if the applied value matters
+ * to the caller.
+ */
+float emu_tune_get(int index);
+void  emu_tune_set(int index, float value);
 
 /* ---- sound ----------------------------------------------------------------
  *

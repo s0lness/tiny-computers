@@ -92,6 +92,21 @@
             <div id="appStrip" class="app-strip"></div>
           </div>
 
+          <!-- Live tunables (emu_abi.h's "tunables"): built entirely from
+               the firmware's own declaration, same as buttonToolbox/
+               sensorToolbox above - see tunables.ts. Hidden whenever the
+               loaded module declares none (a board build without
+               SKETCH_LIVE_TUNE, or any firmware with nothing tunable). -->
+          <div id="tuneToolboxWrap" class="hidden">
+            <details class="disclosure" open>
+              <summary>live tuning</summary>
+              <p class="tune-note">Approximates the real controller. Only the
+                device itself proves a value survives a real finger -
+                <code>bun tools/dev.ts tune set &lt;name&gt; &lt;value&gt;</code>.</p>
+              <div id="tuneToolbox"></div>
+            </details>
+          </div>
+
           <h3>console</h3>
           <div id="consolePane" class="console-pane"></div>
         </div>

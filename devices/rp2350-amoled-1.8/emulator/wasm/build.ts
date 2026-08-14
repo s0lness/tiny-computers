@@ -69,6 +69,8 @@ const EMU_EXPORTS = [
   "emu_sensor_event",
   "emu_app_current",
   "emu_app_switch",
+  "emu_tune_get",
+  "emu_tune_set",
   "emu_sound_sample_rate",
   "emu_sound_play_seq",
   "emu_sound_stop_seq",
@@ -124,6 +126,14 @@ const args = [
   "-Wl,--import-symbols", // undefined externs (js_log, the math imports)
                            // become real wasm imports instead of a hard
                            // link error - see this file's header comment.
+  // Sketchpad live tuning (firmware/apps/sketch.c's SKETCH_LIVE_TUNE),
+  // always ON for the emulator build, unlike the board's default build
+  // (off unless -DSKETCH_LIVE_TUNE=1 is passed to cmake, see
+  // firmware/CMakeLists.txt): the emulator IS a development tool, so there
+  // is no shipped-firmware state to protect here, and the tunables panel
+  // (emu_abi.h's "tunables" section) has nothing to build controls from
+  // without this.
+  "-DSKETCH_LIVE_TUNE=1",
   ...EMU_EXPORTS.map((name) => `-Wl,--export=${name}`),
   ...INCLUDES.flatMap((dir) => ["-I", dir]),
   ...SOURCES,

@@ -29,6 +29,12 @@ export interface EmuExports {
   // otherwise).
   emu_app_current?(): number;
   emu_app_switch?(index: number): void;
+  // Live tunables (see DeviceDescriptor.tunables and emu_abi.h's "optional:
+  // live tunables" section). Optional, same reasoning as emu_app_current/
+  // emu_app_switch: a firmware with nothing tunable omits these and the
+  // emulator builds no tuning panel.
+  emu_tune_get?(index: number): number;
+  emu_tune_set?(index: number, value: number): void;
   // Sound: two counters to diff against what was last seen, not a call the
   // host makes (sound is an output, driven by firmware logic like the
   // timer's alarm, never by the host directly). See emu_abi.h's "sound"
@@ -57,6 +63,16 @@ export interface DeviceSensor {
   label?: string;
 }
 
+// A development-only live-tuning knob (emu_abi.h's "tunables" section).
+// Index in the declared array is how emu_tune_get/emu_tune_set address it,
+// the same convention DeviceButton uses against emu_button().
+export interface DeviceTunable {
+  id: string;
+  min: number;
+  max: number;
+  default: number;
+}
+
 // emu_device()'s JSON also carries a "gestures" array (the BOOT+PWR chord's
 // own prose, per emu_abi.h) that nothing on this page reads any more: the
 // sidebar's gesture disclosure is gone (btnChord in the bottom bar performs
@@ -71,6 +87,7 @@ export interface DeviceDescriptor {
   touch?: { points?: number };
   sensors?: DeviceSensor[];
   apps?: string[];
+  tunables?: DeviceTunable[];
 }
 
 export const DEFAULT_WASM_URL = "wasm/emu.wasm";

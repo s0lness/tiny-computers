@@ -194,6 +194,18 @@ if(DEFINED TOUCH_POLL_SELFTEST)
     target_compile_definitions(main PRIVATE TOUCH_POLL_SELFTEST=${TOUCH_POLL_SELFTEST})
 endif()
 
+# Sketchpad live tuning over devlink (firmware/apps/sketch.c's
+# SKETCH_LIVE_TUNE comment, firmware/devlink.c's TUNE command). Optional,
+# off by default, same reasoning and same pattern as TOUCH_POLL_SELFTEST
+# just above: a shipped build carries the tunables as plain #define
+# constants with no runtime variable and no way to leave a knob in a bad
+# position, and turning this on is a build flag, not a source edit to
+# remember to revert:
+#   cmake -S firmware -B firmware/build-tune -DSKETCH_LIVE_TUNE=1
+if(DEFINED SKETCH_LIVE_TUNE)
+    target_compile_definitions(main PRIVATE SKETCH_LIVE_TUNE=${SKETCH_LIVE_TUNE})
+endif()
+
 pico_add_extra_outputs(main)
 
 # Fail the build on a violation of tools/invariants (docs/decisions/0006):
