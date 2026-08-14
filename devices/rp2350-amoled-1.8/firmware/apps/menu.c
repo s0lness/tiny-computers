@@ -1072,15 +1072,25 @@ static void draw_icon_lucide_chrono(int ox, int oy, uint16_t color) {
     // stem, not another bar. They run from inside the bar's own ink down past
     // the ring's outer edge, so both joins overlap rather than abut, which is
     // what MIN composition needs to merge them into one mark.
+    // ONE neck, not two stems. The first version used two, which left a
+    // two-pixel window of paper between them: at 96px that reads as a hole
+    // punched in the crown rather than as a neck, and the pair also piled ink
+    // up where both met the ring, making that junction visibly heavier than
+    // any other stroke in the set. The owner saw it as the icon spilling out
+    // of itself ("ca deborde un tout petit peu sur le chronometre").
+    //
+    // A single centred neck has neither problem: no gap to misread, and one
+    // junction instead of two. It also matches what a stopwatch actually
+    // looks like, a wide button on a narrow stem.
+    //
+    // It runs from inside the bar's own ink down past the ring's outer edge,
+    // so both joins overlap rather than abut, which is what MIN composition
+    // needs to merge them into one mark.
     {
-        const float stemHalf = 3.0f;
-        float sx[2], sy[2];
-        sx[0] = dx + 42.0f; sy[0] = dy + 10.0f;
-        sx[1] = dx + 43.0f; sy[1] = dy + 27.0f;
-        shapes_stroke_polyline_aa_land(sx, sy, 2, stemHalf, color);
-        sx[0] = dx + 54.0f; sy[0] = dy + 10.0f;
-        sx[1] = dx + 53.0f; sy[1] = dy + 27.0f;
-        shapes_stroke_polyline_aa_land(sx, sy, 2, stemHalf, color);
+        const float neckHalf = 4.0f;
+        float sx[2] = { dx + 48.0f, dx + 48.0f };
+        float sy[2] = { dy + 10.0f, dy + 27.0f };
+        shapes_stroke_polyline_aa_land(sx, sy, 2, neckHalf, color);
     }
 }
 
