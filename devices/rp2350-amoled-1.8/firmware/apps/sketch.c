@@ -549,6 +549,39 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 #define PALETTE_POP_MS          240.0f
 #define PALETTE_STAGGER_MS       20.0f
 
+// The exact peak ease_out_back() ever reaches, over t in [0,1]: the
+// standard cubic's maximum sits at u=t-1=-2*c1/(3*c3) (c1=1.70158,
+// c3=c1+1), giving f_max = 1 - 4*c1^3/(27*c3^2) ~= 1.099965. Rounded UP to
+// 1.10 rather than to the nearer 1.0999, so any box sized from this
+// constant is a provable upper bound on how far a popping cell's own edge
+// can ever reach, never a rounding-down that could clip a real frame by a
+// fraction of a pixel and reopen the gutter-residue bug this same
+// reasoning already fixed once (see draw_rounded_rect and palette_render_
+// frame's own comments). Used by palette_cell_max_extent() to whiten
+// exactly as much as a cell could ever need, and no more.
+#define PALETTE_POP_PEAK_SCALE 1.10f
+
+// Minimum wall-clock time between two palette re-renders while nothing
+// discrete (a candidate changing) demands an immediate one. THE BOARD
+// RESET THIS EXISTS TO PREVENT, found by the owner using a real device
+// while the coordinator listened on the serial port: "palette: open"
+// fires, then a boot log line, then the panel reboots into the default
+// app (chrono) - core0 never got back to feed the watchdog. Before this
+// existed, palette_drain_sample() called a full render on EVERY drained
+// haveTouch sample while the pop-in animation was in progress, gated on
+// nothing but wall-clock elapsed time - and on real hardware, core1 polls
+// the touch controller far faster than it reports (up to ~1.4kHz when
+// Touch_INT_PIN is held low), so hundreds of samples with timestamps
+// spanning the ~280ms animation can arrive queued together, each one
+// re-triggering a full nine-cell render and panel push before core0 ever
+// returns to whatever feeds the watchdog. ~30fps (33ms) is coarse enough
+// that even a large queued backlog collapses to a small, fixed number of
+// actual frames - see this file's own repro-sketch-palette-watchdog-
+// reset.ts for the measured frame count under exactly that kind of burst -
+// and fine enough that the pop still reads as an animation, not a
+// slideshow.
+#define PALETTE_RENDER_MIN_MS 33.0f
+
 // Extra margin past every cell's own mathematically exact settle time
 // (the last-starting cell's own delay + PALETTE_POP_MS) before palette_
 // drain_sample() stops treating the palette as "still animating" and
@@ -987,6 +1020,7 @@ typedef struct {
     uint32_t paletteTouchSeenMs;           // wall-clock of that last sample
     uint32_t paletteAnimStartMs;           // when open_palette() fired - the pop-in's t=0
     int      paletteLastCandidate;         // -1: none; -2: nothing rendered yet (open_palette's own sentinel)
+    uint32_t paletteLastRenderMs;          // when palette_render_frame() last actually did work - see PALETTE_RENDER_MIN_MS
 
     // The stroke history (see this file's header section above this
     // struct for the full design). strokeCount/pointCount are the pools'
@@ -1395,9 +1429,18 @@ static float rounded_rect_sdf(float px, float py, float cx, float cy,
 // none of shapes.h's primitives cover on their own (see this file's
 // palette header comment for why a local primitive, in panel space,
 // rather than shapes.h's landscape-mapped ones).
-static void draw_rounded_rect(uint16_t *fb, float cx, float cy, float halfW, float halfH, float cornerR,
-                               uint16_t colorPx, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
-    if (halfW <= 0.0f || halfH <= 0.0f) return;
+//
+// Returns the number of pixels the coverage loop below actually evaluated
+// (the clipped bounding box's own area, sqrtf and all - every one of them
+// costs the same whether or not it ends up covered, since `continue` only
+// skips the WRITE, not the SDF call above it). This is not a diagnostic
+// bolted on after the fact: it is the exact count palette_render_frame()
+// needs to log its own per-frame cost (see that function's own comment on
+// the board reset this measures the fix for), returned rather than
+// recomputed at the call site so the two can never silently drift apart.
+static int draw_rounded_rect(uint16_t *fb, float cx, float cy, float halfW, float halfH, float cornerR,
+                              uint16_t colorPx, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    if (halfW <= 0.0f || halfH <= 0.0f) return 0;
     if (cornerR > halfW) cornerR = halfW;
     if (cornerR > halfH) cornerR = halfH;
     if (cornerR < 0.0f) cornerR = 0.0f;
@@ -1408,7 +1451,7 @@ static void draw_rounded_rect(uint16_t *fb, float cx, float cy, float halfW, flo
     if (minY < 0) minY = 0;
     if (maxX > PANEL_W - 1) maxX = PANEL_W - 1;
     if (maxY > PANEL_H - 1) maxY = PANEL_H - 1;
-    if (minX > maxX || minY > maxY) return;
+    if (minX > maxX || minY > maxY) return 0;
 
     for (int iy = minY; iy <= maxY; iy++) {
         float py = (float)iy + 0.5f;
@@ -1430,6 +1473,7 @@ static void draw_rounded_rect(uint16_t *fb, float cx, float cy, float halfW, flo
     if (minY < *dMinY) *dMinY = minY;
     if (maxX > *dMaxX) *dMaxX = maxX;
     if (maxY > *dMaxY) *dMaxY = maxY;
+    return (maxX - minX + 1) * (maxY - minY + 1);
 }
 
 // Whether (px,py) is over cell `index`'s visible shape, at its BASE size -
@@ -1473,79 +1517,183 @@ static float ease_out_back(float t) {
     return 1.0f + c3 * u * u * u + c1 * u * u;
 }
 
-// Redraws all nine cells for the current instant: each cell's own pop-in
-// progress (by its stagger rank) and, once a cell has finished popping,
-// whether it is the current drag candidate (grown by PALETTE_CANDIDATE_
-// GROW_PX - see this file's palette header comment on why growing, not
-// lightening, is the highlight).
+// The provable upper bound on cell (col,row)'s own drawn half-extent, at
+// ANY instant this feature could ever draw it (mid-overshoot, grown as the
+// candidate, or both in immediate succession across frames) - see
+// PALETTE_POP_PEAK_SCALE's own comment for where 1.10 comes from. This is
+// what whitening is now scoped to, per cell, instead of the whole panel -
+// see palette_render_frame()'s own header comment for why the earlier
+// full-panel choice, while correct, was never costed and cost the board a
+// reboot.
+static void palette_cell_max_extent(int col, int row, int *cx, int *cy, int *maxHalfW, int *maxHalfH) {
+    int halfW, halfH;
+    palette_cell_bounds(col, row, cx, cy, &halfW, &halfH);
+    *maxHalfW = (int)ceilf((float)halfW * PALETTE_POP_PEAK_SCALE) + (int)PALETTE_CANDIDATE_GROW_PX + 2;
+    *maxHalfH = (int)ceilf((float)halfH * PALETTE_POP_PEAK_SCALE) + (int)PALETTE_CANDIDATE_GROW_PX + 2;
+}
+
+// Whitens exactly cell `index`'s own maximum possible footprint (never the
+// whole panel - see palette_cell_max_extent()) and widens the tick's dirty
+// accumulator to match. Returns the number of pixels actually written
+// (post-clip), the same "count what the work costs" reasoning draw_
+// rounded_rect()'s own return value follows.
+static int palette_whiten_cell(uint16_t *fb, int index, int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
+    int cx, cy, maxHalfW, maxHalfH;
+    palette_cell_max_extent(col, row, &cx, &cy, &maxHalfW, &maxHalfH);
+    int x0 = cx - maxHalfW, y0 = cy - maxHalfH;
+    int w = 2 * maxHalfW, h = 2 * maxHalfH;
+    if (x0 < 0) { w += x0; x0 = 0; }
+    if (y0 < 0) { h += y0; y0 = 0; }
+    if (x0 + w > PANEL_W) w = PANEL_W - x0;
+    if (y0 + h > PANEL_H) h = PANEL_H - y0;
+    if (w <= 0 || h <= 0) return 0;
+    gfx_fill_rect(x0, y0, w, h, PX_WHITE);
+    if (x0 < *dMinX) *dMinX = x0;
+    if (y0 < *dMinY) *dMinY = y0;
+    if (x0 + w - 1 > *dMaxX) *dMaxX = x0 + w - 1;
+    if (y0 + h - 1 > *dMaxY) *dMaxY = y0 + h - 1;
+    return w * h;
+}
+
+// Draws cell `index` at the given instant (t, scale already resolved by
+// the caller) and returns draw_rounded_rect()'s own coverage-eval count,
+// so callers can log it without recomputing anything.
+static int palette_draw_cell(uint16_t *fb, int index, float scale, bool isCandidate,
+                              int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
+    int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
+    int cx, cy, halfW, halfH;
+    palette_cell_bounds(col, row, &cx, &cy, &halfW, &halfH);
+    float curHalfW = (float)halfW * scale, curHalfH = (float)halfH * scale;
+    float curCorner = PALETTE_CORNER_PX * scale;
+    if (isCandidate) {
+        curHalfW += PALETTE_CANDIDATE_GROW_PX;
+        curHalfH += PALETTE_CANDIDATE_GROW_PX;
+    }
+    return draw_rounded_rect(fb, (float)cx, (float)cy, curHalfW, curHalfH, curCorner, palette_color(index),
+                              dMinX, dMinY, dMaxX, dMaxY);
+}
+
+// Redraws whatever the current instant requires - each cell's own pop-in
+// progress while animating, or just the candidate hand-off once settled -
+// and logs the actual cost (see this function's own header comment for
+// why that logging exists). Replaces an earlier version that whitened and
+// recomputed all nine cells' coverage on EVERY call, unconditionally.
 //
-// THE WHOLE PANEL IS WHITENED FIRST, UNCONDITIONALLY, EVERY CALL - not a
-// per-cell box. It used to be a per-cell box sized for the candidate grow
-// alone (halfW + PALETTE_CANDIDATE_GROW_PX), which missed the OTHER thing
-// that pushes a cell past its own base size: ease_out_back's own overshoot,
-// which peaks at ~1.10x scale (a "little balloon" popping past full size
-// before settling back to it - see this file's palette header comment on
-// why the overshoot is the point). A cell 10% past its base halfW is wider
-// than halfW + PALETTE_CANDIDATE_GROW_PX (3px) by several pixels at this
-// grid's cell sizes, so that box was too small: the overshoot painted past
-// its own edge, the NEXT frame's smaller box never reached back out that
-// far to reclaim it, and the leftover ring sat in the gutter between cells
-// forever, un-repainted once the animation settled and stopped redrawing
-// (the owner's own report: "y a des espèces de traits qui traînent",
-// visible between both rows and columns). Bounding the exact swept extent
-// of nine independently staggered, independently overshooting shapes,
-// precisely enough to whiten only that and no more, is exactly the kind
-// of margin arithmetic decision 0001's own history (a push rectangle one
-// column too narrow, cap pixels outside their band, a marker's trail) says
-// not to trust. Whitening the whole panel is what a full-panel push
-// already made free: it is not a bigger area than a correct tight bound
-// would have been by more than a small constant factor, and it cannot be
-// wrong regardless of what PALETTE_POP_MS, PALETTE_CANDIDATE_GROW_PX, or
-// the easing curve are ever tuned to later.
+// THE BOARD RESET THIS FIXES. The owner opened the palette on real
+// hardware and it worked - then the board rebooted into the default app
+// mid-gesture, straight after "palette: open" in the serial log, no fault
+// printed, core1 fine: core0 alone, not getting back to the watchdog.
+// core1 polls the touch controller far faster than it reports (up to
+// ~1.4kHz when Touch_INT_PIN is held low), and this app's own drain loop
+// (sketch_tick) processes every queued sample before ever returning - so
+// during the ~280ms pop-in, a real burst of samples with timestamps
+// spanning that whole window can arrive queued together, and the OLD code
+// called this function, full-panel whiten and all nine cells' worth of
+// signed-distance coverage math included, on every single one of them
+// before core0 got to do anything else. One frame's own cost was never
+// free (roughly 165,000 whitened pixels plus ~150,000 coverage
+// evaluations, each a sqrtf - see this file's own repro test for the
+// measured figures against apps that already run comfortably here), but
+// it was AFFORDABLE ONCE; the reboot came from doing it an UNBOUNDED
+// number of times with no relation to how much the picture actually
+// needed to change.
+//
+// TWO CHANGES, ADDRESSING THAT DIRECTLY:
+//   1. THROTTLED to PALETTE_RENDER_MIN_MS apart during the animation,
+//      unless a candidate change demands an immediate frame - a queued
+//      backlog of any size now costs a small, FIXED number of frames
+//      (elapsed-time / 33ms), not one frame per sample.
+//   2. SCOPED to only the cells that can possibly have changed. Once the
+//      pop-in has fully settled - which is most of this feature's own
+//      lifetime, since picking a colour can take seconds while the pop
+//      itself is a fifth of one - a candidate change affects at most TWO
+//      cells (the one losing it, the one gaining it), so only those two
+//      are whitened and redrawn, each within its own provable maximum
+//      extent (palette_cell_max_extent(), never the whole panel). The
+//      correctness this feature's own gutter-residue fix already
+//      established - nothing left behind, because the whitened box is a
+//      proven upper bound on what could ever have been drawn there - is
+//      unchanged; only how much of the panel that proof is applied to,
+//      per call, is smaller now.
 static void palette_render_frame(sketch_state_t *st, uint16_t *fb, uint32_t nowMs, int candidateIdx,
                                   int *dMinX, int *dMinY, int *dMaxX, int *dMaxY) {
-    for (int i = 0; i < PANEL_W * PANEL_H; i++) fb[i] = 0xFFFF;
+    float elapsed = (float)(nowMs - st->paletteAnimStartMs);
+    bool allSettled = elapsed >= (PALETTE_POP_MS + 2.0f * PALETTE_STAGGER_MS);
+    bool candidateChanged = (candidateIdx != st->paletteLastCandidate);
 
-    for (int index = 0; index < PALETTE_COUNT; index++) {
-        int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
-        int cx, cy, halfW, halfH;
-        palette_cell_bounds(col, row, &cx, &cy, &halfW, &halfH);
+    if (allSettled && !candidateChanged) return; // nothing discrete happened; nothing to redraw
 
-        float elapsed = (float)(nowMs - st->paletteAnimStartMs);
-        float delay = (float)palette_stagger_rank(col, row) * PALETTE_STAGGER_MS;
-        float t = (elapsed - delay) / PALETTE_POP_MS;
-        if (t < 0.0f) t = 0.0f;
-        if (t > 1.0f) t = 1.0f;
-        float scale = ease_out_back(t);
+    int whitenPx = 0, coverageEvals = 0;
+    const char *kind;
 
-        if (scale <= 0.0f) continue; // this cell's own stagger delay has not elapsed yet: stays blank
-
-        float curHalfW = (float)halfW * scale, curHalfH = (float)halfH * scale;
-        float curCorner = PALETTE_CORNER_PX * scale;
-        if (t >= 1.0f && index == candidateIdx) {
-            curHalfW += PALETTE_CANDIDATE_GROW_PX;
-            curHalfH += PALETTE_CANDIDATE_GROW_PX;
+    if (allSettled) {
+        kind = "settled";
+        int touched[2], n = 0;
+        if (st->paletteLastCandidate >= 0) touched[n++] = st->paletteLastCandidate;
+        if (candidateIdx >= 0 && candidateIdx != st->paletteLastCandidate) touched[n++] = candidateIdx;
+        // Whiten BOTH before drawing either - see this function's own
+        // "two passes, not interleaved" comment above the loop below for
+        // why: two adjacent cells' own max-extent boxes can legitimately
+        // overlap (that overlap margin is exactly what the overshoot
+        // needed), and whitening cell B after drawing cell A would erase
+        // whatever of A's own ink fell inside that shared margin.
+        for (int k = 0; k < n; k++) whitenPx += palette_whiten_cell(fb, touched[k], dMinX, dMinY, dMaxX, dMaxY);
+        for (int k = 0; k < n; k++) {
+            int index = touched[k];
+            coverageEvals += palette_draw_cell(fb, index, 1.0f, index == candidateIdx, dMinX, dMinY, dMaxX, dMaxY);
         }
-        draw_rounded_rect(fb, (float)cx, (float)cy, curHalfW, curHalfH, curCorner, palette_color(index),
-                           dMinX, dMinY, dMaxX, dMaxY);
+    } else {
+        // Still animating: every cell's own scale can still be changing
+        // (a later stagger rank may still be popping in even once an
+        // earlier one has settled), so all nine are candidates for
+        // redraw - throttled UNCONDITIONALLY, candidate change or not.
+        // The candidate highlight itself only ever applies once a cell's
+        // own t has individually reached 1.0 (see the `t >= 1.0f` guard
+        // below), so a change while still popping rarely has any visible
+        // effect yet to rush - and not making an exception here is what
+        // gives this phase a hard, unconditional cap on render count
+        // (ceil(animation length / PALETTE_RENDER_MIN_MS), full stop)
+        // instead of a soft one a jittery signal could still defeat by
+        // toggling the candidate every sample.
+        if ((nowMs - st->paletteLastRenderMs) < (uint32_t)PALETTE_RENDER_MIN_MS) return;
+        st->paletteLastRenderMs = nowMs;
+        kind = "anim";
+
+        // TWO PASSES, NOT INTERLEAVED - whiten every cell's own max extent
+        // FIRST, only THEN draw any of them. A single whiten-then-draw
+        // pass per cell, index order, looks equivalent and is not: cell
+        // 5's own max-extent box (sized for ITS OWN worst-case overshoot)
+        // can reach a few pixels into where cell 4's actual ink was just
+        // drawn, if cell 4 happens to be the candidate and grown - so
+        // whitening cell 5 right after drawing cell 4 erases the part of
+        // cell 4's own highlight that fell inside that shared margin.
+        // Caught by this file's own feature test (the candidate-grown
+        // probe came back white) before it shipped a second silent
+        // residue bug in the same feature.
+        for (int index = 0; index < PALETTE_COUNT; index++) {
+            whitenPx += palette_whiten_cell(fb, index, dMinX, dMinY, dMaxX, dMaxY);
+        }
+        for (int index = 0; index < PALETTE_COUNT; index++) {
+            int col = index % PALETTE_COLS, row = index / PALETTE_COLS;
+            float delay = (float)palette_stagger_rank(col, row) * PALETTE_STAGGER_MS;
+            float t = (elapsed - delay) / PALETTE_POP_MS;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            float scale = ease_out_back(t);
+            if (scale <= 0.0f) continue; // this cell's own stagger delay has not elapsed yet: stays blank
+            coverageEvals += palette_draw_cell(fb, index, scale, t >= 1.0f && index == candidateIdx,
+                                                dMinX, dMinY, dMaxX, dMaxY);
+        }
     }
 
-    // Always push the whole panel while the palette is doing anything -
-    // deliberately, not an oversight. An animation is many frames, each
-    // one has to obey decision 0001's 8px rule and the "no pixel changes
-    // outside the pushed rectangle" invariant, and getting a tight
-    // per-frame union of nine independently animating, independently
-    // growing rounded rects right, every single frame, is exactly the
-    // kind of off-by-one this project has already been bitten by
-    // separately in each of those three ways. The full panel is trivially
-    // correct on both counts (368 is a multiple of 8; nothing this
-    // feature ever draws while open is outside it) and, since the grid
-    // already spans the whole panel by design, is not meaningfully more
-    // data than a tight union would have been anyway.
-    if (0 < *dMinX) *dMinX = 0;
-    if (0 < *dMinY) *dMinY = 0;
-    if (*dMaxX < PANEL_W - 1) *dMaxX = PANEL_W - 1;
-    if (*dMaxY < PANEL_H - 1) *dMaxY = PANEL_H - 1;
+    // Logged, not just computed, so the emulator can count it without any
+    // new exported accessor - repro-sketch-palette-watchdog-reset.ts reads
+    // this exactly like every other diagnostic line in this file (see
+    // "palette: open", "stroke split") rather than needing new plumbing
+    // through emu_shim.c/build.ts, which belong to work in flight
+    // elsewhere in this tree right now.
+    printf("palette: frame kind=%s whitenPx=%d coverageEvals=%d\r\n", kind, whitenPx, coverageEvals);
 }
 
 // Fires once the hold-candidacy check in sketch_tick's drain loop decides
@@ -1604,6 +1752,13 @@ static void open_palette(sketch_state_t *st, uint16_t *fb, int touchX, int touch
     for (int i = 0; i < PALETTE_COUNT; i++) {
         if (palette_cell_contains(i, touchX, touchY)) { initialCandidate = i; break; }
     }
+    // -2, not whatever it happened to hold before (which could, by
+    // coincidence, already equal initialCandidate - both -1 is common,
+    // opening over the gap): this guarantees palette_render_frame() sees
+    // its own candidateChanged as true and renders this very first frame
+    // unconditionally, the same "always render the discrete, defining
+    // moment" rule a candidate hand-off gets later.
+    st->paletteLastCandidate = -2;
     palette_render_frame(st, fb, nowMs, initialCandidate, dMinX, dMinY, dMaxX, dMaxY);
     st->paletteLastCandidate = initialCandidate;
 
