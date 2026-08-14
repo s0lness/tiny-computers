@@ -54,10 +54,10 @@ const PANEL_H = 448;
 
 const CONFIRM_MS = 40;
 const LONG_PRESS_MS = 550;
-const PALETTE_POP_MS = 240;
-const PALETTE_STAGGER_MS = 20;
-const PALETTE_RENDER_MIN_MS = 33;
-const PALETTE_ANIM_TOTAL_MS = PALETTE_POP_MS + 2 * PALETTE_STAGGER_MS; // 280
+const PALETTE_POP_MS = 160; // fifth round: was 240 - shortened, owner asked for "plus rapide"
+const PALETTE_STAGGER_MS = 14; // fifth round: was 20
+const PALETTE_RENDER_MIN_MS = 16; // fifth round: was 33 - see sketch.c's own headroom comment
+const PALETTE_ANIM_TOTAL_MS = PALETTE_POP_MS + 2 * PALETTE_STAGGER_MS; // 188
 
 let passCount = 0;
 let failCount = 0;

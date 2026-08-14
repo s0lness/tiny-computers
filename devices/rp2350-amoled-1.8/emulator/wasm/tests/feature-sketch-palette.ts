@@ -74,8 +74,8 @@ const PALETTE_COUNT = PALETTE_COLS * PALETTE_ROWS; // 9
 const PALETTE_CELL_GAP_PX = 8; // sketch.c PALETTE_CELL_GAP_PX
 const PALETTE_CORNER_PX = 26; // sketch.c PALETTE_CORNER_PX
 const PALETTE_CANDIDATE_GROW_PX = 3; // sketch.c PALETTE_CANDIDATE_GROW_PX
-const PALETTE_POP_MS = 240; // sketch.c PALETTE_POP_MS
-const PALETTE_STAGGER_MS = 20; // sketch.c PALETTE_STAGGER_MS
+const PALETTE_POP_MS = 160; // sketch.c PALETTE_POP_MS - fifth round: was 240, owner asked for "plus rapide"
+const PALETTE_STAGGER_MS = 14; // sketch.c PALETTE_STAGGER_MS - fifth round: was 20
 // gfx.h's own device-wide bezel-hidden margin (see its own comment for the
 // number and how it was found - a photograph, not a datasheet) - the
 // palette grid insets by this plus the candidate's own grow, see sketch.c
@@ -85,8 +85,8 @@ const PALETTE_GRID_INSET_PX = PANEL_BEZEL_MARGIN_PX + PALETTE_CANDIDATE_GROW_PX;
 const PALETTE_GRID_W = PANEL_W - 2 * PALETTE_GRID_INSET_PX; // sketch.c PALETTE_GRID_W
 const PALETTE_GRID_H = PANEL_H - 2 * PALETTE_GRID_INSET_PX; // sketch.c PALETTE_GRID_H
 // The animation's own worst case: the corner cells' own stagger delay
-// (Chebyshev rank 2) plus their own pop duration - mirrors palette_render_
-// frame/palette_drain_sample's own "animating" threshold.
+// (Chebyshev rank 2) plus their own pop duration - mirrors palette_advance_
+// animation()'s own "still animating" threshold (sketch.c).
 const PALETTE_ANIM_TOTAL_MS = PALETTE_POP_MS + 2 * PALETTE_STAGGER_MS;
 
 // Mirror of sketch.c's palette_cell_bounds(): the raw grid cell (index =
@@ -666,7 +666,13 @@ async function main() {
     // overshoot's own peak, and fully settled) - every one of them still
     // has to restore the canvas byte for byte. ------------------------------
     console.log("\n-- dismissing at several points across the pop-in animation, each must still be byte-identical --");
-    const midAnimHoldsMs = [0, 60, 140, 220, PALETTE_ANIM_TOTAL_MS + 60];
+    // Fifth round: rescaled with PALETTE_ANIM_TOTAL_MS itself (188, was
+    // 280) so these still land at the same RELATIVE points - freshly
+    // opened, early in the overshoot, past the overshoot's own peak
+    // (t~=0.580 of a cell's own local timeline - see PALETTE_POP_PEAK_
+    // SCALE's own comment in sketch.c), and fully settled - rather than at
+    // now-stale absolute offsets tuned for the old, longer animation.
+    const midAnimHoldsMs = [0, 40, 95, 150, PALETTE_ANIM_TOTAL_MS + 60];
     for (const extraHoldMs of midAnimHoldsMs) {
         const before = dev.fbSnapshot();
         t = holdStill(dev, gapX, gapY, t + 300, CONFIRM_MS + LONG_PRESS_MS + extraHoldMs);

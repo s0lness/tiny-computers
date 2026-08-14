@@ -520,18 +520,24 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
  * ANIMATION. "Pop out like little balloons" - a scale-up from small to
  * full size with a slight overshoot before it settles (ease_out_back()),
  * not a flat ease-to-stop: the overshoot is most of what makes it read as
- * a pop rather than a grow. PALETTE_POP_MS=240 is long enough to actually
- * see happen, short enough that a child who already knows which colour she
- * wants (this menu opens hundreds of times) is not kept waiting.
- * PALETTE_STAGGER_MS gives each cell a small delay by its Chebyshev
- * distance from the centre cell (palette_stagger_rank()) - 0/1/2 rings, so
- * the nine arrive as a small ripple (centre, then the four edges, then the
- * four corners) rather than one flat block, for the cost of one extra
- * subtraction and multiply per cell. Hit-testing (palette_cell_contains(),
- * used by both the live candidate and the final pick) reads the FIXED
- * target grid, never the animation's current scale - a cell still growing
- * is already fully selectable, so a fast child's slide is never fighting
- * the animation for correctness, only for how it looks while it happens.
+ * a pop rather than a grow. PALETTE_POP_MS (fifth round: 160, was 240) is
+ * long enough to actually see happen, short enough that a child who
+ * already knows which colour she wants (this menu opens hundreds of times)
+ * is not kept waiting - and short is now doing double duty: the owner's
+ * own fifth-round ask, after the fourth round's freeze was fixed, was
+ * "c'est vachement mieux l'animation. Mais c'est pas tres smooth, y a
+ * moyen de rendre ca plus rapide ?" - see PALETTE_RENDER_MIN_MS's own
+ * comment for the full reasoning on why shortening, not just a faster
+ * throttle, is most of the answer. PALETTE_STAGGER_MS gives each cell a
+ * small delay by its Chebyshev distance from the centre cell (palette_
+ * stagger_rank()) - 0/1/2 rings, so the nine arrive as a small ripple
+ * (centre, then the four edges, then the four corners) rather than one
+ * flat block, for the cost of one extra subtraction and multiply per cell.
+ * Hit-testing (palette_cell_contains(), used by both the live candidate
+ * and the final pick) reads the FIXED target grid, never the animation's
+ * current scale - a cell still growing is already fully selectable, so a
+ * fast child's slide is never fighting the animation for correctness, only
+ * for how it looks while it happens.
  *
  * SIZE. PALETTE_CELL_GAP_PX is the visible gap that keeps adjacent
  * balloons reading as separate shapes rather than one solid field, even
@@ -549,8 +555,8 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 #define PALETTE_CELL_GAP_PX       8
 #define PALETTE_CORNER_PX        26.0f
 #define PALETTE_CANDIDATE_GROW_PX 3.0f
-#define PALETTE_POP_MS          240.0f
-#define PALETTE_STAGGER_MS       20.0f
+#define PALETTE_POP_MS          160.0f
+#define PALETTE_STAGGER_MS       14.0f
 
 // Found 2026-08-14, from a photograph of the real device: the outer row
 // and columns ran under the case. gfx.h's PANEL_BEZEL_MARGIN_PX is the
@@ -587,28 +593,99 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 // reasoning already fixed once (see draw_rounded_rect and palette_render_
 // animating's own comments). Used by palette_cell_max_extent() to whiten
 // exactly as much as a cell could ever need, and no more.
+//
+// WHERE THE PEAK FALLS IN TIME, checked once (fifth round) because the
+// owner's own "pas tres smooth" report raised the question of whether the
+// overshoot's own settle was reading as a stutter rather than a bounce -
+// which would be a CURVE problem (this constant's own u above), not a rate
+// one, and worth saying so rather than just turning the throttle up and
+// hoping. Solving f'(t)=0 the same way: the peak sits at t=1+u ~= 0.580 of
+// a cell's own local [0,1], and f(t) first crosses 1.0 (rising) at
+// t = 1 - c1/c3 ~= 0.370 - so the overshoot spans roughly 37%-100% of a
+// cell's own POP_MS, about 63% of it, not "under a couple of frames" the
+// way an earlier comment near PALETTE_CANDIDATE_GROW_PX's own whitening
+// note put it (that comment is about a different question - how long the
+// grown-and-popping combination needs its whiten box reserved for, not how
+// long the overshoot itself lasts). At PALETTE_POP_MS=160, that is
+// ~101ms - PALETTE_RENDER_MIN_MS=16 puts roughly six throttled frames
+// across it, several of them past the t~=0.580 peak on the way back down
+// to 1.0 - enough to read as a bounce settling, not a single visible jump
+// backward. Conclusion: not a curve problem at the rate this round landed
+// on; if a future retune pushes the throttle back up past ~30-40ms while
+// keeping this curve, re-check this comment's own arithmetic first, since
+// that is the regime (two, maybe three frames across the whole overshoot)
+// where a stutter becomes the more likely reading again.
 #define PALETTE_POP_PEAK_SCALE 1.10f
 
 // Minimum wall-clock time between two palette re-renders while nothing
 // discrete (a candidate changing) demands an immediate one. THE BOARD
-// RESET THIS EXISTS TO PREVENT, found by the owner using a real device
-// while the coordinator listened on the serial port: "palette: open"
-// fires, then a boot log line, then the panel reboots into the default
-// app (chrono) - core0 never got back to feed the watchdog. Before this
-// existed, palette_drain_sample() called a full render on EVERY drained
-// haveTouch sample while the pop-in animation was in progress, gated on
-// nothing but wall-clock elapsed time - and on real hardware, core1 polls
-// the touch controller far faster than it reports (up to ~1.4kHz when
-// Touch_INT_PIN is held low), so hundreds of samples with timestamps
-// spanning the ~280ms animation can arrive queued together, each one
+// RESET THIS ORIGINALLY EXISTED TO PREVENT, found by the owner using a
+// real device while the coordinator listened on the serial port: "palette:
+// open" fires, then a boot log line, then the panel reboots into the
+// default app (chrono) - core0 never got back to feed the watchdog. Before
+// this existed, palette_drain_sample() called a full render on EVERY
+// drained haveTouch sample while the pop-in animation was in progress,
+// gated on nothing but wall-clock elapsed time - and on real hardware,
+// core1 polls the touch controller far faster than it reports (up to
+// ~1.4kHz when Touch_INT_PIN is held low), so hundreds of samples with
+// timestamps spanning one animation could arrive queued together, each one
 // re-triggering a full nine-cell render and panel push before core0 ever
-// returns to whatever feeds the watchdog. ~30fps (33ms) is coarse enough
-// that even a large queued backlog collapses to a small, fixed number of
-// actual frames - see this file's own repro-sketch-palette-watchdog-
-// reset.ts for the measured frame count under exactly that kind of burst -
-// and fine enough that the pop still reads as an animation, not a
-// slideshow.
-#define PALETTE_RENDER_MIN_MS 33.0f
+// returned to whatever feeds the watchdog.
+//
+// FIFTH ROUND: 16, was 33. The fourth round's freeze fix landed and was
+// flashed; the owner's next report was "ok c'est vachement mieux
+// l'animation. Mais c'est pas tres smooth, y a moyen de rendre ca plus
+// rapide ?" - the pop-in plays now, but reads as stepped, and he asked for
+// faster in as many words. "Faster" has two honest answers - fewer total
+// ms (PALETTE_POP_MS, see its own comment) and more frames per ms (this
+// constant) - and only one of them was free to check against a known cost
+// before touching: THIS constant's own worst-case per-frame cost is
+// unchanged by raising the rate (palette_cell_max_extent() and the coverage
+// math are geometry, not timing), so the question was never "is a frame
+// more expensive now", only "how many can the board actually afford per
+// second, and does 33ms leave real headroom below that".
+//
+// THE HEADROOM, worked from numbers already on record rather than a new
+// hardware measurement (none was taken; do not flash from this repo):
+//   - A near-full-panel push costs ~12ms (the coordinator's own figure,
+//     already cited in repro-sketch-palette-watchdog-reset.ts's own header
+//     comment) - and an "anim" frame's dirty rect, covering all nine
+//     cells, IS near-full-panel, every throttled frame, so ~12ms of the
+//     two are paid whether the render itself is cheap or not.
+//   - The original incident's own math bounds the render's OWN cost from
+//     the same evidence: "hundreds" of full render+push cycles (a burst at
+//     up to ~1.4kHz over one ~280ms-or-so animation is on the order of a
+//     few hundred queued samples) exceeded RUNTIME_WATCHDOG_MS=4000ms
+//     (runtime.c) before core0 ever returned to feed it. A few hundred
+//     cycles times ~12ms of push ALONE already accounts for most of that
+//     4000ms - which places the render's own CPU cost (whiten + nine
+//     sqrtf-based coverage evaluations) as the smaller of the two, likely
+//     single-digit milliseconds, not the dominant term.
+//   - Put together: one anim frame's own natural floor - render CPU plus
+//     its push - lands somewhere around 12-20ms, dominated by the push a
+//     shorter throttle cannot make any cheaper (the dirty rect's own size
+//     does not shrink just because the throttle does). 16 sits at that
+//     floor deliberately, not below it: asking for less would not buy a
+//     genuinely higher rate, only a throttle value the render+push
+//     pipeline's own cost, not this constant, would end up enforcing
+//     instead - and it says so honestly rather than promising a number
+//     physics will not deliver.
+//   - Separately, and this is what actually makes 16 SAFE to try rather
+//     than merely fast: the board-reset failure mode this constant
+//     originally guarded against required MULTIPLE renders to stack inside
+//     ONE call to sketch_tick() (one drain-loop burst, no return to core0's
+//     own main loop in between - see palette_render_handoff()'s own git
+//     history). palette_drain_sample() no longer renders anything itself
+//     (see its own header comment, this same file, fourth round) -
+//     palette_advance_animation() is the only caller left, called exactly
+//     once per tick, so at most ONE render+push can ever happen per call to
+//     sketch_tick() regardless of what this constant is set to. The
+//     watchdog is fed once per main-loop iteration (runtime.c), i.e. once
+//     per tick, so the failure mode this throttle was built to prevent is
+//     now structurally impossible independent of its own value - this
+//     constant's remaining job is purely how the animation LOOKS, not
+//     whether the board survives it.
+#define PALETTE_RENDER_MIN_MS 16.0f
 
 // Extra margin past every cell's own mathematically exact settle time (the
 // last-starting cell's own delay + PALETTE_POP_MS) before palette_advance_
@@ -629,7 +706,12 @@ bool sketch_tune_set(const char *name, float value, float *outApplied) {
 // discrete sample's own view of "still animating" disagree with palette_
 // render_frame()'s (see palette_advance_animation()'s own header comment
 // for the bug that mismatch was part of). One threshold, one place, now.
-#define PALETTE_ANIM_SETTLE_MARGIN_MS 30.0f
+// FIFTH ROUND: 16, was 30 - scaled down with PALETTE_RENDER_MIN_MS (this
+// margin's only job is "give the throttle one more tick's worth of room to
+// land past the true boundary", so it tracks that constant's own value
+// rather than staying fixed while the tick spacing it exists to cover
+// shrank around it).
+#define PALETTE_ANIM_SETTLE_MARGIN_MS 16.0f
 
 // How long a lift may look like a dropout before the palette believes the
 // finger genuinely left the glass and resolves the pick (or the cancel).
