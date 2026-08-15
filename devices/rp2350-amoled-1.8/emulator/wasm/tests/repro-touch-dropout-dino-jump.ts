@@ -34,9 +34,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TouchSim, type TouchReport } from "../../src/touchsim";
 import { TOUCHSIM_DEFAULTS } from "../../src/constants";
+import { seededRng, seedFromName } from "../../../tools/gate/touch";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
-const APP_DINO = 4; // g_apps[] = { chrono, sketch("draw"), timer, four, dino }
+const APP_DINO = 7; // g_apps[] = { chrono, sketch, timer, four, level, clock, morpion, dino, ... }
 const TOUCH_X = 184, TOUCH_Y = 224; // dino.c reads only touchDown - any point does
 
 let passCount = 0;
@@ -135,7 +136,7 @@ async function main() {
     for (let i = 0; i < HOLD_TRIALS; i++) {
         const dev = await freshDevice();
         let t = await startRunCleanly(dev, 1000);
-        const sim = new TouchSim(dropoutHeavy, 368, 448);
+        const sim = new TouchSim(dropoutHeavy, 368, 448, seededRng(seedFromName(`dino-hold-${i}`)));
         sim.setPointer(true, TOUCH_X, TOUCH_Y);
         let jumps = 0;
         for (let held = 0; held < HOLD_MS; held += STEP_MS) {
@@ -207,7 +208,7 @@ async function main() {
     // whether the stray starts a run or fires a jump inside one.
     console.log("");
     const dev = await freshDevice();
-    const sim = new TouchSim(strayProfile, 368, 448);
+    const sim = new TouchSim(strayProfile, 368, 448, seededRng(seedFromName("dino-strays")));
     sim.setPointer(false, 0, 0);
     let strayFires = 0;
     let t = 1000;

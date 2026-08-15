@@ -28,11 +28,12 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TouchSim, type TouchReport } from "../../src/touchsim";
 import { TOUCHSIM_DEFAULTS } from "../../src/constants";
+import { seededRng, seedFromName } from "../../../tools/gate/touch";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
 const PANEL_H = 448;
-const APP_BOWLING = 4; // g_apps[] = { chrono, sketch("draw"), timer, four, bowling }
+const APP_BOWLING = 8; // g_apps[] = { chrono, sketch, timer, four, level, clock, morpion, dino, bowling, ... }
 
 // Mirrors of bowling.c's own constants, derived the same way rather than
 // hand-copied - see feature-bowling.ts's own comment on why (a change to
@@ -126,7 +127,7 @@ async function main() {
     let totalDropouts = 0;
     for (let i = 0; i < HOLD_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`bowling-hold-${i}`)));
         const [px, py] = landToPanel(BALL_START_X, BALL_START_Y);
         sim.setPointer(true, px, py);
         let t = 1000;
@@ -166,7 +167,7 @@ async function main() {
     let speedOutOfBounds = 0;
     for (let i = 0; i < THROW_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`bowling-throw-${i}`)));
         let t = 1000;
 
         const [sx, sy] = landToPanel(BALL_START_X, BALL_START_Y);
@@ -267,7 +268,7 @@ async function main() {
     // shipped device can honestly be made at.
     const strayProfile = { ...TOUCHSIM_DEFAULTS, dropoutsEnabled: false, straysEnabled: true };
     const devD = await freshDevice();
-    const simD = new TouchSim(strayProfile, PANEL_W, PANEL_H);
+    const simD = new TouchSim(strayProfile, PANEL_W, PANEL_H, seededRng(seedFromName("bowling-strays")));
     simD.setPointer(false, 0, 0);
     let strayLaunches = 0;
     let tD = 1000;

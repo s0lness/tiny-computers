@@ -1665,8 +1665,16 @@ static void draw_icon_dino(int ox, int oy, uint16_t color) {
     shapes_fill_capsule_aa_land(chX, chY, 6.0f, headX, headY, 5.0f, color);
     shapes_fill_disc_aa_land(headX, headY, 9.0f, color);
     shapes_fill_disc_aa_land((float)ox + 58.0f, gy - 44.0f, 5.0f, color);
+    // Tail tip pulled in to ox (the icon box's own left edge) rather than
+    // ox-8: at ox-8 the tip sat exactly on the CELL's left edge (the icon
+    // box already carries 8px of margin inside its cell), so the tapered
+    // quad's own AA fringe and its 2px tip radius bled 2-3px past that edge
+    // into the neighbouring cell - invisible until this icon sat next to a
+    // real neighbour in the live 11-app grid, where it showed up as ink
+    // outside the menu's own per-cell push rectangle (decision 0001). Same
+    // sweep, same silhouette, just kept inside this icon's own box.
     shapes_fill_tapered_quad_aa_land(hipX, hipY, 7.0f, (float)ox + 2.0f, gy - 22.0f,
-                                      (float)ox - 8.0f, gy - 28.0f, 2.0f, color);
+                                      (float)ox, gy - 28.0f, 2.0f, color);
     float legHipX = (float)ox + 12.0f, legHipY = gy - 9.0f;
     shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 28.0f, gy, 4.0f, color);
     shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 16.0f, gy, 4.0f, color);

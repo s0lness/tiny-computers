@@ -28,7 +28,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
-const APP_DINO = 4; // g_apps[] = { chrono, sketch("draw"), timer, four, dino }
+const APP_DINO = 7; // g_apps[] = { chrono, sketch, timer, four, level, clock, morpion, dino, ... }
 
 let passCount = 0;
 let failCount = 0;
