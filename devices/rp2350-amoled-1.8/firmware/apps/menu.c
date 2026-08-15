@@ -1672,6 +1672,42 @@ static void draw_icon_dino(int ox, int oy, uint16_t color) {
     shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 16.0f, gy, 4.0f, color);
 }
 
+/* ---------------------------------------------------------------------
+ * The bowling icon (apps/bowling.c). NOT Lucide: decision 0009's exception
+ * is scoped explicitly to the three original icons ("if a future icon is
+ * ever added outside Lucide's own set... it goes back to this document's
+ * original rule - the float brush, not a ruler"), the same reading four.c's
+ * own icon comment already gives for the same situation. So this is the
+ * float brush: one pin (two chained shapes_fill_capsule_aa_land calls, the
+ * same bulge-then-neck shape bowling.c's own draw_pin() uses for the live
+ * game, given a slight lean rather than dead vertical so it is not a ruled
+ * line) beside one ball (a plain filled disc). The app's two objects,
+ * nothing else - the same "draw what the app IS" rule chrono's dial,
+ * sketch's pencil and timer's hourglass already follow.
+ * ------------------------------------------------------------------- */
+#define BOWL_ICON_PIN_BASE_X 32.0f
+#define BOWL_ICON_PIN_BASE_Y 80.0f
+#define BOWL_ICON_PIN_TIP_X  25.0f   // a slight lean, never dead vertical (decision 0009)
+#define BOWL_ICON_PIN_TIP_Y  15.0f
+#define BOWL_ICON_PIN_R_BASE 11.0f
+#define BOWL_ICON_PIN_R_NECK 6.0f
+#define BOWL_ICON_PIN_R_TOP  4.0f
+#define BOWL_ICON_BALL_CX    70.0f
+#define BOWL_ICON_BALL_CY    74.0f
+#define BOWL_ICON_BALL_R     19.0f
+
+static void draw_icon_bowling(int ox, int oy, uint16_t color) {
+    float bx = (float)ox + BOWL_ICON_PIN_BASE_X, by = (float)oy + BOWL_ICON_PIN_BASE_Y;
+    float tx = (float)ox + BOWL_ICON_PIN_TIP_X,  ty = (float)oy + BOWL_ICON_PIN_TIP_Y;
+    // The same base->neck->tip chain bowling.c's own draw_pin() draws for a
+    // standing pin (fallU=0), at a fixed lean rather than an animated one.
+    float midX = bx + (tx - bx) * 0.55f, midY = by + (ty - by) * 0.55f;
+    shapes_fill_capsule_aa_land(bx, by, BOWL_ICON_PIN_R_BASE, midX, midY, BOWL_ICON_PIN_R_NECK, color);
+    shapes_fill_capsule_aa_land(midX, midY, BOWL_ICON_PIN_R_NECK, tx, ty, BOWL_ICON_PIN_R_TOP, color);
+    shapes_fill_disc_aa_land((float)ox + BOWL_ICON_BALL_CX, (float)oy + BOWL_ICON_BALL_CY,
+                              BOWL_ICON_BALL_R, color);
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE

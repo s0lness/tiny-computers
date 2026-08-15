@@ -102,9 +102,12 @@ target_sources(main PRIVATE
     apps/morpion.c
     # Four games merged 2026-08-15, each appended in the order it arrived.
     # None owns any hardware: dino reads plain touch (tap to jump) plus the
-    # storage service above for its high score; the rest read touch or
-    # app_frame_t.tilt like every other app.
+    # storage service above for its high score; bowling reads a finger-flick
+    # drag/release; tiltball and breakout read app_frame_t.tilt like level.
     apps/dino.c
+    apps/bowling.c
+    apps/tiltball.c
+    apps/breakout.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into
