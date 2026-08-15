@@ -575,6 +575,46 @@ tree should be believed until `bun run tools/gate/fingerprint.ts --device`
 agrees - a differential harness once diffed three apps on the board against
 four here and reported a 28% rendering divergence that was a stale flash.
 
+## OPEN: the twelve-app build freezes on a white screen at boot
+
+**Do not flash `firmware/build/main.uf2` to a board you need working until
+this is closed.** Everything here builds clean and passes all six
+invariants, 37/37 emulator tests and the gate. It still hangs the board.
+
+What the symptom already tells us, so nobody re-derives it:
+
+- **White is not "nothing".** `gfx_init()` mallocs the framebuffer, fills it
+  0xFFFF and pushes it. A white panel therefore proves the allocation
+  succeeded (decision 0016's ceiling is NOT the cause) and that the firmware
+  ran past it.
+- **A stable white screen, not a flickering one**, puts the hang BEFORE
+  `watchdog_enable()`: a hang after arming reboot-loops instead of sitting
+  still.
+- That leaves exactly `devlink_init()`, `storage_init()` and
+  `sensors_start()` in `runtime/runtime.c`.
+- Once hung, the CDC data endpoint stops answering (the port opens with a
+  semaphore timeout) and **`picotool ... -f` cannot force a reboot**, because
+  that request is served by the hung app's own USB interface. Loads report
+  success and silently do nothing. Recovery is the physical sequence under
+  "Recovering a board that will not boot" below.
+
+Three things new to that interval arrived on 2026-08-15 and any of them
+could be it. They were each accused in turn, on good reasoning, with no way
+to tell them apart:
+
+1. `pico_set_binary_type(copy_to_ram)` was removed in favour of XIP
+   execution with only core1's reachable set pinned (decision 0017).
+2. `storage_init()`, which had never executed on silicon before this build.
+3. `flash_safe_execute_core_init()` in `core1_entry()`, likewise never run.
+
+**The instrument to use, not another theory.** Paint a band on the panel
+after each of the three steps and read how far it got off the screen itself;
+the serial link is useless once it hangs, so the panel is the only
+instrument left. That takes ten minutes to build and answers in one flash
+what three hours of reasoning did not. It is decision 0010's own law: the
+bug lives downstream of where the instrument reads, and there was no
+instrument in this interval at all.
+
 ## Gotchas that bite
 
 - **`zig.exe` hangs, and it looks exactly like a broken toolchain.** Builds
