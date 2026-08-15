@@ -315,6 +315,7 @@ static void i2s_hw_init(void) {
  * thread of execution already gives for free.
  */
 static bool s_playing = false;
+static sound_id_t s_activeId = SOUND_ID_TIMER_ALARM;
 static uint32_t s_playSampleIndex = 0;
 static uint32_t s_playStartMs = 0;
 
@@ -338,7 +339,13 @@ static void refill_buffer(uint32_t *buf) {
     }
     for (int i = 0; i < SOUND_BUF_FRAMES; i++) {
         float tSec = (float)s_playSampleIndex / (float)SOUND_SYNTH_SAMPLE_RATE_HZ;
-        int16_t sample = sound_synth_alarm_sample(tSec);
+        // Two sounds now (sound.h): the alarm's repeating rising phrase and
+        // the ball's one-shot falling plunk. Dispatched by the id sound_play()
+        // last recorded, not by anything time-based, so a capture triggered
+        // moments after the alarm was dismissed cannot play the wrong sample.
+        int16_t sample = (s_activeId == SOUND_ID_BALL_CAPTURE)
+            ? sound_synth_capture_sample(tSec)
+            : sound_synth_alarm_sample(tSec);
         // Same sample in both I2S slots - see sound_i2s.pio's header comment
         // for why (mono codec, undocumented which slot it actually reads).
         buf[i] = ((uint32_t)(uint16_t)sample << 16) | (uint16_t)sample;
@@ -347,8 +354,8 @@ static void refill_buffer(uint32_t *buf) {
 }
 
 void sound_play(sound_id_t id) {
-    (void)id; // one sound exists today; see sound.h's comment on why the enum stays
     if (!s_hwReady) return;
+    s_activeId = id;
     s_playSampleIndex = 0;
     s_playStartMs = to_ms_since_boot(get_absolute_time());
     s_playing = true;

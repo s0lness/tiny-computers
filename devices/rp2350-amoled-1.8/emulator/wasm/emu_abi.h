@@ -378,7 +378,8 @@ void  emu_tune_reset(int index);
  * the real board.
  *
  * SHAPE. sound_play()/sound_stop() (firmware/runtime/sound.h) are called by
- * firmware logic (the timer's alarm), never by the host directly - sound is
+ * firmware logic (the timer's alarm, the tilt-a-ball's capture), never by
+ * the host directly - sound is
  * an output, not an input device, so there is no emu_sound_play() the host
  * calls. Instead, two counters the host diffs against what it last saw, the
  * same pattern app_current() and emu_push_count() already use:

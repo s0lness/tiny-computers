@@ -20,11 +20,12 @@
  *    None of these are wasm imports; they are ordinary C compiled into this
  *    module, same as any other function here.
  *
- * 4. Implements sound.h (sound_play/sound_stop, called by apps/timer.c) by
- *    synthesising into a fixed buffer with sound_synth_alarm_sample() - the
- *    SAME function firmware/runtime/sound.c calls for the real board - and
- *    exposing it through emu_abi.h's sound section for the host to play via
- *    WebAudio. See that section for why this is genuine synthesis, not a
+ * 4. Implements sound.h (sound_play/sound_stop, called by apps/timer.c's
+ *    alarm and apps/tiltball.c's capture) by synthesising into a fixed
+ *    buffer with sound_synth_alarm_sample()/sound_synth_capture_sample() -
+ *    the SAME functions firmware/runtime/sound.c calls for the real board -
+ *    and exposing it through emu_abi.h's sound section for the host to play
+ *    via WebAudio. See that section for why this is genuine synthesis, not a
  *    JavaScript reimplementation, and what does not carry over (the timbre).
  *
  * Depends on emu_abi.h, runtime_core.h, app.h, gfx.h, sensors.h, sound.h,
@@ -628,10 +629,15 @@ static uint32_t s_soundPlaySeq = 0;
 static uint32_t s_soundStopSeq = 0;
 
 void sound_play(sound_id_t id) {
-    (void)id; // one sound exists today; see sound.h's comment on why the enum stays
+    // Two sounds now (sound.h): the timer's repeating alarm phrase and the
+    // tilt-a-ball's one-shot capture plunk. Dispatched the same way sound.c
+    // (the board) does, from the SAME sound_synth_* functions - see this
+    // file's header comment, job (4).
     for (int i = 0; i < SOUND_PREVIEW_FRAMES; i++) {
         float tSec = (float)i / (float)SOUND_SYNTH_SAMPLE_RATE_HZ;
-        s_soundBuf[i] = sound_synth_alarm_sample(tSec);
+        s_soundBuf[i] = (id == SOUND_ID_BALL_CAPTURE)
+            ? sound_synth_capture_sample(tSec)
+            : sound_synth_alarm_sample(tSec);
     }
     s_soundPlaySeq++;
 }

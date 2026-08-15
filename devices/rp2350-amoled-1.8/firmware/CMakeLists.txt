@@ -103,7 +103,8 @@ target_sources(main PRIVATE
     # Four games merged 2026-08-15, each appended in the order it arrived.
     # None owns any hardware: dino reads plain touch (tap to jump) plus the
     # storage service above for its high score; bowling reads a finger-flick
-    # drag/release; tiltball and breakout read app_frame_t.tilt like level.
+    # drag/release; tiltball and breakout read app_frame_t.tilt like level,
+    # and tiltball also plays through sound.h on capture.
     apps/dino.c
     apps/bowling.c
     apps/tiltball.c

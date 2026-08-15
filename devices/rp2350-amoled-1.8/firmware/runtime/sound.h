@@ -52,14 +52,20 @@
 
 /* ---- sounds --------------------------------------------------------------
  *
- * One id today (the timer's alarm chime), same shape sensors.h's key bits
- * use: a small enum rather than a raw pointer or a sample-table index, so a
- * future app (the dice's clatter, the sketchpad's erase whoosh - see
- * docs/decisions/0002-runtime-architecture.md's app table) adds a case here
- * and a case in sound.c's synthesiser, never a new API.
+ * Two ids today (the timer's alarm chime, the tilt-a-ball's capture pop),
+ * same shape sensors.h's key bits use: a small enum rather than a raw
+ * pointer or a sample-table index, so a future app (the dice's clatter, the
+ * sketchpad's erase whoosh - see docs/decisions/0002-runtime-architecture.md's
+ * app table) adds a case here and a case in sound_synth.c/sound.c's
+ * dispatch, never a new API. sound_play() takes the id and remembers it;
+ * sound.c's refill picks which sound_synth_* function to sample from.
  */
 typedef enum {
     SOUND_ID_TIMER_ALARM = 0,
+    // firmware/apps/tiltball.c, played once when the ball reaches the hole.
+    // A single falling-pitch "plunk" (sound_synth_capture_sample), not a
+    // repeating phrase like the alarm - see that function's own comment.
+    SOUND_ID_BALL_CAPTURE = 1,
 } sound_id_t;
 
 // Starts (or restarts, if already playing) the given sound. Synthesised on

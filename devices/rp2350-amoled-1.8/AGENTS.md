@@ -3,14 +3,18 @@
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED in a
 small plastic puck.
 
-**One binary, seven apps, a menu.** This is a single-binary runtime
+**One binary, eleven apps, a menu.** This is a single-binary runtime
 (`firmware/runtime/`) holding an app table (`firmware/apps/`): a stopwatch
 (`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw"), a
 countdown timer (`timer.c`), Connect Four (`four.c`), a bubble level
-(`level.c`), a clock (`clock.c`) and morpion (`morpion.c`, noughts and
-crosses). Switching apps is a function call, not a reboot: holding BOOT
-and PWR together until PWR's long-press verdict fires opens a picture menu
-(`menu.c`) to pick another app; the same chord closes it again. See
+(`level.c`), a clock (`clock.c`), morpion (`morpion.c`, noughts and
+crosses), and four games merged together on 2026-08-15: a Chrome-style
+tap-to-jump runner with a flash-backed high score (`dino.c`), a
+finger-flick bowling lane (`bowling.c`), a tilt-a-ball dish (`tiltball.c`)
+and a tilt-controlled breakout (`breakout.c`). Switching apps is a
+function call, not a reboot: holding BOOT and PWR together until PWR's
+long-press verdict fires opens a picture menu (`menu.c`) to pick another
+app; the same chord closes it again. See
 `docs/decisions/0002-runtime-architecture.md` for why this replaced an
 earlier two-flash-slot, reboot-to-switch design (`store/`, now a crash-recovery
 fallback rather than how apps change).
@@ -201,7 +205,19 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       crosses, same two people and the same press-drag-
                       release; the candidate cell is named by a CROSS of two
                       lit bands, because a thumb hides the cell it is
-                      choosing), menu.c (the app picker: a grid of 112px
+                      choosing), dino.c (a Chrome-style tap-to-jump runner,
+                      high score kept across power cycles in the last flash
+                      sector via runtime/storage.c - see "Flash storage"
+                      below), bowling.c (a finger-flick throw down a lane,
+                      pins knocked with plain touch, no sound of its own -
+                      see that file's own header for why), tiltball.c
+                      (tilt-a-ball: a ball rolls in a round dish, roll it
+                      into the hole and it falls in with a sound and a
+                      ripple, then comes back - reads app_frame_t.tilt like
+                      the level, see "The tilt-a-ball" below),
+                      breakout.c (a tilt-controlled paddle and a wall of
+                      bricks on an arc, no floor to lose the ball off),
+                      menu.c (the app picker: a grid of 112px
                       cells filling the glass, all apps visible at once,
                       press-drag-release to launch - decision 0013),
                       stubapps.c (empty unless the menu-stub define is
@@ -805,6 +821,16 @@ not the timbre: a laptop speaker will always flatter what this device's tiny
 one actually does, so a real "does this sound good" verdict still needs the
 board.
 
+**Two sounds now, not one.** `sound.h`'s `sound_id_t` also carries
+`SOUND_ID_BALL_CAPTURE`, played once by `firmware/apps/tiltball.c` the
+instant the ball reaches the hole: a single falling-pitch note
+(`sound_synth_capture_sample()`), not the alarm's repeating rising phrase -
+a descending glide is the standard shorthand for something dropping in.
+`sound_play(id)` records which one is active; `sound.c`'s refill (board) and
+`emu_shim.c`'s preview generator (emulator) both dispatch on it, so adding a
+future sound is a new id, a new `sound_synth_*` function, and one line in
+each dispatch - never a new API.
+
 ## The sketchpad (`firmware/apps/sketch.c`)
 
 **No pressure signal.** Measured 2026-08-13 (see `firmware/runtime/sensors.h`):
@@ -867,6 +893,39 @@ bun run emulator/wasm/build.ts
 bun run emulator/wasm/tests/feature-level.ts
 bun run emulator/wasm/tests/repro-level-bubble-residue.ts
 bun tools/preview-level.ts     # preview/level-*.png
+```
+
+## The tilt-a-ball (`firmware/apps/tiltball.c`)
+
+A ball rolls in a round dish (no walls, no maze - decision 0009 forbids
+straight ones anyway); tip the puck and it rolls, the way tipping the level's
+dial makes its dot slide, except this one carries momentum: the dish is
+modelled as a shallow bowl (a damped, driven 2D spring, not a plain
+accelerate-and-coast), so however hard a small hand tips it, the ball always
+has a bounded home to return to rather than a direction it can be sent off
+in forever. Roll it into the one fixed hole and it slides in, shrinking, with
+a falling-pitch sound (`sound_synth_capture_sample`, `sound.h`'s
+`SOUND_ID_BALL_CAPTURE`) and a ripple expanding from the hole; a short pause,
+then it grows back at the dish's centre and play continues - there is no
+score, no level and no way to lose the ball for good. Like the level, it
+reads `app_frame_t.tilt` and carries no accelerometer code of its own.
+
+The tilt-to-push scale is deliberately gentler than the level's own 15-degree
+"full scale" (see the file's own header comment): the level was tuned around
+an adult's careful, deliberate tip, and a two-year-old tips much harder than
+that, so this app wants a real, decisive tilt to reach the hole rather than
+reacting to every small wobble. Measured cost (a rolling ball every tick, a
+capture cycle including the ripple): worst frame 6.6% of the panel, average
+pushing frame 2.5%, nothing at all when settled and still
+(`emulator/wasm/tests/repro-tiltball-residue.ts` prints these and asserts an
+incrementally-updated screen is bit-identical to a freshly-driven replay of
+the same motion or the same full capture cycle).
+
+```powershell
+bun run emulator/wasm/build.ts
+bun run emulator/wasm/tests/feature-tiltball.ts
+bun run emulator/wasm/tests/repro-tiltball-residue.ts
+bun tools/preview-tiltball.ts     # preview/tiltball-*.png
 ```
 
 ## Capturing real handwriting

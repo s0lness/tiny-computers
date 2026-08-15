@@ -95,3 +95,67 @@ int16_t sound_synth_alarm_sample(float tSec) {
     if (acc < -CHIME_CLIP_PEAK) acc = -CHIME_CLIP_PEAK;
     return (int16_t)acc;
 }
+
+/* ---------------------------------------------------------------------
+ * The tilt-a-ball's capture sound (firmware/apps/tiltball.c): played once,
+ * the instant the ball reaches the hole - the moment the app's own header
+ * comment argues is worth more effort than the physics that got the ball
+ * there. A DESCENDING pitch, not the alarm's rising phrase: a falling glide
+ * is the standard game-audio shorthand for "something dropping in" (a coin
+ * in a slot, a marble down a chute), and using it here means the sound and
+ * the picture agree about what just happened without either needing words.
+ *
+ * ONE NOTE, ONE SHOT, NOT A REPEATING PHRASE. The alarm rings for up to 30s
+ * and has to stay legible without wearing on the ear (docs/decisions/0002
+ * section 7's "genuinely, rather cute" brief); this fires once per capture
+ * and has to read as a single, complete event. sound_play() resets playback
+ * to tSec=0 on every call (sound.c/emu_shim.c), so tiltball.c can call it
+ * again on the very next capture with no extra bookkeeping: past
+ * CAPTURE_AUDIBLE_S this returns 0 forever until the next sound_play().
+ *
+ * PHASE, INTEGRATED RATHER THAN MULTIPLIED. A linearly swept frequency is
+ * NOT phase = 2*pi*f(t)*t (that is only correct for a constant f); the
+ * actual instantaneous frequency is the phase's own derivative, so a linear
+ * sweep from CAPTURE_F0 to CAPTURE_F1 over CAPTURE_SWEEP_S needs the
+ * INTEGRAL of that ramp, which is the quadratic term below. Getting this
+ * wrong does not fail loudly - it still glides, just at a warped rate - so
+ * it is worth writing the derivation down rather than eyeballing it: for
+ * f(t) = f0 + (f1-f0)*t/T, phase(t) = 2*pi*(f0*t + (f1-f0)*t^2/(2T)), and
+ * phase(T) (used below to splice on the constant-frequency tail cleanly, no
+ * click at the seam) is that same expression at t=T.
+ */
+#define CAPTURE_F0            900.0f  // Hz, bright, where the ball WAS
+#define CAPTURE_F1            260.0f  // Hz, low, where the hole IS
+#define CAPTURE_SWEEP_S        0.22f  // how long the glide takes
+#define CAPTURE_ATTACK_S      0.003f
+#define CAPTURE_DECAY_TAU_S    0.09f
+#define CAPTURE_AUDIBLE_S      0.30f  // > SWEEP_S: the decay tail rings out
+                                       // after the glide has already landed
+#define CAPTURE_PEAK        11000.0f  // headroom to spare vs the alarm's per-
+                                       // note 9000: one note, not up to four
+                                       // overlapping ones, so more of int16's
+                                       // range is available before clipping
+#define CAPTURE_CLIP_PEAK   32000.0f
+
+int16_t sound_synth_capture_sample(float tSec) {
+    if (tSec < 0.0f || tSec >= CAPTURE_AUDIBLE_S) return 0;
+
+    float phase;
+    if (tSec < CAPTURE_SWEEP_S) {
+        phase = CHIME_TWO_PI * (CAPTURE_F0 * tSec +
+                 (CAPTURE_F1 - CAPTURE_F0) * (tSec * tSec) / (2.0f * CAPTURE_SWEEP_S));
+    } else {
+        float phaseAtLanding = CHIME_TWO_PI *
+            (CAPTURE_F0 * CAPTURE_SWEEP_S + (CAPTURE_F1 - CAPTURE_F0) * CAPTURE_SWEEP_S / 2.0f);
+        phase = phaseAtLanding + CHIME_TWO_PI * CAPTURE_F1 * (tSec - CAPTURE_SWEEP_S);
+    }
+
+    float env = (tSec < CAPTURE_ATTACK_S)
+        ? (tSec / CAPTURE_ATTACK_S)
+        : expf(-(tSec - CAPTURE_ATTACK_S) / CAPTURE_DECAY_TAU_S);
+
+    float acc = env * CAPTURE_PEAK * sinf(phase);
+    if (acc > CAPTURE_CLIP_PEAK) acc = CAPTURE_CLIP_PEAK;
+    if (acc < -CAPTURE_CLIP_PEAK) acc = -CAPTURE_CLIP_PEAK;
+    return (int16_t)acc;
+}

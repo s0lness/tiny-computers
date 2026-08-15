@@ -33,4 +33,10 @@
 // how each target turns one mono int16 into what its own output path wants.
 int16_t sound_synth_alarm_sample(float tSec);
 
+// One mono sample of the tilt-a-ball's capture sound (firmware/apps/
+// tiltball.c), tSec seconds into playback. A single falling-pitch note, not
+// a repeating phrase - see sound_synth.c's own comment for the reasoning.
+// Same stateless-function-of-tSec shape as the alarm, for the same reason.
+int16_t sound_synth_capture_sample(float tSec);
+
 #endif // SOUND_SYNTH_H

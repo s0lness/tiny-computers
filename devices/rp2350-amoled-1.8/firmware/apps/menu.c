@@ -1708,6 +1708,38 @@ static void draw_icon_bowling(int ox, int oy, uint16_t color) {
                               BOWL_ICON_BALL_R, color);
 }
 
+/* -------------------------------------------------------------------------
+ * tiltball's icon: a dish (ring) holding a ball (small disc) and, opposite
+ * it, the hole (a second small disc) it rolls toward. Not Lucide-sourced -
+ * no source silhouette there reads as "roll a ball into a hole" - so this
+ * follows decision 0009's ORIGINAL rule rather than its Lucide exception:
+ * the float brush, round shapes only, same as draw_icon_four just above,
+ * which is the other icon in this file built the same way (plain AA
+ * primitives, not a converted vendor glyph).
+ * ---------------------------------------------------------------------- */
+#define TILTBALL_ICON_RING_R    36.0f  // centreline of the dish
+#define TILTBALL_ICON_RING_HALF  4.0f
+#define TILTBALL_ICON_BALL_R    11.0f
+#define TILTBALL_ICON_HOLE_R     8.0f
+// Offsets from the icon box's own centre, along one diagonal: the ball
+// nearer its resting middle, the hole toward the rim it rolls to - the
+// same "ball somewhere on the dish, hole somewhere else" relationship the
+// app itself draws, at icon scale.
+#define TILTBALL_ICON_BALL_DX   -12.0f
+#define TILTBALL_ICON_BALL_DY   -10.0f
+#define TILTBALL_ICON_HOLE_DX    14.0f
+#define TILTBALL_ICON_HOLE_DY    12.0f
+
+static void draw_icon_tiltball(int ox, int oy, uint16_t color) {
+    float cx = (float)ox + ICON_W / 2.0f, cy = (float)oy + ICON_H / 2.0f;
+    shapes_fill_annulus_aa_land(cx, cy, TILTBALL_ICON_RING_R + TILTBALL_ICON_RING_HALF,
+                                 TILTBALL_ICON_RING_R - TILTBALL_ICON_RING_HALF, color);
+    shapes_fill_disc_aa_land(cx + TILTBALL_ICON_HOLE_DX, cy + TILTBALL_ICON_HOLE_DY,
+                              TILTBALL_ICON_HOLE_R, color);
+    shapes_fill_disc_aa_land(cx + TILTBALL_ICON_BALL_DX, cy + TILTBALL_ICON_BALL_DY,
+                              TILTBALL_ICON_BALL_R, color);
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE
