@@ -47,7 +47,8 @@ const BAUD = process.env.DEVLINK_BAUD ?? "115200";
 const BRIDGE_PS1 = `
 param(
     [Parameter(Mandatory=$true)][string]$Port,
-    [Parameter(Mandatory=$true)][int]$Baud
+    [Parameter(Mandatory=$true)][int]$Baud,
+    [int]$ParentPid = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -88,6 +89,42 @@ $readerScript = {
         }
     }
 }
+# PARENT WATCHDOG, and why it exists rather than trusting the EOF below.
+#
+# The stdin loop is supposed to be the whole shutdown story: dev.ts closes
+# the pipe, ReadLine returns null, the finally closes the port. That is the
+# design and it is correct. It was also observed failing, repeatedly, on
+# 2026-08-15: a failed dev.ts command would leave one of these processes
+# alive holding COM4, so every SUBSEQUENT command got "access denied" and
+# added another one. It cost most of a day, twice turned a ten-second check
+# into an hour of hardware recovery, and made a healthy board look dead.
+#
+# Rather than keep guessing which exit path drops the pipe (an unhandled
+# rejection, a kill that outruns the pipe teardown, a Windows handle held by
+# an inherited descriptor), this watches the thing that is actually true:
+# if the process that started us no longer exists, nobody is coming back for
+# this port. Exit hard, which closes the handle with the process.
+#
+# [Environment]::Exit rather than a flag the stdin loop would have to notice:
+# that loop is blocked inside ReadLine and cannot notice anything.
+if ($ParentPid -gt 0) {
+    $watchScript = {
+        param($parentPid)
+        while ($true) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Get-Process -Id $parentPid -ErrorAction SilentlyContinue)) {
+                [Environment]::Exit(0)
+            }
+        }
+    }
+    $wrs = [runspacefactory]::CreateRunspace()
+    $wrs.Open()
+    $watcher = [powershell]::Create()
+    $watcher.Runspace = $wrs
+    [void]$watcher.AddScript($watchScript).AddArgument($ParentPid)
+    [void]$watcher.BeginInvoke()
+}
+
 $rs = [runspacefactory]::CreateRunspace()
 $rs.Open()
 $reader = [powershell]::Create()
@@ -428,6 +465,11 @@ export async function openDirectBridge(port: string = PORT, baud: string = BAUD)
       port,
       "-Baud",
       baud,
+      // So the bridge can outlive nothing: see BRIDGE_PS1's parent watchdog.
+      // Closing stdin is still the normal, immediate shutdown; this is the
+      // backstop for every exit path that does not get that far.
+      "-ParentPid",
+      String(process.pid),
     ],
     { stdin: "pipe", stdout: "pipe", stderr: "pipe" }
   );
@@ -654,6 +696,26 @@ process.on("SIGINT", () => {
   activeBridge?.close();
   process.exit(130);
 });
+
+// The other exit paths, which SIGINT alone does not cover and which are the
+// ones that actually leaked: a command that throws (no reply within its
+// timeout is the common one), an unhandled rejection, or an uncaught error.
+// Each of those used to end the process with the bridge still holding the
+// port, so the NEXT command got "access denied" and spawned another one.
+//
+// close() is async and "exit" cannot await, so this is a best-effort kill on
+// the way out; BRIDGE_PS1's own parent watchdog is what guarantees the port
+// comes back even when this handler cannot finish.
+process.on("exit", () => {
+  activeBridge?.close();
+});
+for (const signal of ["unhandledRejection", "uncaughtException"] as const) {
+  process.on(signal, (err) => {
+    activeBridge?.close();
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  });
+}
 
 // ---------------------------------------------------------------------
 // Commands
