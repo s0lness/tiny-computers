@@ -282,9 +282,44 @@ export async function probeSettleCadence(
     if (coarse) {
       // Three ticks spanning the same window: enough for a state machine
       // to advance, nowhere near enough to animate frame by frame.
-      const end = d.now + settleMs;
-      d.tickAt(d.now + settleMs / 3);
-      d.tickAt(d.now + (2 * settleMs) / 3);
+      //
+      // The window's END must land on the SAME absolute clock the "fine"
+      // branch's d.idleNoSamples(settleMs) reaches, not on d.now+settleMs
+      // exactly: idleNoSamples walks in whole stepMs-cadence report
+      // periods (touch.ts's own comment on it) and so overshoots settleMs
+      // by up to one stepMs whenever stepMs does not divide it evenly -
+      // 60Hz's 16.667ms does not divide this probe's own 700ms window, so
+      // idleNoSamples(700) actually reaches +716.7ms, not +700. Comparing
+      // that against a coarse branch landing at the exact, un-overshot
+      // +700 was comparing two genuinely different amounts of simulated
+      // time, which a continuously-moving animation (a bouncing ball with
+      // no resting state - firmware/apps/breakout.c, which has no
+      // "settled" state at all by design) turns into a real difference in
+      // the final picture rather than into rounding noise: found via this
+      // exact probe reporting a clean, 100%-reproducible pixel diff at the
+      // same location regardless of hold position, the tell that it was
+      // about elapsed time rather than about touch. Deriving `end` the
+      // same way idleNoSamples derives its own closes the gap without
+      // touching that shared, widely-used driver method at all.
+      // Counted the same way idleNoSamples's own loop counts (touch.ts): a
+      // separate `t` accumulator stepped by d.stepMs in lockstep with
+      // `now`, not `Math.ceil(settleMs / d.stepMs)` - repeated float
+      // addition and a single division can land on opposite sides of an
+      // integer boundary here (settleMs=700, stepMs=16.6667: the division
+      // evaluates to 41.999999999999993, which ceils to 42, but
+      // accumulating stepMs 42 times by repeated addition leaves the
+      // running total a hair UNDER 700 too, so idleNoSamples's own
+      // `t < settleMs` reads that as "not there yet" and takes a 43rd
+      // step) - measured, not assumed, after this exact mismatch produced
+      // the identical 185px failure a first attempt at this fix left in
+      // place. So this counts the same loop idleNoSamples counts, rather
+      // than computing a formula that looks equivalent to it.
+      let steps = 0;
+      for (let t = 0; t < settleMs; t += d.stepMs) steps++;
+      const trueSettleMs = steps * d.stepMs;
+      const end = d.now + trueSettleMs;
+      d.tickAt(d.now + trueSettleMs / 3);
+      d.tickAt(d.now + (2 * trueSettleMs) / 3);
       d.tickAt(end);
     } else {
       d.idleNoSamples(settleMs);

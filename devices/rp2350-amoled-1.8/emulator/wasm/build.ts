@@ -121,6 +121,8 @@ const SOURCES = [
   join(FIRMWARE, "apps", "dino.c"),
   join(FIRMWARE, "apps", "bowling.c"),
   join(FIRMWARE, "apps", "tiltball.c"),
+  // breakout: same shared tilt signal as level.c above, no touch, no
+  // hardware of its own.
   join(FIRMWARE, "apps", "breakout.c"),
   join(FIRMWARE, "apps", "shapes.c"),
   // An empty translation unit unless the menu-stub define is set, and

@@ -1740,6 +1740,41 @@ static void draw_icon_tiltball(int ox, int oy, uint16_t color) {
                               TILTBALL_ICON_BALL_R, color);
 }
 
+/* ---------------------------------------------------------------------
+ * The BREAKOUT icon: a shallow arc of four small discs (the wall), one
+ * disc between them and the bottom (the ball), and a bowed stroke along
+ * the bottom (the paddle) - the same three shapes and the same "arc, not a
+ * grid" arrangement as the real app draws, at icon scale. See
+ * firmware/apps/breakout.c's own header comment for why none of the three
+ * is a rectangle: the wall is round bricks on one arc, the paddle is a
+ * bowed stroke rather than a bar, decision 0009's rule against a ruled
+ * grid applied to the game itself, not just to the icon that represents it.
+ *
+ * Not a Lucide conversion, per that document's own scope: Lucide has no
+ * breakout/arkanoid glyph, so this goes back to decision 0009's original
+ * rule (the float brush) rather than its named exception. The paddle's
+ * stroke half-width is LUCIDE_STROKE_HALF anyway, not a new number, so it
+ * reads at the same weight as the three Lucide icons beside it on the grid.
+ * ------------------------------------------------------------------- */
+static void draw_icon_breakout(int ox, int oy, uint16_t color) {
+    // The wall: four discs on a shallow upward arc, echoing breakout.c's own
+    // ten-brick arc at icon scale.
+    static const float bx[4] = { 14.0f, 35.0f, 61.0f, 82.0f };
+    static const float by[4] = { 28.0f, 17.0f, 17.0f, 28.0f };
+    for (int i = 0; i < 4; i++) {
+        shapes_fill_disc_aa_land((float)ox + bx[i], (float)oy + by[i], 6.0f, color);
+    }
+    // The ball, mid-flight between the wall and the paddle.
+    shapes_fill_disc_aa_land((float)ox + 60.0f, (float)oy + 50.0f, 5.5f, color);
+    // The paddle: one bowed stroke, the same idea as the real app's
+    // band-around-a-circle paddle, simplified to a single tapered quad at
+    // this size.
+    shapes_fill_tapered_quad_aa_land((float)ox + 16.0f, (float)oy + 80.0f, LUCIDE_STROKE_HALF,
+                                      (float)ox + 48.0f, (float)oy + 73.0f,
+                                      (float)ox + 80.0f, (float)oy + 80.0f, LUCIDE_STROKE_HALF,
+                                      color);
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE

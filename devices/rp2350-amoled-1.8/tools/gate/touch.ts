@@ -98,6 +98,20 @@ export class TouchDriver {
    * for bug 5 (an animation driven by touch samples rather than by the
    * clock). It is what a real main loop does while the controller has
    * nothing new to say, which on this panel is most of the time.
+   *
+   * Walks in whole stepMs-cadence report periods, same as every other
+   * `for (t=0; t<ms; t+=stepMs)` driver method here (`idle`, `hold`), and
+   * therefore OVERSHOOTS past `ms` by up to one stepMs whenever stepMs does
+   * not divide it evenly - 60Hz's stepMs is 16.667ms, which does not divide
+   * the gate's own 700ms probe window, so this lands at 716.7ms rather than
+   * 700. That is deliberately consistent with `hold()`, which
+   * `probeClockDriven` compares this against and which overshoots by the
+   * identical amount for the identical reason: the two must reach the same
+   * absolute clock, and matching an existing method's shape is what
+   * guarantees that without hand-tuning a second constant. See
+   * `probeSettleCadence` (exercise.ts) for the probe that instead needed
+   * ITS OWN "coarse" branch taught to overshoot the same way, because that
+   * probe's other branch is this function, not `hold()`.
    */
   idleNoSamples(ms: number): void {
     for (let t = 0; t < ms; t += this.stepMs) this.tickAt(this.now + this.stepMs);
