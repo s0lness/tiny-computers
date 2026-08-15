@@ -17,6 +17,29 @@
 
 #include <math.h>
 
+// device_to_panel(), lp_alpha() and tilt_submit_device_g() below run on
+// core1 (sensors.c's imu_poll_core1() calls tilt_submit_device_g() on every
+// IMU sample), so they are RAM-pinned like every other function on that
+// path - see docs/decisions/0004/0005 (the hazard) and
+// tools/invariants/rules/rp2350-amoled-1.8.ts (the check that enforces it).
+// tilt_read() below is core0-only (runtime_core.c reads the published
+// snapshot) and is deliberately left in flash.
+//
+// A hand-rolled macro, not `#include "pico/platform.h"`: this file's own
+// portability rule (see the header comment above) is "no pico-sdk, nothing
+// but freestanding headers and math.h", so it does not reach for the SDK's
+// own `__not_in_flash_func` just to get one section attribute. The
+// expansion is pico-sdk's own (`pico/platform/sections.h`:
+// `__attribute__((section(".time_critical." #name))) name`), copied rather
+// than included, because the RAM-placement need is real on the board build
+// but the wasm build (emulator/wasm/build.ts, wasm32-freestanding) has no
+// flash/RAM distinction to make at all.
+#if defined(__ARM_ARCH)
+#define TILT_NOT_IN_FLASH(name) __attribute__((section(".time_critical." #name))) name
+#else
+#define TILT_NOT_IN_FLASH(name) name
+#endif
+
 #define TILT_RAD_TO_DEG 57.29577951308232f
 
 // M_PI is not guaranteed under -std=c11, same reason level.c, menu.c and
@@ -43,7 +66,7 @@
  * project can ever build. It is one function, called from one place, on
  * purpose.
  */
-static void device_to_panel(float dx, float dy, float dz,
+static void TILT_NOT_IN_FLASH(device_to_panel)(float dx, float dy, float dz,
                             float *px, float *py, float *pz) {
     *px = dx;
     *py = dy;
@@ -94,7 +117,7 @@ static void device_to_panel(float dx, float dy, float dz,
 // tau = 1/(2*pi*fc); alpha = dt/(tau+dt). No expf: exact enough (under a
 // percent off the exponential form at these rates - measured when this
 // lived in level.c).
-static float lp_alpha(float fcHz, float dtMs) {
+static float TILT_NOT_IN_FLASH(lp_alpha)(float fcHz, float dtMs) {
     float tauMs = 1000.0f / (2.0f * TILT_PI * fcHz);
     return dtMs / (tauMs + dtMs);
 }
@@ -158,7 +181,7 @@ typedef struct {
 static volatile uint32_t s_pubSeq = 0;
 static tilt_pub_t s_pub = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false, false };
 
-void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs) {
+void TILT_NOT_IN_FLASH(tilt_submit_device_g)(float dx, float dy, float dz, uint32_t nowMs) {
     float px, py, pz;
     device_to_panel(dx, dy, dz, &px, &py, &pz);
 

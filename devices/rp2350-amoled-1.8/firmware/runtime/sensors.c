@@ -340,7 +340,7 @@ void sensors_request_poweroff(void) {
  * file noticing; every wait this core takes is now owned, and auditable, in
  * one place.
  */
-static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t len, bool nostop, uint32_t timeout_us) {
+static bool __not_in_flash_func(i2c1_write_bytes_bounded)(uint8_t addr, const uint8_t *src, size_t len, bool nostop, uint32_t timeout_us) {
     i2c_inst_t *i2c = I2C_PORT;
     absolute_time_t deadline = make_timeout_time_us(timeout_us);
 
@@ -390,11 +390,11 @@ static bool i2c1_write_bytes_bounded(uint8_t addr, const uint8_t *src, size_t le
     return !abort && byte_ctr == len;
 }
 
-static inline bool i2c1_write_to(uint8_t addr, const uint8_t *data, size_t len) {
+static inline bool __not_in_flash_func(i2c1_write_to)(uint8_t addr, const uint8_t *data, size_t len) {
     return i2c1_write_bytes_bounded(addr, data, len, false, I2C_TIMEOUT_US);
 }
 
-static inline bool i2c1_write_reg_to(uint8_t addr, uint8_t reg, uint8_t val) {
+static inline bool __not_in_flash_func(i2c1_write_reg_to)(uint8_t addr, uint8_t reg, uint8_t val) {
     uint8_t b[2] = { reg, val };
     return i2c1_write_to(addr, b, 2);
 }
@@ -440,7 +440,7 @@ static inline bool i2c1_write_reg_to(uint8_t addr, uint8_t reg, uint8_t val) {
  * that is the only shape implemented here; there is no reason to carry a
  * nostop parameter this codebase never uses.
  */
-static bool i2c1_read_bytes_bounded(uint8_t addr, uint8_t *dst, size_t len, uint32_t timeout_us) {
+static bool __not_in_flash_func(i2c1_read_bytes_bounded)(uint8_t addr, uint8_t *dst, size_t len, uint32_t timeout_us) {
     i2c_inst_t *i2c = I2C_PORT;
     absolute_time_t deadline = make_timeout_time_us(timeout_us);
 
@@ -493,14 +493,14 @@ static bool i2c1_read_bytes_bounded(uint8_t addr, uint8_t *dst, size_t len, uint
 // bounded() above, not the SDK's i2c_write_timeout_us()/i2c_read_timeout_us(),
 // so every wait core1 can hit on this bus is locally owned, not just the one
 // gap the read side had - see those two functions' comments for why.
-static inline bool i2c1_read_reg_n_to(uint8_t addr, uint8_t reg, uint8_t *out, size_t len) {
+static inline bool __not_in_flash_func(i2c1_read_reg_n_to)(uint8_t addr, uint8_t reg, uint8_t *out, size_t len) {
     if (!i2c1_write_bytes_bounded(addr, &reg, 1, true, I2C_TIMEOUT_US)) return false;
     return i2c1_read_bytes_bounded(addr, out, len, I2C_TIMEOUT_US);
 }
 
 /* ---- touch: read helpers, gated on Touch_INT_PIN ---------------------- */
 
-static inline bool touch_read_fingers_to(uint8_t *out) {
+static inline bool __not_in_flash_func(touch_read_fingers_to)(uint8_t *out) {
     uint8_t v = 0;
     if (!i2c1_read_reg_n_to(FT3168_I2C_ADDR, REG_FINGER_NUM, &v, 1)) return false;
     *out = v;
@@ -514,7 +514,7 @@ static inline bool touch_read_fingers_to(uint8_t *out) {
 // line at right angles. Auto-increment across these four registers is
 // already relied on by the vendor's own 2-byte reads, so this is the same
 // access widened, not a new assumption.
-static inline bool touch_read_xy_to(uint16_t *x, uint16_t *y) {
+static inline bool __not_in_flash_func(touch_read_xy_to)(uint16_t *x, uint16_t *y) {
     uint8_t b[4];
     if (!i2c1_read_reg_n_to(FT3168_I2C_ADDR, REG_X1_H, b, 4)) return false;
     *x = ((uint16_t)(b[0] & 0x0F) << 8) | b[1];
@@ -532,7 +532,7 @@ static inline bool touch_read_xy_to(uint16_t *x, uint16_t *y) {
 // hardware, that register rejects the write (see FT3168_REG_THGROUP's
 // comment), so re-asserting it after every bus recovery was spending an
 // i2c1 transaction on something that never took effect either time.
-static bool touch_set_active_to(void) {
+static bool __not_in_flash_func(touch_set_active_to)(void) {
     bool ok = true;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, 0x00, 0x00) && ok;
     ok = i2c1_write_reg_to(FT3168_I2C_ADDR, REG_POWER_MODE, (uint8_t)FT3168_POWER_ACTIVE) && ok;
@@ -614,7 +614,7 @@ static volatile touch_sample_t g_touchQ[TOUCH_Q_CAP];
 static volatile uint32_t g_touchHead = 0; // core0-owned (consumer index)
 static volatile uint32_t g_touchTail = 0; // core1-owned (producer index)
 
-static inline bool touch_q_push(const touch_sample_t *s) {
+static inline bool __not_in_flash_func(touch_q_push)(const touch_sample_t *s) {
     uint32_t tail = g_touchTail;
     uint32_t next = (tail + 1) & (TOUCH_Q_CAP - 1);
     if (next == g_touchHead) return false; // full: core0 is behind, drop and count it
@@ -812,7 +812,7 @@ static volatile uint32_t g_core1FaultCFSR;  // SCB->CFSR (0xE000ED28): which sub
 // the first build of this file: "undefined reference to
 // core1_fault_handler_c"). External linkage plus these two attributes keep
 // the symbol present under its exact name.
-void __attribute__((used, noinline)) core1_fault_handler_c(uint32_t *sp) {
+void __attribute__((used, noinline)) __not_in_flash_func(core1_fault_handler_c)(uint32_t *sp) {
     uint32_t ipsr;
     __asm volatile ("mrs %0, ipsr" : "=r" (ipsr));
     g_core1FaultPC = sp[6];
@@ -822,7 +822,7 @@ void __attribute__((used, noinline)) core1_fault_handler_c(uint32_t *sp) {
     while (true) { tight_loop_contents(); } // never return into whatever was faulting
 }
 
-static void __attribute__((naked)) core1_fault_handler(void) {
+static void __attribute__((naked)) __not_in_flash_func(core1_fault_handler)(void) {
     __asm volatile (
         "mrs r0, msp    \n" // this firmware never switches to PSP (no RTOS on either core)
         "b core1_fault_handler_c \n"
@@ -841,7 +841,7 @@ static void __attribute__((naked)) core1_fault_handler(void) {
 // stack region from the linked layout instead of a runtime counter that can
 // lie. Both checks are removed here, not just their output.
 
-static void core1_install_fault_handlers(void) {
+static void __not_in_flash_func(core1_install_fault_handlers)(void) {
     // MemManage/BusFault/UsageFault/SecureFault are routed to HardFault
     // unless individually enabled in SHCSR (0xE000ED24, bits 16/17/18/19).
     // pico-sdk's own crt0 already enables them for the boot core; core1 gets
@@ -859,7 +859,7 @@ static void core1_install_fault_handlers(void) {
 
 /* ---- touch stall recovery, core1 side ---------------------------------- */
 
-static void touch_recover_core1(void) {
+static void __not_in_flash_func(touch_recover_core1)(void) {
     FT3168_Reset();          // RST pin toggle + sleep_ms only, no I2C: safe as-is.
     if (!touch_set_active_to()) g_touchTimeouts++;
     g_touchRecoveries++;
@@ -914,7 +914,7 @@ static volatile uint32_t g_diagThGroupReg; // 0x80 readback - confirms FT3168_TO
                                             // untouched power-on default (see touch_set_active()'s
                                             // one-time boot printf for that).
 
-static void touch_diag_poll_core1(uint32_t nowMs) {
+static void __not_in_flash_func(touch_diag_poll_core1)(uint32_t nowMs) {
     static uint32_t lastPollMs = 0;
     static uint32_t lastRegMs = 0;
 
@@ -1001,7 +1001,7 @@ static void touch_diag_poll_core1(uint32_t nowMs) {
 #define ERASE_COOLDOWN_MS 1200
 #define JOLT_MAX 16
 
-static void imu_poll_core1(uint32_t nowMs) {
+static void __not_in_flash_func(imu_poll_core1)(uint32_t nowMs) {
     static uint32_t lastMs = 0;
     static uint32_t joltTimes[JOLT_MAX];
     static int joltCount = 0;
@@ -1074,7 +1074,7 @@ static void imu_poll_core1(uint32_t nowMs) {
  * pattern is not something the existing, hardware-proven code already does
  * for this chip.
  */
-static void pmic_poll_core1(uint32_t nowMs) {
+static void __not_in_flash_func(pmic_poll_core1)(uint32_t nowMs) {
     static uint32_t lastMs = 0;
     if (nowMs - lastMs < 40) return;
     lastMs = nowMs;
@@ -1163,7 +1163,7 @@ static volatile uint32_t g_selftestWrites;
 static volatile uint32_t g_selftestFails;
 
 #if PMIC_WRITE_SELFTEST
-static void pmic_write_selftest_core1(uint32_t nowMs) {
+static void __not_in_flash_func(pmic_write_selftest_core1)(uint32_t nowMs) {
     static uint32_t lastMs = 0;
     if (nowMs - lastMs < 2000) return;
     lastMs = nowMs;
@@ -1184,7 +1184,7 @@ static void pmic_write_selftest_core1(uint32_t nowMs) {
  * argument; this function is the core1 half of it, the only half allowed to
  * actually touch i2c1.
  */
-static void pmic_poweroff_poll_core1(void) {
+static void __not_in_flash_func(pmic_poweroff_poll_core1)(void) {
     if (!g_poweroffRequested) return;
     g_poweroffRequested = false;
     g_poweroffCmds++;
@@ -1244,8 +1244,8 @@ static void pmic_poweroff_poll_core1(void) {
 #define PCF85063_CTRL1_1224  0x02 // 1 = 12 hour mode; this firmware wants 0
 #define PCF85063_SECONDS_OS  0x80
 
-static inline uint8_t bcd_to_bin(uint8_t v) { return (uint8_t)((v >> 4) * 10u + (v & 0x0Fu)); }
-static inline uint8_t bin_to_bcd(uint8_t v) { return (uint8_t)(((v / 10u) << 4) | (v % 10u)); }
+static inline uint8_t __not_in_flash_func(bcd_to_bin)(uint8_t v) { return (uint8_t)((v >> 4) * 10u + (v & 0x0Fu)); }
+static inline uint8_t __not_in_flash_func(bin_to_bcd)(uint8_t v) { return (uint8_t)(((v / 10u) << 4) | (v % 10u)); }
 
 /* The published clock, and why it is a seqlock rather than three plain
  * volatiles like g_fingerDownShared.
@@ -1269,7 +1269,7 @@ static volatile bool     g_clockKnown = false;
 static volatile uint32_t g_clockSecOfDay = 0;
 static volatile uint32_t g_clockSampledMs = 0;
 
-static void clock_publish(bool known, uint32_t secOfDay, uint32_t sampledAtMs) {
+static void __not_in_flash_func(clock_publish)(bool known, uint32_t secOfDay, uint32_t sampledAtMs) {
     g_clockSeq++;          // odd: a write is in progress
     __dmb();
     g_clockKnown = known;
@@ -1375,7 +1375,7 @@ static void rtc_read_publish_core0(void) {
  * byte this necessarily overwrites), which is exactly right: the device
  * stops saying "I do not know" at the instant it is told.
  */
-static void rtc_set_poll_core1(void) {
+static void __not_in_flash_func(rtc_set_poll_core1)(void) {
     if (!g_setClockRequested) return;
     g_setClockRequested = false;
     uint32_t secOfDay = g_setClockSecOfDay;
@@ -1429,7 +1429,7 @@ static void rtc_set_poll_core1(void) {
  * repeats continuously, same as the old single-core hot loop did, and it
  * only stops once the line is actually back high.
  */
-static void core1_entry(void) {
+static void __not_in_flash_func(core1_entry)(void) {
     // Installs the fault handlers (see their section comment above): a
     // genuine safety net, and required by the invariant checker's
     // reachability root set - not something this loop can skip.

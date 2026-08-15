@@ -48,11 +48,15 @@
  * whole 256-byte page (hardware/flash.h: "count Must be a multiple of
  * 256"), so even though a record is 16 bytes, appending one means reading
  * the page it lands in back through the XIP window (safe: this only runs
- * on core0, and it is exactly what core0 already does to execute this very
- * function, since the whole image is copy_to_ram - decision 0004 - so this
- * touches ordinary already-mapped flash content, not a borrow of
- * anything), patching in the new 16 bytes, and programming the whole page
- * back. That is one page program per save (0.4ms typical, 3ms max -
+ * on core0, which is also the core that executes this very function's own
+ * instructions by XIP - storage.c is core0-only, so it is not part of the
+ * RAM-pinned set tools/invariants rule 1 enforces for core1, decisions
+ * 0004/0005/0016 - so an ordinary memory-mapped read through XIP_BASE here
+ * is the SAME kind of flash access as fetching this function's own next
+ * instruction, not the CS-deselecting borrow bootbtn.c's read_cs_low() does;
+ * nothing about it resembles that hazard), patching in the new 16 bytes,
+ * and programming the whole page back. That is one page program per save
+ * (0.4ms typical, 3ms max -
  * decision 0011's own table), not sixteen times less the way the record
  * size alone would suggest. The bytes for every OTHER slot already in that
  * page are read back unchanged and written back identical, which programs

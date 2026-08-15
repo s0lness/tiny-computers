@@ -12,33 +12,45 @@ pico_sdk_init()
 
 add_executable(main)
 
-# THE WHOLE BINARY EXECUTES FROM SRAM, NOT XIP. This is the fix for the
-# core1 freeze diagnosed in docs/decisions/0004: bootbtn.c samples the BOOT
-# button by floating the flash chip select for ~100us at a time
-# (read_cs_low()), which its own comment understands is fatal to any core
-# fetching from flash at that moment - and it protects only the calling
-# core. Core0 is covered (the function is __no_inline_not_in_flash_func and
-# runs with its interrupts off); core1, which executed every sensor loop
-# from flash via XIP, was not, so any XIP-cache miss on core1 during a
-# borrow fetched garbage instructions through a deselected chip. The
-# deleted pre-runtime main.c had already hit and documented this ("a
-# periodic poll was in here briefly and the app hung with a white screen
-# and no input"), and solved it by not polling; the runtime refactor
-# deleted that file and reintroduced the periodic poll for bootClicked.
+# CORE1 RUNS ENTIRELY FROM RAM. CORE0 RUNS FROM FLASH BY XIP. This is the
+# narrower form of the fix for the core1 freeze diagnosed in decision 0004:
+# bootbtn.c samples the BOOT button by floating the flash chip select for
+# ~100us at a time (read_cs_low()), which its own comment understands is
+# fatal to any core fetching from flash at that moment - and it protects
+# only the calling core. Core0 is covered by construction (the function is
+# __no_inline_not_in_flash_func and runs with its interrupts off, and it is
+# core0 doing the borrowing, so it can never race itself). Core1 is the one
+# genuinely at risk, and everything it can reach - by direct branch, or by
+# an escape site resolved and pinned down in
+# tools/invariants/rules/rp2350-amoled-1.8.ts - is annotated
+# `__not_in_flash_func`/`__not_in_flash()` (this firmware's own code:
+# sensors.c, tilt.c) or pulled into RAM by the SDK's own placement (pico-sdk
+# already excludes libgcc/libm/newlib's mem* objects from FLASH by default,
+# and separately marks the exact functions that run WHILE flash itself is
+# busy, like pico_multicore's flash-lockout IRQ victim, `__not_in_flash_func`
+# for the identical reason). tools/invariants rule 1 is what makes this
+# trustworthy rather than hopeful: it enforces "no executable byte at a
+# flash VMA that core1 can reach" against the SAME reachability graph rule 0
+# already builds and gates (every indirect or handler-installing call site
+# on that path must be resolved or annotated), so a future refactor that
+# adds one innocent call to core1's path fails the build instead of quietly
+# reopening the hole - which is exactly how this bug returned the first
+# time, per decision 0005's account of the deleted pre-runtime main.c.
 #
-# copy_to_ram is the total form of the fix, chosen over per-function
-# __not_in_flash_func annotation deliberately: annotating core1's call
-# graph means auditing every callee forever (time_us_64, sleep_ms, libm's
-# sqrtf, libgcc's 64-bit division helpers, the multicore launch trampoline,
-# the vendor FT3168 reset - all were on core1's path and all live in
-# flash), and one future refactor adding one innocent call silently
-# reopens the hole, which is precisely how this bug returned the first
-# time. With the entire image copied to SRAM at boot there is no XIP
-# execution on either core, ever, so the chip-select borrow is safe by
-# construction and stays safe. Cost, measured before the change: 65KB
-# .text + 4KB .rodata against roughly 355KB of free SRAM, and a few ms of
-# boot-time copy.
-pico_set_binary_type(main copy_to_ram)
+# Why not keep copy_to_ram: decision 0016 (the framebuffer malloc) found an
+# 11-app build 46,380 bytes short of the panel framebuffer's own allocation
+# with copy_to_ram's whole-image RAM cost included - the board cannot be
+# flashed until that is solved, and the framebuffer (329,728 bytes) cannot
+# shrink. Core1's OWN reachable code is a few hundred functions smaller than
+# the whole image (see docs/decisions/0006's own count: 30-ish functions
+# reached from core1's roots, out of 500+ in the image), so RAM-pinning only
+# what core1 can reach recovers most of copy_to_ram's SRAM cost while
+# keeping its safety property for the one core that actually needs it.
+#
+# pico_set_binary_type is deliberately NOT called here: the SDK's "default"
+# binary type (flash XIP, `__not_in_flash_func`-annotated code still placed
+# in RAM by the linker script's own `.time_critical*` handling) is what this
+# needs, and that is PICO_DEFAULT_BINARY_TYPE's own default for this board.
 
 pico_generate_pio_header(main ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO/qspi.pio
                         OUTPUT_DIR ${CMAKE_CURRENT_LIST_DIR}/lib/QSPI_PIO)
@@ -243,6 +255,29 @@ endif()
 if(DEFINED SKETCH_LIVE_TUNE)
     target_compile_definitions(main PRIVATE SKETCH_LIVE_TUNE=${SKETCH_LIVE_TUNE})
 endif()
+
+# firmware/linker_overrides/default_text_excludes.incl: extends pico-sdk's
+# own list of what does NOT go to FLASH under the default binary type (the
+# mechanism that already RAM-places libgcc/libc/libm) to also cover the
+# pico-sdk components and the one vendor file (firmware/lib/Touch/FT3168.c)
+# on core1's reachable path - see that file's own header for the full
+# reasoning, the complete list, and why this is a linker-script override
+# rather than a second `-T` script.
+#
+# A same-named `.data` block appended via a second `-T` script (repeating
+# the output section name, the ordinary way to extend an SDK linker script)
+# was tried first and does NOT work here: GNU ld assigns each input section
+# to the FIRST output section rule that matches it, in the order the
+# combined script's SECTIONS commands are written, and pico-sdk's own
+# FLASH `.text` output section (with its own broad `*(.text*)` wildcard)
+# is written before any later, appended `.data` rule could ever run - so it
+# always wins the race regardless of `-T` ordering on the link command
+# line. pico_add_linker_script_override_path() sidesteps this entirely: it
+# REPLACES default_text_excludes.incl outright (an official SDK extension
+# point - see memmap_default.ld's own header comment), so the exclusion
+# happens inside the SAME rule that already wins the race for libgcc/libc/
+# libm, rather than trying to out-race it from outside.
+pico_add_linker_script_override_path(main ${CMAKE_CURRENT_LIST_DIR}/linker_overrides GLOB_FILES)
 
 pico_add_extra_outputs(main)
 

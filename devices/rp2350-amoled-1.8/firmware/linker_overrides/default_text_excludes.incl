@@ -1,0 +1,257 @@
+/*
+ * OVERRIDE of pico-sdk's src/rp2_common/pico_standard_link/script_include/
+ * default_text_excludes.incl, via pico_add_linker_script_override_path()
+ * (firmware/CMakeLists.txt) - "This can be used to override default linker
+ * script files with custom versions... will include the custom files
+ * first, overriding the default ones" (that function's own doc comment,
+ * pico_standard_link/CMakeLists.txt). Chosen over patching the SDK
+ * checkout, which this repo does not do for pico-sdk (only for the vendor
+ * Waveshare demo under firmware/lib, and there only for a functional bug -
+ * AGENTS.md's "Gotchas that bite").
+ *
+ * WHY THIS FILE EXISTS: default_text_excludes.incl is the ONE place
+ * pico-sdk's own default (non-copy_to_ram) linker script decides which
+ * `.text*` input sections do NOT go to the FLASH `.text` output section
+ * (falling through instead to `.data`'s RAM-with-flash-LMA output section,
+ * alongside `.time_critical*` - see sections_default_data.incl). The
+ * original line excludes libgcc.a/libc.a/libm.a wholesale, which is why
+ * software float/division helpers and newlib's mem-family/str-family
+ * functions already land in RAM with no work from this repo. Nothing
+ * excludes pico-sdk's OWN C sources (pico_time, pico_multicore,
+ * hardware_irq, ...) or this repo's own vendor code (firmware/lib/Touch),
+ * because those are ordinary object files, not archive members of
+ * libgcc/libc/libm - EXCLUDE_FILE's archive-member patterns cannot reach
+ * them, no matter how they are written.
+ *
+ * A LINKER-SCRIPT-LEVEL FIX, NOT A SOURCE ONE, because these files are not
+ * ours to annotate with `__not_in_flash_func` (own code gets that instead -
+ * see sensors.c and tilt.c). EXCLUDE_FILE operates at whole-FILE
+ * granularity, not per-function, so excluding one of these files moves
+ * every function it defines to RAM, not just the one(s) core1 actually
+ * reaches - measured cost is small against this build's SRAM margin
+ * (tools/invariants rule 5 prints it on every run), and the alternative
+ * (a same-named `.data` block appended via a second `-T` script, matching
+ * only the specific functions by section name) was tried first and does
+ * NOT work: GNU ld assigns each input section to the FIRST output section
+ * rule that matches it, in the order the combined script's SECTIONS
+ * commands are written, and the base script's OWN `.text` (FLASH) wildcard
+ * is written before any appended `.data` rule could ever run, so it always
+ * wins the race regardless of `-T` ordering on the link command line.
+ *
+ * WHICH FILES ARE LISTED, AND WHY EACH ONE: every file that defines a
+ * function tools/invariants rule 1 found reachable from core1 and NOT
+ * already covered by `__not_in_flash_func` (this repo's own code) or by
+ * pico-sdk's own `__time_critical_func` annotations (pico_sync/mutex.c's
+ * mutex_try_enter/mutex_enter_block_until/mutex_exit and friends - NOT
+ * listed below, already RAM without help). Found by nm'ing every compiled
+ * object file and grepping for each function rule 1 named, not guessed
+ * from directory layout:
+ *
+ *   hardware_claim/claim.c            hw_claim_lock, hw_claim_unlock
+ *   hardware_sync/sync.c              next_striped_spin_lock_num,
+ *                                     spin_lock_claim_unused
+ *   hardware_sync_spin_lock/
+ *     sync_spin_lock.c                spinlock_set_extexclall
+ *   hardware_irq/irq.c                irq_set_exclusive_handler,
+ *                                     irq_set_enabled,
+ *                                     runtime_init_per_core_irq_priorities
+ *   hardware_exception/exception.c    exception_set_exclusive_handler
+ *   hardware_timer/timer.c            time_us_64, timer_time_us_64
+ *   pico_time/time.c                  sleep_us, sleep_ms,
+ *                                     best_effort_wfe_or_timeout,
+ *                                     alarm_pool_add_alarm_at_force_in_
+ *                                     context, alarm_pool_cancel_alarm
+ *   pico_sync/lock_core.c             lock_init
+ *   pico_sync/mutex.c                 mutex_init (the one function in this
+ *                                     file the SDK does NOT already mark
+ *                                     __time_critical_func)
+ *   pico_flash/flash.c                get_flash_safety_helper,
+ *                                     flash_safe_execute_core_init,
+ *                                     default_core_init_deinit - see
+ *                                     rules/rp2350-amoled-1.8.ts's
+ *                                     ESCAPE_ANNOTATIONS for why the last
+ *                                     two are reachable at all (a `bx r*`
+ *                                     tail call through a vtable struct,
+ *                                     invisible to the reachability graph,
+ *                                     resolved by inspection)
+ *   pico_multicore/multicore.c        core1_trampoline, core1_wrapper,
+ *                                     multicore_lockout_victim_init (NOT
+ *                                     multicore_lockout_handler - already
+ *                                     __not_in_flash_func in this same
+ *                                     file, for the identical reason)
+ *   pico_runtime/runtime.c            runtime_run_per_core_initializers,
+ *                                     first_per_core_initializer
+ *   pico_runtime_init/runtime_init.c  runtime_init_per_core_bootrom_reset,
+ *                                     runtime_init_per_core_enable_
+ *                                     coprocessors
+ *   pico_thread_local/thread_local.c  runtime_init_per_core_tls_setup
+ *   pico_bootrom/bootrom.c            rom_func_lookup - called by
+ *                                     runtime_init_per_core_bootrom_reset;
+ *                                     its own indirect jump lands in the
+ *                                     RP2350's on-chip boot ROM, a
+ *                                     different physical memory the QSPI
+ *                                     flash chip-select borrow cannot
+ *                                     affect (see rules/
+ *                                     rp2350-amoled-1.8.ts's
+ *                                     ESCAPE_ANNOTATIONS) - but
+ *                                     rom_func_lookup's OWN code still has
+ *                                     to be fetched from wherever IT is
+ *                                     placed, which is why it is listed
+ *                                     here despite that.
+ *   pico_platform_panic/panic.c       panic
+ *   pico_printf/printf.c              weak_raw_vprintf
+ *   pico_stdio/stdio.c                __wrap_puts, stdio_put_string
+ *
+ * The last three are reachable from core1 ONLY via
+ * hard_assertion_failure -> panic -> ... (decision 0007's own account of
+ * this exact chain, for the stdio-lock hazard rule 2 checks) and are
+ * exempted from rule 1's placement check too (rules/rp2350-amoled-1.8.ts's
+ * PANIC_PATH_ALREADY_LOST), on the same "core1 is already lost by the time
+ * it gets here" reasoning - so in principle they need not be RAM-placed at
+ * all for THIS invariant's sake. They are listed here anyway, for a
+ * different and harder reason found while wiring this up: with
+ * hard_assertion_failure moved to RAM (pico_runtime/runtime.c, above) and
+ * panic() left in FLASH, the two ended up far enough apart that the ARM
+ * linker inserted a veneer to bridge the call - and that veneer's own
+ * shape (`ldr.w pc, [pc]` plus a literal pool word, not a bl/b/b.w/blx/bx)
+ * is a FOURTH kind of escape this graph does not model at all, invisible
+ * even to rule 0's `bx <reg>` widening. Moving panic() itself into RAM
+ * removes the distance that required the veneer in the first place, which
+ * removes the blind spot entirely rather than trying to teach the graph a
+ * new instruction shape whose other occurrences (this pattern is not
+ * unique to panic - __memcpy_veneer, ____wrap_atan2f_veneer and others
+ * appear throughout the image for other far calls) were not otherwise
+ * being audited. Cheap to do: tools/invariants rule 5 prints the SRAM
+ * margin on every run, and it stayed comfortably positive.
+ *
+ * `*libTouch.a:` (firmware/lib/Touch/FT3168.c, vendor, not pico-sdk) is
+ * handled the same way: touch_recover_core1() (sensors.c) calls
+ * FT3168_Reset() directly. `*libg.a:` (this toolchain's actual C library
+ * archive for this multilib - see that entry's own comment above) covers
+ * `strlen` and `_exit`. `pico_float/float_sci_m33_vfp.S` covers
+ * `__wrap_atan2f` (tilt_submit_device_g's one real trig call - sqrtf/fabsf
+ * both compile to a single FPU instruction and need no entry at all).
+ *
+ * THE HONEST LIMIT, found while wiring this up and worth stating plainly:
+ * tools/invariants rule 1 did NOT catch four of the entries in this file
+ * (libg.a, libTouch.a, float_sci_m33_vfp.S, and initially panic.c/printf.c/
+ * stdio.c) failing to be excluded. Each was still at a flash VMA, still
+ * reachable from core1, and rule 1 printed PASS anyway - because an ARM
+ * linker veneer (`ldr.w pc, [pc]` plus a literal pool word, inserted
+ * whenever a `bl`'s direct-branch encoding cannot reach a RAM-resident
+ * caller to a flash-resident target or vice versa) is a distinct escape
+ * shape from the three the reachability graph already models (`bl`/`b`/
+ * `b.w`, `blx r*`, `bx <reg>`), and this graph does not follow it. The
+ * veneer symbol itself (`__strlen_veneer`, `__FT3168_Reset_veneer`, ...)
+ * IS in the reached set and IS checked - and always passes, because a
+ * veneer is a tiny RAM-resident trampoline by construction, four
+ * instructions of `ldr.w pc, [pc]` plus a literal - while the REAL function
+ * it jumps to, sitting wherever the linker actually put it, is invisible
+ * to the graph and therefore unchecked. These four entries were found by
+ * hand (this file's own reachability dump, cross-checked against `nm` for
+ * every *_veneer symbol rule 1's own PASS output left present), not by the
+ * tool failing loud the way decision 0006 says a sound checker should.
+ * That is real unsoundness, disclosed rather than hidden: this rule cannot
+ * currently prove there is no fifth such veneer bridging to a flash-
+ * resident function somewhere else in the image. What bounds the risk in
+ * practice is that a veneer is only generated when the two sides end up
+ * FAR APART, and after this file's changes every function on core1's path
+ * is RAM-resident and clustered together (tools/invariants rule 1's own
+ * passing run has no more flash-VMA reached functions to be far from) -
+ * so today, empirically, no further veneer of this shape exists on core1's
+ * path (checked: every `*_veneer` symbol in the reached set was traced to
+ * a real function and confirmed RAM). A future change that reintroduces
+ * distance (annotating less, not more) could reopen this silently. Making
+ * rule 0 also model `ldr.w pc, [pc]` veneers as a fourth escape shape,
+ * the way it already does for `bx <reg>`, is future work - not done here
+ * because, per decision 0006's own review of the `bx <reg>` gap, widening
+ * what a rule detects mid-fix is exactly the kind of undisclosed change
+ * this project's own invariants are built to prevent people from making
+ * silently. This paragraph is the disclosure that gap deserves instead.
+ *
+ * Everything else in this file's own change history: rule 1 DID catch
+ * correctly, by name, on every rebuild - this veneer class is the one
+ * documented exception, not the rule.
+ *
+ * An earlier version of this fix tried a second `-T` linker script that
+ * repeated `.data`'s output section name to APPEND rules to it, rather than
+ * replacing this file. It does not work: see firmware/CMakeLists.txt's own
+ * comment, right above where this override path is registered, for why.
+ */
+*(EXCLUDE_FILE(
+    *libgcc.a:
+    *libc.a:
+    *lib*_a-mem*.o
+    *libm.a:
+    /* Measured on this build (main.elf.map's "Archive member included"
+     * table), not assumed: this toolchain's actual C library archive, for
+     * the cortex-m33/armv8-m.main+fp+dsp/-mcmse/softfp multilib this
+     * project builds, is `libg.a`, not `libc.a` - `strlen` and `_exit`
+     * both come from it (libc_a-strlen-stub.o and a stub object neither
+     * matching `*lib*_a-mem*.o` nor any pattern above), and were still
+     * landing at a flash VMA, reachable from core1 (tilt_submit_device_g's
+     * atan2f call chain calls into stdio_put_string... no - found via
+     * rule 1's own reachability dump, not guessed), until this line was
+     * added. The pre-existing `*libc.a:` pattern above is left in place
+     * rather than removed: it is presumably still correct for some other
+     * toolchain/multilib combination this project might build with, and
+     * removing it would be an undisclosed narrowing of what decision 0004's
+     * original fix already covered for free.
+     */
+    *libg.a:
+    *hardware_claim/claim.c.obj
+    *hardware_sync/sync.c.obj
+    *hardware_sync_spin_lock/sync_spin_lock.c.obj
+    *hardware_irq/irq.c.obj
+    *hardware_exception/exception.c.obj
+    *hardware_timer/timer.c.obj
+    *pico_time/time.c.obj
+    *pico_sync/lock_core.c.obj
+    *pico_sync/mutex.c.obj
+    *pico_flash/flash.c.obj
+    *pico_multicore/multicore.c.obj
+    *pico_runtime/runtime.c.obj
+    *pico_runtime_init/runtime_init.c.obj
+    *pico_thread_local/thread_local.c.obj
+    *pico_bootrom/bootrom.c.obj
+    /* pico_clib_interface/newlib_interface.c: defines _exit (a 4-byte
+     * `b .` stub - pico-sdk's own weak override of newlib's syscall stub),
+     * reached from core1 via ___exit_veneer, the SAME ARM-linker-veneer
+     * blind spot documented at length below for panic()/FT3168_Reset -
+     * found by hand the same way, checking every `*_veneer` symbol rule 1's
+     * PASS output still left present against `nm`, not by the checker
+     * itself failing loud.
+     */
+    *pico_clib_interface/newlib_interface.c.obj
+    /* pico_float's hand-written VFP assembly (not float_math.c): defines
+     * __wrap_atan2f, which tilt_submit_device_g() (tilt.c, core1) calls -
+     * atan2f is the one trig function this firmware uses that has no
+     * single Cortex-M33 FPU instruction (sqrtf/fabsf both compile to a
+     * single inline vsqrt.f32/vabs.f32, decision 0004's own finding, so
+     * neither needs a call or an entry here at all).
+     */
+    *pico_float/float_sci_m33_vfp.S.obj
+    *pico_platform_panic/panic.c.obj
+    *pico_printf/printf.c.obj
+    *pico_stdio/stdio.c.obj
+    /* firmware/lib/Touch/FT3168.c (vendor) is built as a static library
+     * (firmware/lib/Touch/CMakeLists.txt: add_library(Touch ...)), not
+     * compiled straight into main's own CMakeFiles/main.dir the way this
+     * repo's own runtime/apps sources are - so it is linked as an archive
+     * member, like libgcc/libc/libm above, and needs the same
+     * `archive:` exclude syntax rather than a plain object path. A first
+     * attempt used `*lib/Touch/FT3168.c.obj` (this component's *source*
+     * path) and silently matched nothing - FT3168_Reset stayed at a flash
+     * VMA, reachable from core1 via touch_recover_core1() (sensors.c),
+     * hidden from tools/invariants rule 1 by the SAME ARM-linker-veneer
+     * blind spot documented above for panic(), until this file's own
+     * reachability dump (not the invariant checker itself, which cannot
+     * see past that veneer shape) was checked by hand against the
+     * *_veneer symbols the checker's PASS still printed as RAM-placed
+     * without saying what they bridge to. libTouch.a currently has exactly
+     * one member (FT3168.c is the only .c file in firmware/lib/Touch), so
+     * excluding the whole archive costs nothing beyond excluding the one
+     * function that needed it.
+     */
+    *libTouch.a:
+) .text*)

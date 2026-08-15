@@ -141,9 +141,11 @@ bury.**
   is not that: `firmware/apps/*.c` and `firmware/runtime/gfx.c` are the same
   **source**, compiled by a **different compiler, to a different
   instruction set** (`zig cc` to `wasm32-freestanding`) than what actually
-  ships (the pico-sdk's own toolchain, targeting Cortex-M33, and per
-  `firmware/CMakeLists.txt`'s `copy_to_ram`, running entirely from SRAM, not
-  even XIP). **Decision 0003's claim, "not the same algorithm, the same
+  ships (the pico-sdk's own toolchain, targeting Cortex-M33 - apps run from
+  flash by XIP, per firmware/CMakeLists.txt and tools/invariants rule 1;
+  only core1's own reachable code, which apps are not part of, is
+  RAM-resident - decisions 0004/0005/0016). **Decision 0003's claim, "not
+  the same algorithm, the same
   object code," is not accurate held up against Speculos's bar. It is the
   same C, compiled twice, to two different object codes.** That distinction
   is small in practice for straight-line application logic and can matter
@@ -194,10 +196,14 @@ not degrees of the same one"), now confirmed against the single hardest bug
 this project has actually hit. The bug was found by reading a hazard
 (`flash_safe_execute`'s own documentation, and a comment in a deleted file
 that had already hit it once) and reasoning about a race, not by running
-anything in emulation. The durable fix is `copy_to_ram` (removing the hazard
-by construction) plus the decision record itself, so the hazard survives the
-next refactor. That is a process and documentation fix, not a tooling one,
-and no amount of emulator investment currently on the table changes that.
+anything in emulation. The durable fix removes the hazard by construction -
+originally `copy_to_ram` for the whole image (decisions 0004/0005), narrowed
+to RAM-placing only what core1 can reach once the whole-image cost became
+unaffordable (decision 0016), mechanically enforced either way by
+tools/invariants rather than left to hold by convention - plus the decision
+records themselves, so the hazard survives the next refactor. That is a
+process and documentation fix, not a tooling one, and no amount of emulator
+investment currently on the table changes that.
 
 ## What emulating RP2350 properly would require, for this firmware specifically
 

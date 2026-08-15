@@ -341,10 +341,19 @@ int main(void) {
     // out first. It has since been cleared. The root cause
     // (docs/decisions/0004, 0005) is a corrupted instruction fetch on core1
     // during core0's periodic BOOT-button read, which borrows the flash
-    // chip select - nothing to do with sound_init() or i2c1 at all, and the
-    // fix (copy_to_ram, firmware/CMakeLists.txt) makes the hazard
-    // impossible regardless of what runs at boot. The owner likes the
-    // chime and asked for it back the moment it was cleared.
+    // chip select - nothing to do with sound_init() or i2c1 at all. sound_init()
+    // runs on core0 before sensors_start() launches core1 (this file's own
+    // call order), so it is not itself at risk; what makes it (and every
+    // other core0-only function) safe by construction is that core0 is the
+    // one doing the borrow, in a function that is itself RAM-resident and
+    // interrupt-free for the borrow (bootbtn.c's read_cs_low()). Core1's own
+    // reachable code is what actually needs RAM placement, and does have it
+    // - see firmware/CMakeLists.txt's own comment and
+    // tools/invariants/rules/rp2350-amoled-1.8.ts's rule 1, the narrower,
+    // reachability-scoped form of decision 0004's original whole-image
+    // copy_to_ram fix (decision 0016 made the whole-image cost unaffordable
+    // for an 11-app build). The owner likes the chime and asked for it back
+    // the moment it was cleared.
     sound_init();
 
     if (!gfx_init()) {

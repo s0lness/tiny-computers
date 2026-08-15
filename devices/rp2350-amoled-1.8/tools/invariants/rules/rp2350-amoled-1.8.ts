@@ -24,6 +24,114 @@ const DEVICE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", ".
 // direct-branch graph could never discover core1_entry as its callee.
 const ROOTS = ["core1_entry", "core1_trampoline", "core1_fault_handler"];
 
+// --- roots the graph cannot discover on its own, resolved by inspection ---
+//
+// Added for rule 1's inversion (docs/decisions/0004/0005: RAM-place only
+// what core1 can reach, instead of copy_to_ram's whole image). That change
+// is only as sound as this root set: a function core1 genuinely executes but
+// this graph never reaches is a function rule 1 will silently leave at a
+// flash VMA. Building this list is what surfaced two gaps neither rule 0 nor
+// the original (placement-only) rule 1 had any reason to care about before:
+//
+// 1. `bx <reg>` other than `bx lr` was not tracked as an indirect site at
+//    all (only `blx r*` was - decision 0006 found nine `bx <reg>` sites in
+//    the whole image and left the gap open deliberately, since under
+//    copy_to_ram nothing depended on it). disasm.ts now tracks both
+//    uniformly; this file resolves the two that land on core1's own path.
+// 2. core1_trampoline's landing point is core1_wrapper (pico_multicore), not
+//    core1_entry directly - and the jump into it is `pop {..., pc}`, which
+//    is not a bl/b/b.w/blx either, the exact same reason core1_trampoline
+//    itself had to be a seeded ROOT rather than a discovered edge.
+//
+// "core1_wrapper" (pico_multicore's core1_trampoline pops PC here, not a
+// branch instruction the parser models - see the comment above). It then
+// calls runtime_run_per_core_initializers() by a plain bl (found fine) and
+// tail-calls `(*entry)()` via `bx r3` - see ESCAPE_ANNOTATIONS below for why
+// that always resolves to core1_entry.
+//
+// "default_core_init_deinit" - sensors.c's core1_entry() calls pico-sdk's
+// flash_safe_execute_core_init() directly (storage.c's flash_safe_execute()
+// needs this so it can park core1 during a dino high-score save, decision
+// 0011); that function tail-calls `helper->core_init_deinit(true)` through
+// flash_safety_helper_t, a struct of function pointers - a `bx r*`, invisible
+// to the graph. Resolved by inspection: get_flash_safety_helper() is
+// `__attribute__((weak))` but nothing in this firmware (grepped) overrides
+// it or reassigns default_flash_safety_helper's fields after its own static
+// initializer, so the call is deterministic. See ESCAPE_ANNOTATIONS below.
+const EXTRA_ROOTS_RESOLVED = ["core1_wrapper", "default_core_init_deinit"];
+
+// pico-sdk's per-core initializer array: core1_wrapper() (a resolved root
+// above) calls runtime_run_per_core_initializers(), which walks
+// `[__pre_init_first_per_core_initializer, __init_array_start)` and calls
+// every entry through `blx r3` in a loop - another indirect site the graph
+// cannot follow, and unlike the two above the SET of targets is link-time
+// data, not a fixed pair of function names, so it is read from the symbol
+// table rather than hardcoded. Each `__pre_init_<name>` entry's address
+// holds a pointer to <name> itself (pico-sdk's PICO_RUNTIME_INIT_FUNC
+// mechanism), so stripping the prefix recovers the real target - verified
+// against this build: the six entries found were first_per_core_initializer,
+// runtime_init_per_core_bootrom_reset, runtime_init_per_core_enable_
+// coprocessors, spinlock_set_extexclall, runtime_init_per_core_irq_
+// priorities and runtime_init_per_core_tls_setup, none of which call
+// anything the graph cannot already follow directly. A build that adds or
+// removes a per-core initializer changes this set automatically, with no
+// edit needed here - the alternative, a hardcoded name list, is exactly the
+// kind of thing a future SDK bump silently invalidates.
+const PER_CORE_INIT_ARRAY_START_SYM = "__pre_init_first_per_core_initializer";
+const PER_CORE_INIT_ARRAY_END_SYM = "__init_array_start";
+const PRE_INIT_PREFIX = "__pre_init_";
+
+function perCoreInitializerRoots(fw: Firmware): string[] {
+  const start = fw.symbols.find((s) => s.name === PER_CORE_INIT_ARRAY_START_SYM);
+  const end = fw.symbols.find((s) => s.name === PER_CORE_INIT_ARRAY_END_SYM);
+  if (!start || !end) {
+    throw new Error(
+      `invariant checker: expected pico-sdk's per-core initializer array boundary symbols ` +
+        `"${PER_CORE_INIT_ARRAY_START_SYM}"/"${PER_CORE_INIT_ARRAY_END_SYM}" in the image - ` +
+        `core1_wrapper() walks this array via an indirect blx the reachability graph cannot ` +
+        `follow; an SDK change that renames or removes these would silently blind rule 0/1/2/3 ` +
+        `to whatever the array now holds, so this fails loud instead of guessing`
+    );
+  }
+  if (!(end.addr > start.addr)) {
+    throw new Error(
+      `invariant checker: "${PER_CORE_INIT_ARRAY_END_SYM}" (0x${end.addr.toString(16)}) is not ` +
+        `after "${PER_CORE_INIT_ARRAY_START_SYM}" (0x${start.addr.toString(16)}) - the per-core ` +
+        `initializer array's bounds look wrong, refusing to guess`
+    );
+  }
+  const roots: string[] = [];
+  for (const s of fw.symbols) {
+    if (s.addr < start.addr || s.addr >= end.addr) continue;
+    if (!s.name.startsWith(PRE_INIT_PREFIX)) continue;
+    roots.push(s.name.slice(PRE_INIT_PREFIX.length));
+  }
+  if (roots.length === 0) {
+    throw new Error(
+      `invariant checker: found zero "${PRE_INIT_PREFIX}*" symbols between the per-core ` +
+        `initializer array bounds (0x${start.addr.toString(16)}..0x${end.addr.toString(16)}) - ` +
+        `expected at least one (first_per_core_initializer itself)`
+    );
+  }
+  return roots;
+}
+
+// The full root set every rule below should use: the three hardware/ISR
+// entry points, the two resolved-by-inspection tail-call targets, and the
+// per-core initializer array's actual contents. Rules 0, 2 and 3 move to
+// this too (not just rule 1): they were previously checking a narrower,
+// slightly wrong picture of core1's real call graph, which could only ever
+// under-report a stdio or SDK-i2c violation reachable solely through one of
+// these newly-resolved edges.
+// Exported (not just used internally by rules 0/1/2/3) so
+// tools/invariants/audit-core1-veneers.ts - the by-hand check decision
+// 0017 asks a future editor of core1's path to re-run, now a real script
+// instead of prose - can compute the identical reachable set rather than
+// a second, potentially-drifting copy of this logic.
+export function allRoots(fw: Firmware): string[] {
+  return [...ROOTS, ...EXTRA_ROOTS_RESOLVED, ...perCoreInitializerRoots(fw)];
+}
+
 // --- rule 0: every escape from the direct-branch graph is annotated -------
 //
 // Two shapes of "the static graph cannot see where this actually goes":
@@ -115,7 +223,98 @@ const ESCAPE_ANNOTATIONS: Record<string, string> = {
     "core1_install_fault_handlers(), inlined here by the compiler; " +
     "core1_fault_handler is already a graph root above, so this adds no " +
     "reachable code the BFS does not already have.",
+  // The four entries below exist because EXTRA_ROOTS_RESOLVED/
+  // perCoreInitializerRoots() (above) had to resolve escape sites BY HAND to
+  // build a root set the graph could not discover on its own - each one is
+  // the site itself, not a name the escape resolves to (matching every
+  // other key in this object).
+  core1_wrapper:
+    "tail call (`bx r3`) is `(*entry)()`: pico_multicore's core1_wrapper " +
+    "invokes whatever function pointer multicore_launch_core1() was given. " +
+    "This firmware only ever calls multicore_launch_core1(core1_entry) " +
+    "(sensors.c's sensors_start()/sensors_restart_core1(), both grepped, " +
+    "no other call site exists), so the target is deterministic and is " +
+    "core1_entry, already a graph root. See EXTRA_ROOTS_RESOLVED's comment.",
+  flash_safe_execute_core_init:
+    "tail call (`bx r3`) is `helper->core_init_deinit(true)`, through " +
+    "pico-sdk's flash_safety_helper_t vtable (pico_flash/flash.c). Nothing " +
+    "in this firmware overrides the weak get_flash_safety_helper() or " +
+    "reassigns default_flash_safety_helper's fields after its own static " +
+    "initializer (grepped), so the call always lands on " +
+    "default_core_init_deinit, added as an extra root rather than left " +
+    "unresolved. See EXTRA_ROOTS_RESOLVED's comment.",
+  runtime_run_per_core_initializers:
+    "the `blx r3` is pico-sdk's per-core initializer array walk " +
+    "(PICO_RUNTIME_INIT_FUNC), called from core1_wrapper on every core1 " +
+    "(re)launch. Every entry between __pre_init_first_per_core_initializer " +
+    "and __init_array_start is discovered from the symbol table and added " +
+    "as a root by perCoreInitializerRoots() - see that function's comment.",
+  multicore_lockout_victim_init:
+    "installs multicore_lockout_handler (pico_multicore's flash-lockout " +
+    "IRQ victim) via irq_set_exclusive_handler(), required so storage.c's " +
+    "flash_safe_execute() can later park this core during a dino " +
+    "high-score save (decision 0011). multicore_lockout_handler is " +
+    "installed, not called, so it is not itself in this graph's reached " +
+    "set; it does not need this rule's RAM-placement check either, because " +
+    "pico-sdk already marks it `__not_in_flash_func` for exactly this " +
+    "reason (src/rp2_common/pico_multicore/multicore.c: \"note this method " +
+    "is in RAM because lockout is used when writing to flash\").",
+  // runtime_init_per_core_bootrom_reset is one of the per-core initializer
+  // array's own entries (perCoreInitializerRoots() above), so it runs on
+  // core1 on every (re)launch. Its `bx r3` tail-calls whatever
+  // rom_func_lookup() returns for the two-byte bootrom function code 0x5253
+  // ("SR" - a per-core bootrom reset call, per pico-sdk's own naming). That
+  // target is inside the RP2350's on-chip boot ROM: a different physical
+  // memory from the external QSPI flash the BOOT-read hazard borrows, so a
+  // fetch there is unaffected by the borrow regardless of when it happens -
+  // this is why the escape itself is safe to leave unresolved, NOT a claim
+  // that runtime_init_per_core_bootrom_reset's own code (which IS an
+  // ordinary flash-VMA risk like any other function here) can skip rule 1;
+  // it cannot, and does not - see firmware/linker_overrides/
+  // default_text_excludes.incl.
+  runtime_init_per_core_bootrom_reset:
+    "tail call (`bx r3`) into rom_func_lookup()'s result: the RP2350's " +
+    "on-chip boot ROM, a physically different memory from the external " +
+    "QSPI flash the BOOT-read hazard borrows (docs/decisions/0004/0005), " +
+    "so a fetch there cannot be corrupted by that borrow no matter when it " +
+    "happens. This function's OWN code is still an ordinary flash-VMA risk " +
+    "like any other core1-reachable function and IS RAM-placed (firmware/ " +
+    "linker_overrides/default_text_excludes.incl) - only the escape site " +
+    "itself, which this graph cannot follow into the boot ROM's own " +
+    "unmapped-in-this-image code, is what this annotation excuses.",
+  // rom_func_lookup's own two `bx r3` sites are the SAME boot-ROM jump,
+  // parameterised by whichever caller's function code was looked up (this
+  // firmware only reaches it from runtime_init_per_core_bootrom_reset
+  // above, but the function itself is generic pico-sdk code with no way to
+  // name a single caller).
+  rom_func_lookup:
+    "both `bx r3` sites jump into the RP2350's on-chip boot ROM - a " +
+    "different physical memory from the external QSPI flash the BOOT-read " +
+    "hazard borrows (docs/decisions/0004/0005), so neither fetch can be " +
+    "corrupted by that borrow. Not part of this image, so this graph " +
+    "cannot and need not model it further.",
 };
+
+// Two ARM linker-generated veneers (`ldr.w pc, [pc]` plus a literal pool
+// word - a trampoline for a `bl` whose direct-branch encoding cannot reach
+// its target), both inserted at flash-resident stdio_put_string's own two
+// calls into pico-sdk's already-`__time_critical_func`-annotated
+// mutex_try_enter_block_until()/mutex_exit() (pico_sync/mutex.c's
+// print_mutex acquire/release, per decision 0007's own account of
+// stdio_put_string's locking). stdio_put_string is itself reachable from
+// core1 only via the panic path and is already exempted below
+// (PANIC_PATH_ALREADY_LOST); the veneer is a distinct symbol the graph
+// discovers as stdio_put_string's OWN resolved branch target (objdump
+// itself names the veneer, not the real function, as the `bl`'s
+// destination), so it needs its own line here rather than inheriting
+// stdio_put_string's exemption automatically. The veneer's few bytes exist
+// only to bridge a flash-resident caller to an already-RAM callee; they
+// carry no logic of their own and are exactly as "already lost" as the
+// panic call that reaches them.
+const PANIC_PATH_VENEERS = [
+  "__mutex_try_enter_block_until_veneer",
+  "__mutex_exit_veneer",
+];
 
 export const rule0EscapesAnnotated: Invariant = {
   name: "every indirect or handler-installing call site reachable from core1 is annotated",
@@ -129,7 +328,7 @@ export const rule0EscapesAnnotated: Invariant = {
     "'The core1 reachability helper, and rule 0'.",
   see: "docs/decisions/0006-invariant-checker.md",
   check(fw) {
-    const reach = reachableFrom(fw.functions, ROOTS);
+    const reach = reachableFrom(fw.functions, allRoots(fw));
     const sites = findEscapeSites(fw, reach.reached, reach.indirectSites);
     const unannotated = sites.filter((s) => !(stripCloneSuffix(s.func) in ESCAPE_ANNOTATIONS));
     if (unannotated.length === 0) return [];
@@ -142,42 +341,105 @@ export const rule0EscapesAnnotated: Invariant = {
   },
 };
 
-// --- rule 1: no executable byte at a flash VMA, outside the boot allowlist -
-
-// The only executable section the fix (docs/decisions/0004/0005,
-// copy_to_ram) leaves at a flash VMA: crt0's reset path, the boot-time
-// vector table, and the default unhandled-ISR stubs - reachable only at
-// cold reset or on an already-dead machine, per decision 0006's review.
+// --- rule 1: no executable byte at a flash VMA that core1 can reach -------
+//
+// INVERTED from the original placement-only rule (docs/decisions/0004/0005:
+// copy_to_ram, whole image, both cores) once the sixth invariant (decision
+// 0016, the framebuffer malloc) made that whole-image cost unaffordable: an
+// 11-app build needs SRAM copy_to_ram cannot give back. The hazard itself
+// has NOT changed - core0's bootbtn.c still borrows the flash chip select on
+// a timer with interrupts off, unconditionally, regardless of what core1 is
+// doing - so the fix has to keep being total FOR CORE1, while letting core0
+// (which is the one doing the borrowing, and is `__no_inline_not_in_flash_
+// func` + interrupts-off for the borrow itself, decision 0004/0005) run
+// everything else from flash by XIP.
+//
+// This reuses rule 0's reachability graph rather than a second traversal,
+// per the task this rule was rewritten under: the same allRoots(fw) call,
+// the same reachableFrom(). Rule 0 is what makes this sound rather than
+// hopeful - it already refuses to pass while any core1-reachable indirect
+// or handler-installing call site is unexplained, so by the time this rule
+// runs, `reach.reached` is not merely "everything the BFS could follow" but
+// "everything the BFS could follow, PLUS everything an unresolved edge on
+// that path was manually traced to" (EXTRA_ROOTS_RESOLVED,
+// perCoreInitializerRoots() above).
 const FLASH_REGION_NAME = "FLASH";
-const FLASH_CODE_ALLOWLIST = new Set([".flashtext"]);
+
+// Reachable from core1 only via the panic path
+// (hard_assertion_failure -> panic -> ...), and decision 0007 already ruled
+// on the parallel question for rule 2 (the stdio-lock hazard): a panicking
+// core1 is not made safe by anything panic() itself does, because it is
+// already lost by the time it gets there, and core0's own liveness guard
+// (sensors_restart_core1(), decision 0004/0005) recovers a dead core1 for
+// ANY reason - a wedged i2c1 wait, a genuine LOCKUP, or a panic - without
+// depending on how, or whether, core1's panic path completes. That argument
+// carries over to THIS hazard unchanged: if a fetch inside panic() itself
+// gets corrupted by a chip-select borrow, the observable result is still
+// "core1 stops advancing", which is exactly the signature the liveness
+// guard already watches for and already recovers from. RAM-pinning newlib's
+// printf/panic formatting machinery for a core that is, by the time it gets
+// there, already being torn down and restarted regardless, buys nothing.
+// Kept as its own named set (not merely reusing rule 2's `exceptions`
+// object) because the two rules' reasoning, while parallel, is not the same
+// claim - rule 2 is about a mutex, this is about an instruction fetch - and
+// a future change to one must not silently change the other.
+export const PANIC_PATH_ALREADY_LOST = new Set([
+  "panic",
+  "hard_assertion_failure",
+  "__wrap_puts",
+  "weak_raw_vprintf",
+  "stdio_put_string",
+  // The two mutex veneers stdio_put_string's own print_mutex acquire/
+  // release resolve to - see PANIC_PATH_VENEERS' own comment above for why
+  // these need a separate entry rather than inheriting stdio_put_string's.
+  ...PANIC_PATH_VENEERS,
+]);
 
 export const rule1NoCodeInFlash: Invariant = {
-  name: "no executable byte at a flash VMA, outside the boot allowlist",
+  name: "no executable byte at a flash VMA that core1 can reach",
   why:
-    "core0 borrows the flash chip select to read BOOT; a fetch during the " +
-    "borrow returns garbage and the fetching core stops without faulting. " +
-    "The fix is copy_to_ram, whole image, both cores - a placement rule, " +
-    "not a reachability one, because the hazard is total: it does not " +
-    "care whether the fetching code is ever reached from core1's roots.",
+    "core0 borrows the flash chip select to read BOOT, unconditionally, on " +
+    "a timer, regardless of what core1 is doing; a fetch during the borrow " +
+    "returns garbage and the fetching core stops without faulting. The " +
+    "original fix (copy_to_ram, decisions 0004/0005) made this safe by " +
+    "moving the WHOLE image to RAM; decision 0016 made that unaffordable " +
+    "for an 11-app build. This is the narrower, equally-total form: every " +
+    "function core1 can reach - by direct branch, or by an escape site " +
+    "rule 0 has resolved and required to be a root - must not be placed at " +
+    "a flash VMA. Code core1 never reaches (every app, the menu, gfx, " +
+    "storage, sound, devlink - all core0-only) is free to run from flash.",
   see: "docs/decisions/0005-rca-core1-dies-on-first-button.md",
   check(fw) {
     const flash = fw.regions.find((r) => r.name === FLASH_REGION_NAME);
     if (!flash) {
       throw new Error(`invariant checker: no "${FLASH_REGION_NAME}" region in the linker map`);
     }
-    const bad = fw.sections.filter(
-      (s) =>
-        s.flags.has("CODE") &&
-        s.size > 0 &&
-        s.vma >= flash.origin &&
-        s.vma < flash.origin + flash.length &&
-        !FLASH_CODE_ALLOWLIST.has(s.name)
-    );
+    const reach = reachableFrom(fw.functions, allRoots(fw));
+    const bad: { name: string; addr: number }[] = [];
+    for (const name of reach.reached) {
+      if (PANIC_PATH_ALREADY_LOST.has(stripCloneSuffix(name))) continue;
+      const fn = fw.functions.get(name);
+      if (!fn) {
+        // Every reached name comes from a ROOT (checked to exist) or a
+        // resolved branch target objdump itself named - disasm.ts builds
+        // `functions` from every function header in the whole image, so a
+        // miss here means the model and the graph have gone out of sync,
+        // not that this symbol is somehow benign. Fail loud, per this
+        // tool's own rule about lines/data it does not understand.
+        throw new Error(
+          `invariant checker: core1-reachable symbol "${name}" has no disassembled function body - cannot check its placement`
+        );
+      }
+      if (fn.addr >= flash.origin && fn.addr < flash.origin + flash.length) {
+        bad.push({ name, addr: fn.addr });
+      }
+    }
     if (bad.length === 0) return [];
+    bad.sort((a, b) => a.addr - b.addr);
     return [
       {
-        message: "executable section(s) placed at a flash VMA outside the allowlist",
-        symbols: bad.map((s) => `${s.name} (vma=0x${s.vma.toString(16)}, size=0x${s.size.toString(16)})`),
+        message: `${bad.length} function(s) reachable from core1 are placed at a flash VMA`,
+        symbols: bad.map((b) => `${b.name} (vma=0x${b.addr.toString(16)})`),
       },
     ];
   },
@@ -200,7 +462,7 @@ function reachableExcludes(opts: {
     why: opts.why,
     see: opts.see,
     check(fw): Violation[] {
-      const reach = reachableFrom(fw.functions, ROOTS);
+      const reach = reachableFrom(fw.functions, allRoots(fw));
       const hits = reachedNamesMatching(reach, opts.forbidden);
       const real = hits.filter((h) => !(stripCloneSuffix(h) in (opts.exceptions ?? {})));
       const excepted = hits.filter((h) => stripCloneSuffix(h) in (opts.exceptions ?? {}));

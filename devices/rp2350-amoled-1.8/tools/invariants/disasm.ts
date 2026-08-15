@@ -41,6 +41,20 @@ const TARGET_NAME = /<([^+>]+)(?:\+0x[0-9a-f]+)?>\s*$/;
 // `blx`/`bx` (excluding plain `bx lr`, an ordinary return) taking a register
 // operand is a call through a value the graph cannot see - rule 0's gate.
 const REGISTER_OPERAND = /^(r\d|r1[0-5]|sp|lr|pc|fp|ip|sl|sb)$/;
+// `bx <reg>` other than `bx lr` is the same hazard as `blx r*`: a branch
+// through a runtime value, not a resolved symbol. Decision 0006 found nine
+// of these in the whole image and left the gap open deliberately ("widening
+// rule 0's scope silently... would be the same kind of undisclosed change
+// this document elsewhere insists an invariant's why/see exist to prevent").
+// It is no longer a disclosed-but-inert gap: the rp2350-amoled-1.8 rule file
+// now derives WHICH functions must be RAM-resident from this same graph
+// (rule 1, docs/decisions/0004/0005's inverted invariant), and one of the
+// nine `bx <reg>` sites is a tail call inside flash_safe_execute_core_init()
+// (pico-sdk's pico_flash) that is on core1's own path
+// (sensors.c's core1_entry -> flash_safe_execute_core_init). A gap the old
+// placement-only rule 1 could shrug off is load-bearing for the new one, so
+// it is closed here rather than left as prose.
+const BX_LR_ONLY = /^lr$/;
 
 export function parseDisassembly(elfPath: string): Map<string, DisasmFunction> {
   const text = runTool(OBJDUMP, ["-d", elfPath]);
@@ -104,18 +118,18 @@ export function parseDisassembly(elfPath: string): Map<string, DisasmFunction> {
       continue;
     }
 
-    // Rule 0, verbatim from decision 0006, is scoped to "every blx r* site".
-    // `bx <reg other than lr>` is the same hazard in spirit (a branch
-    // through a value the graph cannot see) and this build does contain a
-    // handful of them, outside stdio - see the invariant checker's own
-    // README for why that gap is left open rather than silently widened.
-    if (mnemonic === "blx") {
+    // blx r* is always indirect. bx r* is indirect too, EXCEPT `bx lr`,
+    // which is an ordinary function return, not a call through an unknown
+    // value - see BX_LR_ONLY's comment above for why this used to stop at
+    // blx and no longer does.
+    if (mnemonic === "blx" || mnemonic === "bx") {
       if (!REGISTER_OPERAND.test(operand)) {
         throw new Error(
           `objdump -d ${elfPath}: ${mnemonic} at ${addrMatch[1]} has an unexpected operand: ` +
             JSON.stringify(operand)
         );
       }
+      if (mnemonic === "bx" && BX_LR_ONLY.test(operand)) continue;
       current.indirect.push({ addr, mnemonic, operand } satisfies IndirectSite);
     }
   }

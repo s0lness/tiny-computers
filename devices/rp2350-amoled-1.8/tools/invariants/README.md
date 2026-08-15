@@ -6,7 +6,11 @@ run as a post-build step. It catches the shape of decision
 that was understood, written down next to the code that avoided it, and lost
 the moment a refactor moved that code. Full design rationale, the numbers
 behind it, and the phased plan: decision
-[0006](../../docs/decisions/0006-invariant-checker.md).
+[0006](../../docs/decisions/0006-invariant-checker.md). Rule 1 was inverted
+from "no code anywhere in flash" to "no code *core1 can reach* in flash" by
+decision [0017](../../docs/decisions/0017-ram-place-only-what-core1-can-reach.md),
+once decision 0016's own sixth invariant made the original whole-image
+`copy_to_ram` fix too expensive in SRAM to keep shipping.
 
 ## Running it
 
@@ -75,16 +79,40 @@ parsers.
   device's rules file) turns that from a silent hole into an explicit,
   annotated, gated list - the strongest claim static analysis can honestly
   make here, not a claim that every edge is resolved.
-- **Rule 0 is scoped to `blx r*` and a named list of handler-installing SDK
-  calls, not every indirect control transfer.** Building this checker
-  against the real firmware found `bx <reg>` sites (register-indirect
-  branches using `bx` rather than `blx`) reachable from core1 outside stdio
-  - a real gap, not a hypothetical one, and one this tool does not close:
-  decision 0006 specifies rule 0 as "every blx r* site", and widening that
-  silently, mid-implementation, would be exactly the kind of undisclosed
-  scope change the checker itself exists to prevent elsewhere. If `bx <reg>`
-  ever needs closing, it is a deliberate, reviewed change to rule 0's
-  definition, not a drive-by fix.
+- **Rule 0 tracks `blx r*`, `bx <reg other than lr>`, and a named list of
+  handler-installing SDK calls - not every indirect control transfer.**
+  Originally scoped to `blx r*` only; decision 0006 found `bx <reg>` sites
+  reachable from core1 outside stdio and left the gap open deliberately,
+  since nothing depended on it under `copy_to_ram`. Decision
+  [0017](../../docs/decisions/0017-ram-place-only-what-core1-can-reach.md)
+  made it load-bearing (RAM-placement decisions, not just placement
+  verification, now depend on the reachable set being accurate) and closed
+  it, as a deliberate, disclosed widening of rule 0's own definition, not a
+  drive-by fix.
+- **Rule 0/1 still do not model a fourth escape shape: the ARM linker
+  veneer** (`ldr.w pc, [pc]` plus a literal pool word, inserted whenever a
+  `bl` cannot directly bridge a RAM-resident caller to a flash-resident
+  callee or vice versa). Decision 0017 found this hiding four real
+  flash-resident, core1-reachable functions behind a RAM-resident veneer
+  stub rule 1 happily passed. Closed for the current tree by moving the
+  real targets into RAM (removing the distance that required the veneer),
+  not by teaching the graph a fourth shape - this pattern recurs throughout
+  the whole image for calls that have nothing to do with core1, so gating
+  on it generically is out of scope for a mid-fix widening and is left as
+  its own future decision. `audit-core1-veneers.ts` is the interim,
+  on-demand check: run it after touching core1's path (sensors.c, tilt.c,
+  or anything they call into), before trusting rule 1's PASS -
+  ```
+  bun run tools/invariants/audit-core1-veneers.ts [path/to/main.elf] [path/to/main.elf.map]
+  ```
+  It re-derives the same reachable set rule 0/1 use, finds every `*_veneer`
+  symbol still in it, reads each one's own literal-pool jump target, and
+  fails loud (by name, with the target address) if any resolves to a
+  flash-resident, non-panic-path function - exactly the class of gap rule 1
+  cannot see. Not wired into the build for the same reason the graph does
+  not model this shape yet: it would be scope creep on the change that
+  found it, not a reviewed decision to make the mandatory checker slower or
+  broader.
 - **It cannot measure stack headroom**, only that the map's stack region is
   the expected shape (rule 4). Real worst-case static depth needs
   `-fstack-usage` walked over the same core1 graph - decision 0006 phases

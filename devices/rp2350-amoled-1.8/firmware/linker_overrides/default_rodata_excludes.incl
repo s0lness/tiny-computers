@@ -1,0 +1,70 @@
+/*
+ * OVERRIDE of pico-sdk's src/rp2_common/pico_standard_link/script_include/
+ * default_rodata_excludes.incl - the `.rodata` sibling of this directory's
+ * default_text_excludes.incl (see that file's own long header comment for
+ * the full mechanism, the reasoning, and the file-by-file justification;
+ * this file exists to say only what is different).
+ *
+ * WHY THIS FILE EXISTS SEPARATELY, RATHER THAN LEAVING .rodata ALONE: the
+ * BOOT-read hazard (docs/decisions/0004/0005) is about any core1
+ * instruction FETCH racing core0's flash chip-select borrow - and
+ * default_text_excludes.incl only moves *code* (`.text*`) off flash for
+ * the functions core1 reaches. A function can also read separately
+ * declared `static const` data (a lookup table, a struct, a string literal
+ * that is not part of its own inline literal pool) that the compiler
+ * places in its OWN `.rodata.<name>` input section, distinct from the
+ * function's `.text.<name>` - and reading such a value while flash is
+ * deselected is exactly the same class of corrupted fetch as an
+ * instruction fetch would be, since both go over the same QSPI XIP path.
+ * Literal-pool constants (most of what these functions actually use -
+ * confirmed by inspection, not assumed: none of firmware/runtime/sensors.c
+ * or tilt.c declare a `static const` on core1's path, and vendor/SDK
+ * functions here are small register-twiddling routines, not table-driven
+ * ones) already move WITH their owning function's `.text.<name>` section
+ * automatically, because GCC with -ffunction-sections emits a Thumb
+ * function's own literal pool inside that same section - this file is
+ * for the OTHER case, applied uniformly rather than function-by-function,
+ * since the cost is already paid (this file's own text-side twin already
+ * moved these same files' code) and re-auditing every function for
+ * separately-declared const data by hand is exactly the kind of manual
+ * check this project's own invariant-checker philosophy (decisions 0004
+ * and 0006) argues against relying on.
+ *
+ * SAME FILE LIST AS default_text_excludes.incl, for the same reasons -
+ * see that file for what each one is and why it is reachable from core1.
+ * Not narrowed to "only the files that are known to declare const data" on
+ * purpose: tools/invariants rule 1 checks CODE placement only (its own
+ * "what this cannot do" is that it does not model data fetches at all,
+ * per this project's `bx <reg>` and veneer disclosures) and cannot tell
+ * this file's author which of these files' functions read a rodata symbol
+ * outside their own literal pool, so this errs toward covering all of
+ * them rather than trusting a partial, unverified answer.
+ */
+*(EXCLUDE_FILE(
+    *libgcc.a:
+    *libc.a:
+    *lib*_a-mem*.o
+    *libm.a:
+    *libg.a:
+    *hardware_claim/claim.c.obj
+    *hardware_sync/sync.c.obj
+    *hardware_sync_spin_lock/sync_spin_lock.c.obj
+    *hardware_irq/irq.c.obj
+    *hardware_exception/exception.c.obj
+    *hardware_timer/timer.c.obj
+    *pico_time/time.c.obj
+    *pico_sync/lock_core.c.obj
+    *pico_sync/mutex.c.obj
+    *pico_flash/flash.c.obj
+    *pico_multicore/multicore.c.obj
+    *pico_runtime/runtime.c.obj
+    *pico_runtime_init/runtime_init.c.obj
+    *pico_thread_local/thread_local.c.obj
+    *pico_bootrom/bootrom.c.obj
+    *pico_clib_interface/newlib_interface.c.obj
+    *pico_float/float_sci_m33_vfp.S.obj
+    *pico_platform_panic/panic.c.obj
+    *pico_printf/printf.c.obj
+    *pico_stdio/stdio.c.obj
+    *libTouch.a:
+) .rodata*)
