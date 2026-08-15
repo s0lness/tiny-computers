@@ -19,14 +19,16 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadDevice } from "./device";
-import { chordStimulus, exerciseApp, probeClockDriven, probeSettleCadence } from "./exercise";
+import { chordStimulus, exerciseApp, menuArena, probeClockDriven, probeSettleCadence } from "./exercise";
 import { checkFreshness, stalenessMessage } from "./freshness";
 import { partition } from "./known";
 import { lintCleanInput } from "./cleaninput";
+import { runContracts } from "./contracts";
 import { treeFingerprint } from "./fingerprint";
 import type { Violation } from "./rules";
+import { checkArenaHeadroom } from "./rules";
 import { selftest } from "./selftest";
-import { LIMITS, PROBE_HOLDS, PROBE_HOLD_MS, PROBE_WINDOW_MS, PWR_LONG_PRESS_MS, PANEL_AREA } from "./rules/rp2350-amoled-1.8";
+import { APP_COUNT_MAX, ARENA_FAIL_FRACTION, LIMITS, PROBE_HOLDS, PROBE_HOLD_MS, PROBE_WINDOW_MS, PWR_LONG_PRESS_MS, PANEL_AREA } from "./rules/rp2350-amoled-1.8";
 
 const DEVICE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -86,6 +88,25 @@ async function main(): Promise<void> {
   if (appNames.length === 0) throw new Error("emu_device() declared no apps: nothing to gate");
   console.log(`${appNames.length} apps declared by emu_device(): ${appNames.join(", ")}`);
 
+  /* ---- 0c. the contracts several agents share (decision 0014) ------- */
+  // Before any app is driven: these compare the copies of contracts that
+  // parallel worktrees maintain by hand (the app table's three copies, the
+  // ABI's three, the shim's layer, the tests' index constants), and a
+  // disagreement there makes everything the stimuli would find ambiguous.
+  head("the contracts several agents share");
+  const contracts = runContracts(appNames, APP_COUNT_MAX);
+  for (const line of contracts.summary) console.log(line);
+  if (contracts.gated.length > 0) {
+    // Loud, known.ts-style, not a failure: a gated entry is a deliberate
+    // build variant, and the honest statement is that THIS run did not
+    // exercise it.
+    console.log(`  NOT GATED THIS RUN: ${contracts.gated.length} g_apps[] entr${contracts.gated.length === 1 ? "y" : "ies"} behind preprocessor conditions:`);
+    for (const g of contracts.gated) {
+      console.log(`    ${g.token}  (#${g.gatedBy}) - absent from this module, so no rule here has seen it`);
+    }
+  }
+  violations.push(...contracts.violations);
+
   /* ---- 1. every app, every tick (bugs 1, 2, 3, 4) ------------------- */
   head("every app, every tick");
   const rows: string[] = [];
@@ -96,10 +117,22 @@ async function main(): Promise<void> {
     const extra = i === 0 ? [chordStimulus(PWR_LONG_PRESS_MS)] : [];
     const r = await exerciseApp(i, appNames[i]!, LIMITS, PWR_LONG_PRESS_MS, extra);
     violations.push(...r.violations);
+    violations.push(...checkArenaHeadroom(r.appName, r.arenaBytes, r.arenaCapacity, ARENA_FAIL_FRACTION));
     rows.push(
       `  ${r.appName.padEnd(8)} ${String(r.ticks).padStart(6)} ticks   ` +
       `peak ${String(r.maxPushedPixels).padStart(7)} px/tick (${(r.maxPushedPixels / PANEL_AREA).toFixed(2)} panels)   ` +
-      `peak ${String(r.maxPushes).padStart(2)} pushes   during "${r.peakContext}"`
+      `peak ${String(r.maxPushes).padStart(2)} pushes   ` +
+      `arena ${String(r.arenaBytes).padStart(5)}B (${((100 * r.arenaBytes) / r.arenaCapacity).toFixed(0)}%)   during "${r.peakContext}"`
+    );
+  }
+  {
+    // The menu allocates like an app and is not a g_apps[] entry, so it
+    // gets its own arena line and the same headroom rule.
+    const m = await menuArena();
+    violations.push(...checkArenaHeadroom("menu", m.arenaBytes, m.arenaCapacity, ARENA_FAIL_FRACTION));
+    rows.push(
+      `  ${"menu".padEnd(8)} ${"".padStart(6)}                                              ` +
+      `arena ${String(m.arenaBytes).padStart(5)}B (${((100 * m.arenaBytes) / m.arenaCapacity).toFixed(0)}%)`
     );
   }
   for (const row of rows) console.log(row);

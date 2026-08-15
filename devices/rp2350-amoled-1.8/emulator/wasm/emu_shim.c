@@ -647,6 +647,17 @@ void emu_app_switch(int index) {
     app_switch_to(index);
 }
 
+// The arena oracle, per emu_abi.h: reads runtime_core.c's bump pointer at
+// the app boundary. int, not size_t, because a wasm export hands back an
+// i32 either way and APP_ARENA_BYTES (64KB) is nowhere near the sign bit.
+int emu_arena_used(void) {
+    return (int)rtcore_arena_used();
+}
+
+int emu_arena_capacity(void) {
+    return (int)APP_ARENA_BYTES;
+}
+
 /* ===========================================================================
  * Live tunables. Thin index -> name adapters over sketch.c's sketch_tune_*
  * (sensors.h), which this file already includes. Compiled with

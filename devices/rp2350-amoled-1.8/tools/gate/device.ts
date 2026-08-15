@@ -52,12 +52,27 @@ export interface Device {
   drainLog(): string[];
   tuneGet(index: number): number;
   tuneSet(index: number, value: number): void;
+  /** Arena bytes the CURRENT app allocated in enter() (emu_abi.h). */
+  arenaUsed(): number;
+  arenaCapacity(): number;
 }
 
 export const BTN_BOOT = 0;
 export const BTN_PWR = 1;
 
 let cachedModule: WebAssembly.Module | null = null;
+
+/**
+ * The compiled (not instantiated) module, shared with checks that read the
+ * module's own surface rather than driving it - the gate's ABI-parity rule
+ * reads WebAssembly.Module.exports() from this, so it inspects the exact
+ * bytes every other rule runs, not a second compile of possibly-different
+ * bytes.
+ */
+export function compiledModule(): WebAssembly.Module {
+  if (cachedModule === null) cachedModule = new WebAssembly.Module(readFileSync(WASM_PATH));
+  return cachedModule;
+}
 
 /**
  * Compiles the module once per process and instantiates a fresh one per
@@ -69,7 +84,7 @@ let cachedModule: WebAssembly.Module | null = null;
  */
 export async function loadDevice(opts: { skipFreshness?: boolean } = {}): Promise<Device> {
   if (!opts.skipFreshness) assertFresh();
-  if (cachedModule === null) cachedModule = await WebAssembly.compile(readFileSync(WASM_PATH));
+  if (cachedModule === null) cachedModule = compiledModule();
 
   let memory!: WebAssembly.Memory;
   const decoder = new TextDecoder();
@@ -148,5 +163,7 @@ export async function loadDevice(opts: { skipFreshness?: boolean } = {}): Promis
     drainLog: () => { const out = fwLog.slice(); fwLog.length = 0; return out; },
     tuneGet: (i) => exp.emu_tune_get!(i) as number,
     tuneSet: (i, v) => { exp.emu_tune_set!(i, v); },
+    arenaUsed: () => exp.emu_arena_used!() as number,
+    arenaCapacity: () => exp.emu_arena_capacity!() as number,
   };
 }

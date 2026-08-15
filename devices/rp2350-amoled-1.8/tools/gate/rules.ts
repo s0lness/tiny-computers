@@ -222,6 +222,41 @@ export function checkBezel(fb: Uint16Array, lim: Limits, context: string): Viola
   }];
 }
 
+/* ---- rule ARENA-HEADROOM
+ *
+ * app.h: an app that cannot fit APP_ARENA_BYTES is a build-time bug, and
+ * the runtime's answer at runtime is a red trap screen held forever. The
+ * gate is the last instrument that runs at build time, so it is the one
+ * that has to say "this app is close" while closeness is still a diff
+ * review rather than a red screen. Capacity comes from the firmware itself
+ * (emu_arena_capacity()); only the fraction is the gate's opinion.
+ */
+export function checkArenaHeadroom(
+  appName: string,
+  usedBytes: number,
+  capacityBytes: number,
+  failFraction: number
+): Violation[] {
+  if (capacityBytes <= 0) {
+    // An oracle that reads zero capacity is an oracle that did not read.
+    return [{
+      rule: "arena-headroom",
+      why: "emu_arena_capacity() returned a non-positive capacity, so nothing below could have been measured",
+      see: "emulator/wasm/emu_abi.h",
+      detail: `${appName}: arena capacity read as ${capacityBytes}`,
+    }];
+  }
+  const limit = Math.floor(capacityBytes * failFraction);
+  if (usedBytes <= limit) return [];
+  const pct = ((100 * usedBytes) / capacityBytes).toFixed(1);
+  return [{
+    rule: "arena-headroom",
+    why: `an app past ${Math.round(failFraction * 100)}% of the arena is one feature away from the red overflow trap, which a child would be the first to see`,
+    see: "firmware/runtime/app.h",
+    detail: `${appName}: enter() allocated ${usedBytes} of ${capacityBytes} arena bytes (${pct}%), fail line ${limit}`,
+  }];
+}
+
 /* ---- the per-tick watcher ------------------------------------------- */
 
 export interface WatchStats {

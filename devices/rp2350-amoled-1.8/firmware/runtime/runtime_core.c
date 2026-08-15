@@ -320,6 +320,11 @@ static void do_switch(int target) {
     g_currentApp = to;
 }
 
+size_t rtcore_arena_used(void) {
+    return g_arenaUsed; // see runtime_core.h: the gate's arena-headroom
+                         // oracle, read at the app boundary, never by apps
+}
+
 void app_switch_to(int index) {
     g_switchPending = true;
     g_switchTarget = index;

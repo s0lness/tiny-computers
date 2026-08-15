@@ -101,6 +101,11 @@ export interface AppReport {
   maxPushes: number;
   // Which stimulus was the most expensive tick, for the budget line.
   peakContext: string;
+  // What this app's enter() allocated from the arena (emu_abi.h's arena
+  // oracle), read once the entry settle is over. Apps allocate only in
+  // enter() (app.h), so this is the whole footprint.
+  arenaBytes: number;
+  arenaCapacity: number;
 }
 
 /**
@@ -129,6 +134,12 @@ export async function exerciseApp(
   driver.idle(400);
   watcher.checkSettledBezel();
 
+  // Read the arena BEFORE the stimuli: the chord stimulus switches into the
+  // menu, and a read after it would be the menu's footprint wearing this
+  // app's name.
+  const arenaBytes = dev.arenaUsed();
+  const arenaCapacity = dev.arenaCapacity();
+
   const stimuli = [...commonStimuli(dev.panelW, dev.panelH, longPressMs), ...extraStimuli];
   for (const s of stimuli) {
     watcher.setContext(`${appName}/${s.label}`);
@@ -146,7 +157,20 @@ export async function exerciseApp(
     maxPushedPixels: watcher.stats.maxPushedPixels,
     maxPushes: watcher.stats.maxPushes,
     peakContext: watcher.stats.peakContext,
+    arenaBytes,
+    arenaCapacity,
   };
+}
+
+/**
+ * The menu's own arena footprint. It is not a g_apps[] entry (APP_INDEX_MENU
+ * is -1), so the per-app loop never reads it, and it allocates like any app.
+ */
+export async function menuArena(): Promise<{ arenaBytes: number; arenaCapacity: number }> {
+  const dev = await loadDevice({ skipFreshness: true });
+  dev.appSwitch(-1); // APP_INDEX_MENU; the switch applies at the next tick
+  dev.tick(1000);
+  return { arenaBytes: dev.arenaUsed(), arenaCapacity: dev.arenaCapacity() };
 }
 
 /* ---- the two counterfactuals ----------------------------------------- */

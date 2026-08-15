@@ -312,6 +312,22 @@ float emu_tilt(int field);
 int  emu_app_current(void);
 void emu_app_switch(int index);
 
+/* ---- optional: the arena, for the gate's headroom rule -------------------
+ *
+ * How many bytes of the app arena the CURRENT app allocated in its enter()
+ * (rtcore_arena_used(), runtime_core.h), and the arena's capacity
+ * (APP_ARENA_BYTES). Only meaningful for a firmware with an arena at all.
+ *
+ * This is a test oracle, not an input, same category as emu_tilt(): the
+ * firmware's own overflow behaviour is a trap (app.h calls overflow a
+ * build-time bug and paints the panel red), so by the time the arena's own
+ * instrument fires, the child is looking at a red screen. The gate reads
+ * this to fail a BUILD when an app's state creeps toward the ceiling,
+ * which is the moment app.h says the bug actually exists.
+ */
+int emu_arena_used(void);
+int emu_arena_capacity(void);
+
 /* ---- optional: live tunables ---------------------------------------------
  *
  * Only meaningful if emu_device() declared a "tunables" array (see above). A

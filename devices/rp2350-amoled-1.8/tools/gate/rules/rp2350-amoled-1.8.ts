@@ -23,9 +23,11 @@ export const LIMITS: Limits = {
   panelW: PANEL_W,
   panelH: PANEL_H,
 
-  // decision 0001. gfx_push aligns to 8 and pads to PUSH_MIN_W=64, so
-  // every legal window is already a multiple of 8 wide; this is the check
-  // that a second push path does not appear that is not gfx_push.
+  // decision 0001. gfx_push rounds every row length up to a multiple of
+  // PUSH_GRAN_W=8 (gfx.c; the 64px minimum was the superseded earlier fix,
+  // see AGENTS.md), so every legal window is already a multiple of 8 wide;
+  // this is the check that a second push path does not appear that is not
+  // gfx_push.
   pushRowMultiple: 8,
 
   // WHAT THE APPS ACTUALLY COST, measured with --measure over the whole
@@ -82,6 +84,39 @@ export const LIMITS: Limits = {
   // all on a pixel grid.
   inkGrayMax: 128,
 };
+
+/**
+ * The app arena (app.h APP_ARENA_BYTES) and where the headroom rule fires.
+ *
+ * app.h: "an app that cannot fit in the arena is a build-time bug, not a
+ * runtime condition to handle" - the runtime's answer to overflow is a red
+ * trap screen, forever. The gate is where builds are judged, so the gate is
+ * where that bug has to become visible, BEFORE the byte that trips the
+ * trap: an app at 100% is a child looking at a red screen, and an app at
+ * 95% is one small feature away from it with no instrument saying so.
+ *
+ * The fail line is 90% of capacity. The capacity itself is NOT restated
+ * here: the gate reads it from the firmware (emu_arena_capacity()), so
+ * APP_ARENA_BYTES changing in app.h moves the line with it instead of this
+ * file silently disagreeing - a second copy of that number is exactly the
+ * drift decision 0014 is about. The largest app today (the sketchpad,
+ * measured by this same rule's report line) sits near 81%, so today's apps
+ * pass with real margin, and an app that crosses 90% is doing something new
+ * that deserves a decision, not a silent landing. If an app legitimately
+ * needs more, this fraction moves in this file with a written reason, the
+ * same contract the push budgets above already have.
+ */
+export const ARENA_FAIL_FRACTION = 0.9;
+
+/**
+ * The menu grid's ceiling (decision 0013): twelve apps at 4x3 cells of
+ * 112px. A thirteenth does not fall off the screen - menu.c clamps rows and
+ * narrows cells instead - so nothing visibly breaks, the targets just go
+ * under a child's fingertip, which no automated rule downstream can see.
+ * This is the arithmetic form of that decision: past twelve, a second menu
+ * design is owed BEFORE the app lands, not after.
+ */
+export const APP_COUNT_MAX = 12;
 
 /**
  * Where the clock-driven and settle-cadence probes put the finger. Panel

@@ -124,6 +124,22 @@ uint32_t rtcore_last_switch_us(void);
  */
 void rtcore_last_tilt(app_tilt_t *out);
 
+/* ---- what the current app's enter() cost in arena bytes -------------------
+ *
+ * The bump pointer's current value: how much of APP_ARENA_BYTES the app that
+ * is running right now has allocated. Apps allocate only inside enter()
+ * (app.h), so after a switch has settled this is that app's whole footprint,
+ * and it does not move again until the next switch.
+ *
+ * This exists for one consumer: the gate's arena-headroom rule
+ * (tools/gate/run.ts), which reads it through emu_arena_used() and fails
+ * before a flash when an app creeps toward the 64KB trap. app.h says an app
+ * that does not fit is a build-time bug; this is what makes that sentence
+ * checkable at build time instead of discovered as a red screen. No runtime
+ * logic reads it, same posture as rtcore_last_tilt() above.
+ */
+size_t rtcore_arena_used(void);
+
 /* ---- the menu's private slot ---------------------------------------------
  *
  * Not a valid g_apps[] index by construction (negative), so app_for_index()

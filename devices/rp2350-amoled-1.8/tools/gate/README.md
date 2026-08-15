@@ -42,7 +42,26 @@ to `g_apps[]` puts it under every rule below with no other edit.
 | `clock-driven` | an animation driven by the arrival of touch samples rather than by the clock | 3 hold positions per app |
 | `settles-the-same` | residue: a settled picture that depends on how many intermediate frames were rendered | 3 hold positions per app |
 | `clean-input` | a gesture test proven only against input this panel does not produce | over `emulator/wasm/tests/` |
+| `arena-headroom` | an app's enter() creeping toward the 64KB arena's red overflow trap (app.h) | once per app, plus the menu |
 | freshness | a module older than the sources it was built from | first, before anything else |
+
+Decision 0014 added a phase that compares the COPIES of contracts parallel
+agents maintain by hand, before any app is driven (`contracts.ts`):
+
+| Rule | Catches |
+|---|---|
+| `app-wiring` | the app table's three copies (g_apps[], build.ts SOURCES, CMakeLists) disagreeing - a merge dropped one |
+| `abi-parity` | emu_abi.h, build.ts EMU_EXPORTS and the module's export table disagreeing - the emu_sensor_vec3/emu_sensor_vector collision |
+| `shim-purity` | emu_shim.c reaching into firmware/apps/ - a per-app emulator seam (the level branch's level.h) |
+| `app-hygiene` | an app naming chip or hazard symbols (IMU, touch, PMIC, i2c, flash writes, watchdog, multicore) - apps read signals, never chips |
+| `test-app-index` | a test's APP_* constant disagreeing with the firmware's own app list |
+| `test-determinism` | a new test constructing TouchSim without a seed (the documented stroke-start flake, multiplying) |
+| `app-count-ceiling` | a thirteenth app, which decision 0013's grid holds with every target under a fingertip |
+
+The same phase prints, loudly and without failing, every `g_apps[]` entry
+behind a preprocessor condition: those apps are absent from this module,
+so **no rule in this gate has seen them**, and the gate says so instead of
+claiming coverage it does not have.
 
 The device's numbers - budgets, bezel width, probe positions - live in
 `rules/rp2350-amoled-1.8.ts` and nothing else knows them, so a second
@@ -58,6 +77,7 @@ gate.
 |---|---|
 | self-test (can the rules fail?) | <10ms, pure predicates |
 | freshness | 31 `stat()` calls |
+| contracts (decision 0014) | ~30 file reads plus one `WebAssembly.Module.exports()` on the already-compiled module; tens of ms |
 | every app, every tick | ~5,500 ticks total, ~2s. Each tick is one full framebuffer compare (82k word compares) plus a push-mask fill |
 | the two counterfactuals | 4 apps x 3 positions x 4 runs, ~0.7s. Only two framebuffer compares each, so they are cheap despite the run count |
 | clean-input lint | 16 file reads |
