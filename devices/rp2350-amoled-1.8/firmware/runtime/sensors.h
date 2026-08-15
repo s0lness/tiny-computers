@@ -279,6 +279,78 @@ uint32_t sensors_erase_seq(void);
 // writer of anything core1 also writes.
 void sensors_inject_erase(void);
 
+/* ---- the wall clock ------------------------------------------------------
+ *
+ * There is a real RTC on this board and it survives a power cut. Established
+ * from the schematic and four datasheets in
+ * docs/decisions/0011-what-this-board-can-actually-do.md, not assumed: a
+ * PCF85063ATL (U2) with its own 32.768kHz crystal (Y1), at the part's fixed
+ * address 0x51, fed from the AXP2101's always-on RTCLDO rail (pin 28,
+ * "VCC-RTC"), which the PMIC keeps up at about 25uA when every other rail is
+ * off. So the time survives a firmware reboot, an app switch, and a
+ * deliberate power-off, for as long as the main battery holds.
+ *
+ * IT DOES NOT SURVIVE A FLAT BATTERY. The backup-cell pads (H1, net VBAT2)
+ * are marked NC on the schematic: pads, not a battery. When the RTC domain
+ * loses power the oscillator stops, and the part says so - the Seconds
+ * register's bit 7 is the OS flag ("oscillator stopped", NXP data sheet
+ * 7.3.1.1). That single bit is why this struct has a `known` field instead
+ * of just handing an app a number: a clock that confidently shows the wrong
+ * time is worse than one that admits it does not know, and this project has
+ * already lost a day to a stopwatch that looked identical whether it was
+ * working or dead (docs/decisions/0004). An app MUST branch on `known`.
+ *
+ * IT IS ON i2c1, SO CORE1 OWNS IT, with no exemption available: see the
+ * ownership rule at the top of this file. The shape below is decision 0011's
+ * and follows the same one-writer/one-reader pattern
+ * sensors_request_poweroff() already uses:
+ *
+ *   - the chip is READ ONCE, in sensors_init(), on core0, before core1
+ *     exists, next to the FT3168/AXP2101 bring-up that already happens
+ *     there;
+ *   - wall-clock time then runs off the RP2350's own timer from that base,
+ *     which is what `sampledAtMs` is for. NOTHING POLLS THE RTC PER FRAME,
+ *     and nothing should: the chip is only needed to answer "what time was
+ *     it when I woke up";
+ *   - SETTING the time is a write, so it is a core0 request executed by
+ *     core1, exactly like the power-off write.
+ */
+typedef struct {
+    // False when the RTC could not be read at all, or when its OS flag says
+    // the oscillator stopped (a flat or disconnected battery). The time is
+    // then NOT known, and the only honest thing to draw is a picture that
+    // says so.
+    bool     known;
+    // Time of day in seconds, 0..86399, at the instant `sampledAtMs` names.
+    // Date is deliberately absent: nothing on this device has any use for
+    // one, and a calendar nobody reads is a calendar nobody notices is
+    // wrong.
+    uint32_t secOfDay;
+    // to_ms_since_boot() at the moment secOfDay was sampled. A consumer adds
+    // (now - sampledAtMs) to secOfDay; that arithmetic is the whole clock.
+    uint32_t sampledAtMs;
+} sensors_clock_t;
+
+// Reads the published wall clock. Safe to call every frame from core0: it
+// touches no bus, only the value core1 (or sensors_init()) last published,
+// through a seqlock so a three-field snapshot can never be read torn.
+void sensors_clock(sensors_clock_t *out);
+
+// Sets the RTC to `secOfDay` (0..86399), seconds included as given. Core0
+// requests, core1 performs the i2c1 write and republishes, so a caller sees
+// the new time through sensors_clock() a loop iteration later.
+//
+// Clearing the OS flag is part of the write (the flag lives in bit 7 of the
+// Seconds register, which this necessarily overwrites), so setting the time
+// is also what tells the device it knows the time again. There is deliberately
+// no separate "mark valid" call: the only way to become valid is to be told
+// what time it is.
+//
+// Call this on the EVENT that set the time, never on a timer and never per
+// frame - one i2c write per real act of setting, the same discipline
+// decision 0011 asks of flash writes.
+void sensors_set_clock(uint32_t secOfDay);
+
 /* ---- diagnostics -------------------------------------------------------
  *
  * Core1 increments these and never prints them; core0 reads them and turns
@@ -292,6 +364,11 @@ typedef struct {
     uint32_t touchRecoveries;
     uint32_t imuTimeouts;
     uint32_t pmicTimeouts;
+    // RTC writes (sensors_set_clock()) that did not land on the chip. Core1
+    // cannot printf, so this counter is the only way a failed set is ever
+    // visible - and the symptom it explains is otherwise baffling: the time
+    // is right for this session and wrong again after the next power cycle.
+    uint32_t rtcWriteFails;
     // Bumped once per sensors_request_poweroff() core1 actually notices and
     // acts on (see that function's comment). Core1 cannot printf to prove a
     // shutdown command was sent (the ownership-rule banner above explains

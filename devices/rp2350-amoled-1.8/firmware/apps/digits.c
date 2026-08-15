@@ -14,6 +14,10 @@
 #include <stdbool.h>
 
 #include "gfx.h"
+// The float brush the soft numerals at the bottom of this file are painted
+// with - see digits.h on why they exist and decision 0009 on why a numeral
+// made of rectangles is a defect on this device.
+#include "shapes.h"
 
 /* ---------------------------------------------------------------------
  * Seven-segment digits, drawn as filled rectangles. No font, no
@@ -99,4 +103,77 @@ void digits_draw_colon(int lx, int ly, int w, int h, int t, uint16_t colorPx) {
 // Clears a cell to the background, for the redraw-only-what-changed path.
 void digits_clear(int lx, int ly, int w, int h, uint16_t bgPx) {
     gfx_fill_rect_land(lx, ly, w, h, bgPx);
+}
+
+/* ---------------------------------------------------------------------
+ * The soft numerals. See digits.h for why they exist, why they live here
+ * next to the rectangle ones rather than in the app that asked for them,
+ * and why the two corrections this file documents become structural rather
+ * than special-cased.
+ * ------------------------------------------------------------------- */
+
+// One capsule, in whichever space the caller is working in.
+//
+// The portrait branch is gfx.h's own mapping read backwards. gfx.h maps
+// landscape (lx, ly) to panel (PANEL_W-1-ly, lx); invert that and a panel
+// point (px, py) is the landscape point (py, PANEL_W-1-px). A capsule is two
+// points and a radius, and a rotation preserves distances, so mapping the
+// two endpoints is the entire conversion - there is no second rasteriser
+// here, and no per-pixel code in this file at all.
+static void soft_capsule(digits_space_t space, float x0, float y0,
+                         float x1, float y1, float r, uint16_t colorPx) {
+    if (space == DIGITS_LANDSCAPE) {
+        shapes_fill_capsule_aa_land(x0, y0, r, x1, y1, r, colorPx);
+    } else {
+        float edge = (float)(PANEL_W - 1);
+        shapes_fill_capsule_aa_land(y0, edge - x0, r, y1, edge - x1, r, colorPx);
+    }
+}
+
+static void soft_dot(digits_space_t space, float cx, float cy, float r, uint16_t colorPx) {
+    if (space == DIGITS_LANDSCAPE) {
+        shapes_fill_disc_aa_land(cx, cy, r, colorPx);
+    } else {
+        shapes_fill_disc_aa_land(cy, (float)(PANEL_W - 1) - cx, r, colorPx);
+    }
+}
+
+// How far inside the cell edge a segment's AXIS sits, on top of its own
+// radius. shapes.c's coverage reaches half a pixel past the mathematical
+// edge of a shape, so three quarters of a pixel of slack keeps every lit
+// pixel strictly inside the cell - which is what lets the caller push
+// exactly the cell it cleared and nothing wider (decision 0001's rule about
+// row length is about the WINDOW; this is about the ink staying inside it).
+#define SOFT_INSET 0.75f
+
+void digits_draw_soft(digits_space_t space, int x, int y, int w, int h,
+                      int t, int value, uint16_t colorPx) {
+    if (value < 0 || value > 9) return;
+    uint8_t segs = SEVEN_SEG[value];
+    float r = (float)t * 0.5f;
+
+    // The two rails the numeral is built on. Everything below is one of
+    // three horizontal runs between xL and xR, or one of four vertical runs
+    // between two of yT/yM/yB.
+    float xL = (float)x + r + SOFT_INSET;
+    float xR = (float)(x + w) - r - SOFT_INSET;
+    float yT = (float)y + r + SOFT_INSET;
+    float yB = (float)(y + h) - r - SOFT_INSET;
+    float yM = (float)y + (float)h * 0.5f;
+
+    if (segs & 0x01) soft_capsule(space, xL, yT, xR, yT, r, colorPx); // a, top
+    if (segs & 0x40) soft_capsule(space, xL, yM, xR, yM, r, colorPx); // g, middle
+    if (segs & 0x08) soft_capsule(space, xL, yB, xR, yB, r, colorPx); // d, bottom
+    if (segs & 0x20) soft_capsule(space, xL, yT, xL, yM, r, colorPx); // f, upper left
+    if (segs & 0x10) soft_capsule(space, xL, yM, xL, yB, r, colorPx); // e, lower left
+    if (segs & 0x02) soft_capsule(space, xR, yT, xR, yM, r, colorPx); // b, upper right
+    if (segs & 0x04) soft_capsule(space, xR, yM, xR, yB, r, colorPx); // c, lower right
+}
+
+void digits_draw_dots_soft(digits_space_t space, int x, int y, int w, int h,
+                           int t, uint16_t colorPx) {
+    float r = (float)t * 0.5f;
+    float cx = (float)x + (float)w * 0.5f;
+    soft_dot(space, cx, (float)y + (float)h / 3.0f, r, colorPx);
+    soft_dot(space, cx, (float)y + (float)(2 * h) / 3.0f, r, colorPx);
 }

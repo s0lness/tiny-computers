@@ -498,7 +498,7 @@ int main(void) {
             uint32_t core1Loops = sensors_debug_core1_loops();
             uint32_t core1LoopsPerSec = core1Loops - g_profLastCore1Loops;
             printf("prof app=%s switch=%luus | loops=%lu/s | core1=%lu/s%s core1restarts=%lu | touch reads=%lu timeouts=%lu drops=%lu recoveries=%lu "
-                   "| imu timeouts=%lu | pmic timeouts=%lu poweroff cmds=%lu reg10h=%02lx->%02lx | shot drops=%lu\r\n",
+                   "| imu timeouts=%lu | pmic timeouts=%lu poweroff cmds=%lu reg10h=%02lx->%02lx | rtc write fails=%lu | shot drops=%lu\r\n",
                    switchName ? switchName : "?",
                    (unsigned long)rtcore_last_switch_us(),
                    (unsigned long)g_profLoops,
@@ -528,6 +528,13 @@ int main(void) {
                    // a real attempt prints actual register byte values instead.
                    (unsigned long)cur.poweroffRegBefore,
                    (unsigned long)cur.poweroffRegAfter,
+                   // rtc write fails: cumulative, not a delta, for the same
+                   // reason shot drops below is - the question is "has a
+                   // set-the-clock write ever failed on this board", not a
+                   // steady-state rate, and setting the clock is something
+                   // that happens a handful of times in a battery's life.
+                   // See sensors_stats_t.
+                   (unsigned long)cur.rtcWriteFails,
                    // shot drops: cumulative, not a delta - see devlink.h's
                    // devlink_dropped_shots() comment. Bumped only when a SHOT
                    // reply's body was cut short because the host stopped

@@ -90,6 +90,9 @@ target_sources(main PRIVATE
     # The bubble level. Reads no hardware directly: like every other app it
     # takes orientation through app_frame_t.tilt (runtime/tilt.c).
     apps/level.c
+    # The clock. In g_apps[] like every other app; it too reads orientation
+    # through app_frame_t.tilt rather than owning any hardware.
+    apps/clock.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into

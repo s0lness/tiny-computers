@@ -489,6 +489,45 @@ float emu_tilt(int field) {
     }
 }
 
+/* ---- the wall clock: a stand-in RTC that STARTS OUT NOT KNOWING ---------
+ *
+ * The board's version reads a PCF85063ATL on i2c1 once at boot and reports
+ * whether its OS flag says the oscillator ever stopped (sensors.h's wall
+ * clock section). There is no such part behind a browser tab.
+ *
+ * So this starts `known = false`, which is emu_abi.h's honesty rule applied
+ * to a chip instead of to a button: the alternative - quietly seeding this
+ * from the host's own Date.now(), which the JS side could trivially pass in -
+ * would hand the firmware a working, correct, battery-backed clock that this
+ * "device" does not have, and an app could then be built and shipped having
+ * never once been seen in the state a real puck comes up in after a flat
+ * battery. That state is the whole reason `known` exists. Here it is the
+ * DEFAULT, so it cannot be forgotten.
+ *
+ * Everything after that is real: sensors_set_clock() is the same call the
+ * board's, reached the same way (an app deciding the owner just set the
+ * time), and the time then runs off emu_tick()'s clock exactly as the board
+ * runs it off time_us_64() from its own single RTC read.
+ */
+static bool     g_clockKnown = false;
+static uint32_t g_clockSecOfDay = 0;
+static uint32_t g_clockSampledMs = 0;
+
+void sensors_clock(sensors_clock_t *out) {
+    // No seqlock here, and none needed: the board's exists because core1
+    // publishes what core0 reads (see sensors.c), and there is exactly one
+    // thread in a wasm module.
+    out->known = g_clockKnown;
+    out->secOfDay = g_clockSecOfDay;
+    out->sampledAtMs = g_clockSampledMs;
+}
+
+void sensors_set_clock(uint32_t secOfDay) {
+    g_clockKnown = true;
+    g_clockSecOfDay = secOfDay % 86400u;
+    g_clockSampledMs = g_nowMs;
+}
+
 /* ---- diagnostics: always zero. Nothing in wasm has i2c timeouts or queue
  * drops to count; see emu_abi.h's "What is not real" section. */
 void sensors_stats(sensors_stats_t *out) {
@@ -498,6 +537,7 @@ void sensors_stats(sensors_stats_t *out) {
     out->touchRecoveries = 0;
     out->imuTimeouts = 0;
     out->pmicTimeouts = 0;
+    out->rtcWriteFails = 0; // no i2c1 write to fail; see sensors_set_clock() above
     out->poweroffCmds = 0; // no PMIC to send a real command to; see
                             // sensors_request_poweroff() above
     out->poweroffRegBefore = 0xFFFFFFFFu; // no register 0x10 to read back either

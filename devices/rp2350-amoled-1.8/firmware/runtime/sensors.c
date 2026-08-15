@@ -748,6 +748,9 @@ static volatile uint32_t g_touchQueueDrops;
 static volatile uint32_t g_touchRecoveries;
 static volatile uint32_t g_imuTimeouts;
 static volatile uint32_t g_pmicTimeouts;
+// RTC writes that did not land - see rtc_set_poll_core1() for why this is
+// its own counter and not another pmicTimeout.
+static volatile uint32_t g_rtcWriteFails;
 static volatile uint32_t g_poweroffCmds;
 // Diagnostic readback around the shutdown write - see
 // pmic_poweroff_poll_core1()'s comment on why this exists. 0xFF for
@@ -1213,6 +1216,204 @@ static void pmic_poweroff_poll_core1(void) {
 #endif
 }
 
+/* ---- RTC: the wall clock, PCF85063ATL at 0x51 ---------------------------
+ *
+ * See sensors.h's "the wall clock" section for what this chip is, why it
+ * survives a power-off, and why one bit of it (OS) decides whether a clock
+ * app is a clock or a picture that admits it does not know. The register map
+ * below is NXP's PCF85063A data sheet, section 8.2 "Register overview":
+ *
+ *   00h Control_1   bit5 STOP (1 = clock stopped), bit1 12_24 (0 = 24 hour)
+ *   04h Seconds     bit7 OS (oscillator stopped), bits 6:0 BCD seconds
+ *   05h Minutes     bits 6:0 BCD
+ *   06h Hours       bits 5:0 BCD in 24 hour mode
+ *
+ * READ ONCE ON CORE0, WRITTEN ONLY BY CORE1. sensors_init() takes the one
+ * read, before core1 exists; after that the only traffic this chip ever sees
+ * is a write, and only when somebody actually sets the time. There is no
+ * per-frame poll here and there must never be one (decision 0011): the
+ * RP2350's own timer counts the seconds since that read perfectly well, and
+ * a second read hours later would only correct that timer's drift, which is
+ * a refinement nobody has asked for.
+ */
+#define PCF85063_ADDR        0x51
+#define PCF85063_REG_CTRL1   0x00
+#define PCF85063_REG_SECONDS 0x04
+#define PCF85063_CTRL1_STOP  0x20
+#define PCF85063_CTRL1_1224  0x02 // 1 = 12 hour mode; this firmware wants 0
+#define PCF85063_SECONDS_OS  0x80
+
+static inline uint8_t bcd_to_bin(uint8_t v) { return (uint8_t)((v >> 4) * 10u + (v & 0x0Fu)); }
+static inline uint8_t bin_to_bcd(uint8_t v) { return (uint8_t)(((v / 10u) << 4) | (v % 10u)); }
+
+/* The published clock, and why it is a seqlock rather than three plain
+ * volatiles like g_fingerDownShared.
+ *
+ * Every other cross-core value in this file is ONE word, and a single
+ * aligned word load/store is atomic on this part, so a reader either sees
+ * the old value or the new one and both are meaningful. This one is three
+ * words that only mean anything together: `secOfDay` and `sampledAtMs` are a
+ * pair, and a reader that caught the new secOfDay with the old sampledAtMs
+ * would compute a time hours out for one frame. The window is a couple of
+ * instructions wide and would therefore show up approximately never, and be
+ * unreproducible when it did, which is the worst kind of bug this codebase
+ * has already paid for once (docs/decisions/0004).
+ *
+ * So: writer bumps the sequence to odd, writes, bumps it to even; reader
+ * takes the sequence, copies, takes it again, and retries if it moved or was
+ * odd. Barriers on both sides for the same reason the touch ring has them.
+ */
+static volatile uint32_t g_clockSeq = 0;
+static volatile bool     g_clockKnown = false;
+static volatile uint32_t g_clockSecOfDay = 0;
+static volatile uint32_t g_clockSampledMs = 0;
+
+static void clock_publish(bool known, uint32_t secOfDay, uint32_t sampledAtMs) {
+    g_clockSeq++;          // odd: a write is in progress
+    __dmb();
+    g_clockKnown = known;
+    g_clockSecOfDay = secOfDay;
+    g_clockSampledMs = sampledAtMs;
+    __dmb();
+    g_clockSeq++;          // even again: the three fields agree
+}
+
+// core0-owned request, core1-owned execution - the same pattern
+// g_poweroffRequested uses, and for the same reason: the DECISION belongs to
+// whoever set the time, the i2c1 WRITE belongs to core1 and to nothing else.
+// The value is written before the flag, and the flag is the only thing core1
+// tests, so core1 cannot observe a request without also observing its value.
+static volatile uint32_t g_setClockSecOfDay = 0;
+static volatile bool     g_setClockRequested = false;
+
+void sensors_set_clock(uint32_t secOfDay) {
+    g_setClockSecOfDay = secOfDay % 86400u;
+    __dmb();
+    g_setClockRequested = true;
+}
+
+void sensors_clock(sensors_clock_t *out) {
+    for (;;) {
+        uint32_t s0 = g_clockSeq;
+        __dmb();
+        out->known = g_clockKnown;
+        out->secOfDay = g_clockSecOfDay;
+        out->sampledAtMs = g_clockSampledMs;
+        __dmb();
+        if ((s0 & 1u) == 0u && s0 == g_clockSeq) return;
+    }
+}
+
+// CORE0 ONLY, and only from sensors_init(), before core1 is launched. Reads
+// Control_1 through Hours in one transaction, so the seconds and the flag
+// that says whether to believe them come from the same instant.
+static void rtc_read_publish_core0(void) {
+    uint8_t b[7] = { 0 };
+    if (!i2c1_read_reg_n_to(PCF85063_ADDR, PCF85063_REG_CTRL1, b, sizeof(b))) {
+        // No answer from 0x51. Decision 0011 lists "does 0x51 answer at all"
+        // as one of the facts still owed to hardware, so this is a case that
+        // can really happen, and the honest published answer is the same one
+        // a stopped oscillator gets: the time is not known.
+        clock_publish(false, 0, 0);
+        printf("rtc: no answer at 0x51 - the time is not known\r\n");
+        return;
+    }
+
+    uint8_t ctrl1 = b[PCF85063_REG_CTRL1];
+    uint8_t rawSec = b[PCF85063_REG_SECONDS];
+    bool stopped = (rawSec & PCF85063_SECONDS_OS) != 0;
+
+    // The part powers up in 24 hour mode and running, but a chip that has
+    // been through a brownout, or that some other firmware once configured,
+    // may not be: fix both here, on core0, where touching i2c1 is still
+    // legal. Read-modify-write, only when something actually needs changing,
+    // so a healthy chip sees no write at all.
+    if (ctrl1 & (PCF85063_CTRL1_STOP | PCF85063_CTRL1_1224)) {
+        uint8_t fixed = (uint8_t)(ctrl1 & (uint8_t)~(PCF85063_CTRL1_STOP | PCF85063_CTRL1_1224));
+        i2c1_write_reg_to(PCF85063_ADDR, PCF85063_REG_CTRL1, fixed);
+        printf("rtc: control_1 was 0x%02x, corrected to 0x%02x (24h, running)\r\n", ctrl1, fixed);
+    }
+
+    if (stopped) {
+        // THE OS FLAG. The RTC domain lost power at some point since the last
+        // time anyone set it, so whatever the counters hold is arithmetic on
+        // top of a lie. Publish "not known" and let the app draw that.
+        clock_publish(false, 0, 0);
+        printf("rtc: OS flag set - the oscillator stopped, the time is NOT known\r\n");
+        return;
+    }
+
+    uint32_t sec = bcd_to_bin((uint8_t)(rawSec & 0x7Fu));
+    uint32_t min = bcd_to_bin((uint8_t)(b[5] & 0x7Fu));
+    uint32_t hour = bcd_to_bin((uint8_t)(b[6] & 0x3Fu));
+    if (sec > 59 || min > 59 || hour > 23) {
+        // Not a plausible time. A running oscillator with nonsense in the
+        // counters is a chip that answered but is not to be trusted, which
+        // is the same practical situation as a stopped one.
+        clock_publish(false, 0, 0);
+        printf("rtc: implausible reading %02lu:%02lu:%02lu - the time is not known\r\n",
+               (unsigned long)hour, (unsigned long)min, (unsigned long)sec);
+        return;
+    }
+
+    uint32_t secOfDay = hour * 3600u + min * 60u + sec;
+    clock_publish(true, secOfDay, to_ms_since_boot(get_absolute_time()));
+    printf("rtc: %02lu:%02lu:%02lu, oscillator running\r\n",
+           (unsigned long)hour, (unsigned long)min, (unsigned long)sec);
+}
+
+/* Core1's half of setting the time. Checked every pass through the loop like
+ * pmic_poweroff_poll_core1(), and just as free: a volatile bool read.
+ *
+ * STOP is raised around the write, per the data sheet's own note that the
+ * counters should not be written while the oscillator can carry a rollover
+ * through them mid-transaction. Three bounded transactions, on the one event
+ * that a human set the time; nothing here runs on a timer.
+ *
+ * Writing the Seconds register is also what clears the OS flag (bit 7 of the
+ * byte this necessarily overwrites), which is exactly right: the device
+ * stops saying "I do not know" at the instant it is told.
+ */
+static void rtc_set_poll_core1(void) {
+    if (!g_setClockRequested) return;
+    g_setClockRequested = false;
+    uint32_t secOfDay = g_setClockSecOfDay;
+
+    uint8_t hour = (uint8_t)(secOfDay / 3600u);
+    uint8_t min = (uint8_t)((secOfDay / 60u) % 60u);
+    uint8_t sec = (uint8_t)(secOfDay % 60u);
+
+    bool ok = i2c1_write_reg_to(PCF85063_ADDR, PCF85063_REG_CTRL1, PCF85063_CTRL1_STOP);
+    if (ok) {
+        uint8_t buf[4] = {
+            PCF85063_REG_SECONDS,
+            bin_to_bcd(sec),   // bit 7 clear: this is the OS flag going away
+            bin_to_bcd(min),
+            bin_to_bcd(hour),
+        };
+        ok = i2c1_write_bytes_bounded(PCF85063_ADDR, buf, sizeof(buf), false, I2C_TIMEOUT_US);
+    }
+    // Restart the oscillator whether or not the burst above landed: leaving
+    // the chip stopped would turn a failed write into a clock that never
+    // ticks again until the next reboot, which is strictly worse than a
+    // clock showing the old time.
+    if (!i2c1_write_reg_to(PCF85063_ADDR, PCF85063_REG_CTRL1, 0x00)) ok = false;
+
+    // Published either way. If the write failed, the chip still holds the old
+    // time and will hand it back on the next boot, but the value on screen
+    // for THIS session is the one the owner just dialled in, which is what he
+    // meant and what he is looking at. A silent revert to the old time on the
+    // very gesture that was supposed to fix it is the confusing outcome.
+    clock_publish(true, secOfDay, to_ms_since_boot(get_absolute_time()));
+    // Its own counter, not folded into pmicTimeouts: core1 may not printf
+    // (see this file's banner), so a counter is the ONLY way a failed write
+    // can ever be visible, and one that says "the RTC write failed" is worth
+    // a name of its own next to one that says "the PMIC did not answer".
+    // The symptom it explains is specific and otherwise baffling: the time
+    // is right until the next power cycle and wrong after it.
+    if (!ok) g_rtcWriteFails++;
+}
+
 /* ---- core1 entry point --------------------------------------------------
  *
  * Touch is gated on Touch_INT_PIN (active low, already configured as an
@@ -1290,6 +1491,11 @@ static void core1_entry(void) {
 
         imu_poll_core1(nowMs);
         pmic_poll_core1(nowMs);
+        // The RTC is on this bus too, so setting the time is core1's write to
+        // make - see sensors.h's wall clock section. Costs a volatile bool
+        // read per loop and three i2c transactions on the rare pass where
+        // somebody actually set the time; it never polls the chip.
+        rtc_set_poll_core1();
 #if PMIC_WRITE_SELFTEST
         pmic_write_selftest_core1(nowMs);
 #endif
@@ -1411,6 +1617,7 @@ void sensors_stats(sensors_stats_t *out) {
     out->touchRecoveries = g_touchRecoveries;
     out->imuTimeouts = g_imuTimeouts;
     out->pmicTimeouts = g_pmicTimeouts;
+    out->rtcWriteFails = g_rtcWriteFails;
     out->poweroffCmds = g_poweroffCmds;
     out->poweroffRegBefore = g_poweroffRegBefore;
     out->poweroffRegAfter = g_poweroffRegAfter;
@@ -1441,6 +1648,11 @@ void sensors_init(void) {
     touch_set_active();
     buttons_init();
     pmic_raise_poweroff_threshold();
+    // The RTC's ONE read, here and nowhere else - see sensors.h's wall clock
+    // section and rtc_read_publish_core0(). It has to happen before core1
+    // launches, because after that this bus is core1's alone; and it only
+    // has to happen once, because the RP2350's own timer counts from here.
+    rtc_read_publish_core0();
     // Everything above touches i2c1 (QMI8658_init, FT3168_Init,
     // touch_set_active, buttons_init, pmic_raise_poweroff_threshold) and runs
     // single-threaded on core0, so there is no ownership question yet. That

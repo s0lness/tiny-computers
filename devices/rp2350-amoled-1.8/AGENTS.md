@@ -52,6 +52,7 @@ Pins, taken from the vendor demo and confirmed working:
 | Touch RST / INT | 5 / 4 |
 | IMU INT1 | 8 |
 | AXP2101 interrupt | 2 |
+| RTC interrupt (`RTC_INT`, PCF85063 `INT`) | 3 |
 | PWROK from PMIC (`SYS_OUT`) | 18 |
 | Audio I2S DOUT / DIN / MCLK / LRCK / BCLK | 20 / 21 / 22 / 23 / 24 |
 | Speaker amp enable | 19 |
@@ -424,7 +425,8 @@ measured hardware dropout rate (34 episodes/sec), which is what catches the
 class of bug that has already shipped once here - the sketchpad's palette
 passed all 22 of its clean-input checks and did not work in the owner's hands.
 Connect Four's own pair is `feature-four.ts` and
-`repro-touch-dropout-four-drop.ts`.
+`repro-touch-dropout-four-drop.ts`; the clock's is `feature-clock.ts` and
+`repro-touch-dropout-clock-set.ts`.
 
 The build retries `zig cc`, because this toolchain's linker crashes at random
 (no diagnostics, exit code 5, links fine moments later - see
@@ -628,7 +630,7 @@ four here and reported a 28% rendering divergence that was a stale flash.
 - **The factory firmware is in `backup/factory-firmware.uf2`.** Restore with
   `picotool load backup/factory-firmware.uf2 -f -x`.
 
-## Touch, IMU and PMIC: all three live on core1
+## Touch, IMU, PMIC and the RTC: all four live on core1
 
 Touch and the IMU were originally both polled from a single main loop,
 deliberately never on an interrupt: the vendor demo drives touch from a GPIO
@@ -648,10 +650,23 @@ touch controller, not the IMU, not the PMIC, not a debug read (see
 `sensors.h`'s ownership-rule banner, which is enforced by convention, not the
 compiler). Apps and the runtime read published signals
 (`sensors_touch_next()`, `sensors_key_take()`, `sensors_erase_seq()`,
-`sensors_boot_down()`/`sensors_boot_clicked()`) instead of touching chips
-directly; touch samples cross from core1 to core0 through a lock-free
-single-producer/single-consumer ring, never a lock, since a lock held across
-an I2C transaction is exactly the vendor bug above.
+`sensors_boot_down()`/`sensors_boot_clicked()`, `sensors_clock()`) instead of
+touching chips directly; touch samples cross from core1 to core0 through a
+lock-free single-producer/single-consumer ring, never a lock, since a lock
+held across an I2C transaction is exactly the vendor bug above.
+
+**The RTC is on that bus too, and it is the one chip nothing polls.** The
+PCF85063ATL at `0x51` is read exactly ONCE, in `sensors_init()`, on core0,
+before core1 exists; wall-clock time then runs off the RP2350's own timer
+from that base (`sensors_clock()`). Setting it is a write, so it is a core0
+request executed by core1, the same one-writer/one-reader pattern
+`sensors_request_poweroff()` uses. The chip's Seconds register carries an
+**OS flag** that says the oscillator once stopped - which on this board means
+the battery went flat, since the backup-cell pads are not fitted - and
+`sensors_clock()` reports that as `known == false`. **An app must branch on
+it**: a clock that confidently shows the wrong time is the failure
+`docs/decisions/0011-what-this-board-can-actually-do.md` and
+`docs/decisions/0004` both exist to prevent.
 
 The controller still does not tell you whether a finger is down from a stale
 read: with the finger count at zero, the coordinate registers still hold the
