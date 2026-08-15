@@ -120,6 +120,55 @@ disease. Only the 90% fraction is the gate's opinion.
   now fails, instead of the merged tree passing everything and the collision
   surviving to the board.
 
+## A third adjacent finding: one hardware property, three private answers
+
+Found merging morpion and the clock into the grid menu (2026-08-15), and
+NOT extracted in that merge - recorded here as the next seam owed, per this
+document's own title, so whoever does it has the list rather than having to
+re-find it.
+
+**The property.** The FT3168's reported position of a STILL finger wanders,
+80-250px, for one to three reports at a time, before reverting to the
+truth. This is one fact about one chip. Three agents, working in parallel
+worktrees that could not see each other, each met it in a different app,
+measured it independently, and each answered it with its own constant and
+its own name:
+
+| Where | Constant | What it measured, in its own words |
+|---|---|---|
+| `firmware/apps/morpion.c:676` | `SETTLE_MS 90` | "measuring it before writing any defence put one release in ten in a cell the finger was never on" (morpion.c line 99) - rejects one- and most two-report wander episodes, deliberately does not reject the longest three-report ones (that trade is argued in the constant's own comment). |
+| `firmware/apps/menu.c:1805` | `MENU_HOVER_CONFIRM_MS 150` | decision 0013's own table: 14 excursions per 100 gestures with confirmation off, 4 per 100 at 100ms, 1 per 240 at 150ms - the grid's halo would not stay on the cell a thumb was actually over without it. |
+| `firmware/apps/sketch.c:182` | `CONFIRM_MS_DEFAULT 40.0f` | measured on hardware, a continuous real drawing session (`TOUCH_POLL_SELFTEST`): 401 candidate stroke starts, 798 dropouts in the same window, a 3.5 percent confirm rate under the OLD rule - answered by requiring contact to persist for 40ms rather than surviving instantly on the second report. |
+
+**Why this is not the same failure decision 0014's gate phase already
+catches.** `abi-parity` and the app-table rules compare COPIES of the same
+DECLARATION - a function signature, a table entry - and can diff them
+mechanically because the two copies are meant to be identical. These three
+are not copies of each other: each is a genuinely different DERIVED
+threshold (90ms rejects wander episodes by duration; 150ms rejects halo
+excursions by a measured rate table; 40ms rejects a confirm-vs-stray
+tradeoff with its own grace window), tuned against the same underlying
+noise process but for three different consequences (a wrong game move, a
+wrong app launched, a stroke that never starts). No mechanical rule can
+say "these three numbers disagree" the way `abi-parity` says two symbol
+tables disagree, because on their face they are not supposed to agree -
+they are three answers to "how do I tell a wander from a move", not three
+copies of one constant. That is exactly why this is a seam owed to a
+human's judgment (extracting one shared filter, the way `tilt.h` extracted
+one orientation signal after the bubble level measured it first - see this
+device's AGENTS.md "Which way is down" section for that precedent working),
+not a fourth rule for `tools/gate/contracts.ts`.
+
+**What the extraction would need to decide, so it is not re-litigated from
+zero:** whether one constant can serve all three consequences (a wrong game
+move, a wrong app launch, and a stroke that fails to start have different
+costs, which is why 90/150/40 are not the same number today), or whether
+the shared piece is the MEASUREMENT (a published "contact-settle" signal,
+sensors.h-shaped, the way `tilt_submit_device_g`/`tilt_read` publish
+orientation once for every app that wants it) with each app still choosing
+its own threshold against it. The three call sites above, and the reasoning
+already written next to each constant, are the starting material either way.
+
 ## Two adjacent findings, written down rather than half-fixed
 
 **The fingerprint is blind to build flags.** `tools/gate/fingerprint.ts`

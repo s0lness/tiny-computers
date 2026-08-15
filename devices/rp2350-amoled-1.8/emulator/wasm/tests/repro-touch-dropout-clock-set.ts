@@ -43,14 +43,15 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TouchSim, type TouchReport } from "../../src/touchsim";
 import { TOUCHSIM_DEFAULTS } from "../../src/constants";
+import { seededRng, seedFromName } from "../../../tools/gate/touch";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_H = PANEL_W;
 const LAND_W = PANEL_H;
-const APP_CLOCK = -3; // APP_INDEX_CLOCK - see runtime_core.h for why the
-                      // clock is not in g_apps[]
+// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }
+const APP_CLOCK = 5;
 const BEZEL = 10;     // gfx.h PANEL_BEZEL_MARGIN_PX
 
 let passCount = 0;
@@ -146,7 +147,7 @@ async function main() {
 
     for (let i = 0; i < TRIALS; i++) {
         const dev = await loadDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`clock-set-exact-${i}`)));
         let t = 1000;
         dev.boot(true);
 
@@ -193,7 +194,7 @@ async function main() {
     const strayHours: string[] = [];
     for (let i = 0; i < TRIALS; i++) {
         const dev = await loadDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`clock-set-hours-held-${i}`)));
         let t = 1000;
         dev.boot(true);
         const [px, py] = pointFor(1, 45);
@@ -219,7 +220,7 @@ async function main() {
     let committedAfterLift = 0;
     for (let i = 0; i < TRIALS; i++) {
         const dev = await loadDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`clock-set-committed-after-lift-${i}`)));
         let t = 1000;
         dev.boot(true);
         const [px, py] = pointFor(1, 20);

@@ -72,8 +72,8 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-// g_apps[] = { chrono, sketch("draw"), timer, four, morpion }
-const APP_MORPION = 4;
+// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }
+const APP_MORPION = 6;
 const APP_ARENA_BYTES = 65536; // app.h APP_ARENA_BYTES
 
 // ---- mirrors of morpion.c's own constants, DERIVED THE SAME WAY THE

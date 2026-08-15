@@ -114,18 +114,35 @@ void digits_clear(int lx, int ly, int w, int h, uint16_t bgPx) {
 
 // One capsule, in whichever space the caller is working in.
 //
-// The portrait branch is gfx.h's own mapping read backwards. gfx.h maps
-// landscape (lx, ly) to panel (PANEL_W-1-ly, lx); invert that and a panel
-// point (px, py) is the landscape point (py, PANEL_W-1-px). A capsule is two
-// points and a radius, and a rotation preserves distances, so mapping the
-// two endpoints is the entire conversion - there is no second rasteriser
-// here, and no per-pixel code in this file at all.
+// The portrait branch inverts gfx.h's own mapping, and the constant here is
+// PANEL_W, not PANEL_W-1 - found by the gate's outside-push rule after it
+// looked wrong on a real (non-integer) coordinate, not read correctly the
+// first time. gfx.h's landscape (lx, ly) -> panel (PANEL_W-1-ly, lx) is a
+// map between PIXEL INDICES, each implicitly sampled at its own +0.5
+// centre: landscape index ly's centre (ly+0.5) lands on panel index
+// (PANEL_W-1-ly), whose own centre is (PANEL_W-1-ly)+0.5 = PANEL_W-(ly+0.5).
+// So the continuous relation a CENTRE obeys is panel_centre = PANEL_W -
+// landscape_centre, i.e. landscape_centre = PANEL_W - panel_centre - the
+// PANEL_W-1-ly pixel-index formula only looks like it should carry over
+// unchanged because most of its terms do; the missing "-1" is exactly the
+// asymmetry a reflection (unlike a rotation) introduces between "index" and
+// "index + 0.5". Get this wrong by one and the two continuous coordinate
+// systems disagree by a full pixel: every soft digit's own shape still
+// looked right (the error is common to both ends of every segment, so nothing
+// about a GLYPH's geometry moves), but the whole face sat shifted enough
+// that anti-aliased ink crossed a cell's own pushed edge - caught by the
+// gate's app-fuzzing pass (tools/gate/exercise.ts), not by feature-clock.ts,
+// because that test's own pixel probes did not happen to sample the exact
+// column this shifted into. A capsule is two points and a radius, and this
+// map is an isometry (it preserves distances), so mapping the two endpoints
+// is still the entire conversion - there is no second rasteriser here, and
+// no per-pixel code in this file at all.
 static void soft_capsule(digits_space_t space, float x0, float y0,
                          float x1, float y1, float r, uint16_t colorPx) {
     if (space == DIGITS_LANDSCAPE) {
         shapes_fill_capsule_aa_land(x0, y0, r, x1, y1, r, colorPx);
     } else {
-        float edge = (float)(PANEL_W - 1);
+        float edge = (float)PANEL_W;
         shapes_fill_capsule_aa_land(y0, edge - x0, r, y1, edge - x1, r, colorPx);
     }
 }
@@ -134,7 +151,7 @@ static void soft_dot(digits_space_t space, float cx, float cy, float r, uint16_t
     if (space == DIGITS_LANDSCAPE) {
         shapes_fill_disc_aa_land(cx, cy, r, colorPx);
     } else {
-        shapes_fill_disc_aa_land(cy, (float)(PANEL_W - 1) - cx, r, colorPx);
+        shapes_fill_disc_aa_land(cy, (float)PANEL_W - cx, r, colorPx);
     }
 }
 

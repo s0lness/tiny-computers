@@ -39,6 +39,10 @@ const TESTS_DIR = join(DEVICE_ROOT, "emulator", "wasm", "tests");
 export const CLEAN_INPUT_BASELINE: Record<string, string> = {
   "feature-four.ts":
     "statement of what Connect Four is; the dropout half is repro-touch-dropout-four-drop.ts",
+  "feature-clock.ts":
+    "statement of what the clock is; the dropout half is repro-touch-dropout-clock-set.ts",
+  "feature-morpion.ts":
+    "statement of what morpion is; the dropout half is repro-touch-dropout-morpion.ts",
   "feature-sketch-palette.ts":
     "statement of what the palette is; the dropout half is repro-touch-dropout-palette-open.ts",
   "repro-arena-not-zeroed.ts":

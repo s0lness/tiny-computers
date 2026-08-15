@@ -52,13 +52,12 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-// The clock is NOT in g_apps[]: it sits at its own private negative index,
-// the same trick the menu uses, because g_apps[] is what the launcher
-// iterates and the launcher is being replaced. See APP_INDEX_CLOCK in
-// firmware/runtime/runtime_core.h for the reasoning, including the
-// measurement that settled it - appending it to the table moved every menu
-// column and broke feature-menu-hover.ts in four places.
-const APP_CLOCK = -3; // APP_INDEX_CLOCK
+// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }.
+// The clock used to sit at its own private negative index (APP_INDEX_CLOCK)
+// because appending it to g_apps[] moved every menu column under the old
+// row-of-columns layout. Decision 0013's grid replaced that layout, so the
+// private slot is gone and the clock is just g_apps[5] like any other app.
+const APP_CLOCK = 5;
 const APP_ARENA_BYTES = 65536; // app.h APP_ARENA_BYTES
 const BEZEL = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
 
@@ -143,7 +142,11 @@ async function loadDevice() {
         appSwitch(index: number) { exp.emu_app_switch(index); },
         appCurrent(): number { return exp.emu_app_current(); },
         boot(down: boolean) { exp.emu_button(0, down ? 1 : 0); },
-        pwrShort() { exp.emu_button_verdict(1, 0); },
+        // Sets the pose and holds it - emu_tick() resubmits the last value
+        // every tick (emu_shim.c), exactly like a hand holding the puck
+        // still. Panel-space g, per tilt.h's own convention (AGENTS.md's
+        // axis ritual): flat, screen up, is (0,0,1); top edge up is (0,1,0).
+        gravity(x: number, y: number, z: number) { exp.emu_sensor_vector(1, x, y, z); },
         touch(down: boolean, x: number, y: number) { exp.emu_touch(down ? 1 : 0, Math.round(x), Math.round(y)); },
 
         // Snapshots before, ticks, then diffs the framebuffer against the
@@ -545,10 +548,28 @@ async function main() {
 
     // ---- 5. held upright --------------------------------------------------
     console.log("\n-- the puck is turned upright --");
+    // g_clockApp.landscape is true, so the runtime hands this app gravity
+    // already rotated into ITS OWN landscape space, and clock_is_upright()
+    // reads TILT_UP_TOP/BOTTOM off that as "upright" (see clock.c's own
+    // header comment: MEASURED, not derived from the rotation formula on
+    // paper alone - that derivation got the pairing backwards once already).
+    // Panel-space (-1,0,0) - AGENTS.md's own axis-ritual "quarter turn, its
+    // RIGHT edge up" pose - is one of the two panel poses this app's own
+    // rotation turns into land.up=TOP; empirically confirmed against this
+    // emu.wasm (switch to the clock, inject this pose, read emu_tilt()),
+    // not re-derived from the formula that already got it wrong once.
     dev.drainLog();
-    dev.pwrShort();
-    dev.tick((t += 25));
-    const layoutLine = dev.fwLogLines().findLast((l) => l.includes("clock: layout"));
+    dev.gravity(-1, 0, 0);
+    // tilt.h's filter needs time to converge on a hard step (feature-tilt.ts
+    // measures most of the way within one board-cadence tick, fully settled
+    // well under a second); 1000ms of 20ms-cadence ticks, matching the
+    // board's own sensor rate, is generous margin, not a tuned minimum.
+    let layoutLine: string | undefined;
+    for (let e = 0; e < 1000 && layoutLine === undefined; e += 20) {
+        t += 20;
+        dev.tick(t);
+        layoutLine = dev.fwLogLines().findLast((l) => l.includes("clock: layout"));
+    }
     check("turning the puck upright switches the face", layoutLine === "clock: layout upright", layoutLine ?? "(no layout line)");
     const flipPushes = dev.pushesLastTick();
     check("...and the whole panel is repainted and pushed in that one tick, since every pixel of it changed",

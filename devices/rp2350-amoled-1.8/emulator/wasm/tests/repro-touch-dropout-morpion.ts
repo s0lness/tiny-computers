@@ -40,12 +40,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TouchSim, type TouchReport } from "../../src/touchsim";
 import { TOUCHSIM_DEFAULTS } from "../../src/constants";
+import { seededRng, seedFromName } from "../../../tools/gate/touch";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
 const PANEL_H = 448;
-// g_apps[] = { chrono, sketch("draw"), timer, four, morpion }
-const APP_MORPION = 4;
+// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }
+const APP_MORPION = 6;
 
 // Mirrors of morpion.c's own constants, derived the way the firmware
 // derives them (the board is laid out against the VISIBLE canvas - gfx.h's
@@ -156,7 +157,7 @@ async function main() {
     let totalDropouts = 0;
     for (let i = 0; i < HOLD_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`morpion-hold-${i}`)));
         const cell = i % (GRID * GRID);
         const [pxx, pyy] = landToPanel(cellCx(cell), cellCy(cell));
         sim.setPointer(true, pxx, pyy);
@@ -205,7 +206,7 @@ async function main() {
     let correct = 0, placedEarly = 0, missed = 0, wrongCell = 0;
     for (let i = 0; i < DRAG_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`morpion-drag-${i}`)));
         const from = i % (GRID * GRID);
         const to = (i * 5 + 4) % (GRID * GRID);
         let t = 1000;
@@ -268,7 +269,7 @@ async function main() {
     // it to work, for the other player.
     console.log("");
     const devD = await freshDevice();
-    const simD = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+    const simD = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName("morpion-drum")));
     let tD = 1000;
     const [dx, dy] = landToPanel(cellCx(0), cellCy(0));
     simD.setPointer(true, dx, dy);
@@ -364,7 +365,7 @@ async function main() {
     // honestly be made at.
     const strayProfile = { ...TOUCHSIM_DEFAULTS, dropoutsEnabled: false, straysEnabled: true };
     const devC2 = await freshDevice();
-    const simC2 = new TouchSim(strayProfile, PANEL_W, PANEL_H);
+    const simC2 = new TouchSim(strayProfile, PANEL_W, PANEL_H, seededRng(seedFromName("morpion-strays")));
     simC2.setPointer(false, 0, 0);
     let strayMarks = 0;
     let tC2 = 1000;
@@ -451,7 +452,7 @@ async function main() {
     const inventedCases: string[] = [];
     for (let i = 0; i < JIT_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(jitterProfile, PANEL_W, PANEL_H);
+        const sim = new TouchSim(jitterProfile, PANEL_W, PANEL_H, seededRng(seedFromName(`morpion-jitter-${i}`)));
         const cell = i % (GRID * GRID);
         const [pxx, pyy] = landToPanel(cellCx(cell), cellCy(cell));
         sim.setPointer(true, pxx, pyy);

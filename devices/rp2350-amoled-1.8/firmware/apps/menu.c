@@ -57,6 +57,8 @@ extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 extern const app_t g_fourApp;
+extern const app_t g_levelApp;
+extern const app_t g_clockApp;
 extern const app_t g_morpionApp;
 
 /* =====================================================================
@@ -1525,6 +1527,115 @@ static void draw_icon_morpion(int ox, int oy, uint16_t color) {
     shapes_stroke_polyline_aa_land(ax, ay, 2, LUCIDE_STROKE_HALF, color);
 }
 
+/* ---------------------------------------------------------------------
+ * The LEVEL icon: a ring, and a dot off-centre inside it.
+ *
+ * Drawn from the app's own screen rather than borrowed: level.c's whole
+ * verdict is "a black dot somewhere on the dial, and a thin grey ring
+ * waiting for it in the middle" when not level, closing solid around the
+ * dot when it is (see that file's own header comment). The icon freezes
+ * the more legible of those two moments - dot visibly off-centre inside its
+ * ring - because "closed and centred" is a state a static picture cannot
+ * distinguish from "a filled circle", while "off to one side, inside a
+ * ring" reads as a level even to someone who has never held one: something
+ * is meant to settle in the middle and has not yet.
+ *
+ * NOT Lucide, for the same reason as the four-counters and morpion icons
+ * beside it: decision 0009's exception covers "the case where a matching
+ * Lucide source exists to convert", and Lucide has nothing shaped like a
+ * bubble level. Back to that document's original rule - the float brush -
+ * with the family's own weight borrowed anyway: LUCIDE_STROKE_HALF for the
+ * ring, so the four Lucide conversions, the two float-brush icons already
+ * beside them, and this one all read as one set rather than four-plus-two.
+ *
+ * SIZED LIKE ITS NEIGHBOURS, not like the level's own dial. The app's real
+ * rim is most of the 368px panel; shrunk to a 96px box it would be a ring
+ * with almost no room for a dot inside it, and this icon is not trying to
+ * be a miniature of the app's screen - chrono's icon is not a tiny
+ * stopwatch face with a real second hand's proportions either. The ring
+ * sits at the same centreline as chrono's own (CHRONO_R_MID), so all the
+ * ring-shaped icons in this row read as the same size at a glance.
+ */
+#define LEVEL_ICON_R      29.0f   // centreline; outer edge is +LUCIDE_STROKE_HALF, same as chrono's ring
+#define LEVEL_ICON_DOT_R  13.0f   // the bubble
+#define LEVEL_ICON_DOT_DX -7.0f   // off-centre toward the upper-left corner of the box -
+#define LEVEL_ICON_DOT_DY -7.0f   // comfortably inside the ring's own inner edge (24px), not touching it
+
+static void draw_icon_level(int ox, int oy, uint16_t color) {
+    float cx = (float)ox + 48.0f, cy = (float)oy + 48.0f;
+    shapes_fill_annulus_aa_land(cx, cy, LEVEL_ICON_R + LUCIDE_STROKE_HALF,
+                                 LEVEL_ICON_R - LUCIDE_STROKE_HALF, color);
+    shapes_fill_disc_aa_land(cx + LEVEL_ICON_DOT_DX, cy + LEVEL_ICON_DOT_DY,
+                              LEVEL_ICON_DOT_R, color);
+}
+
+/* ---------------------------------------------------------------------
+ * The CLOCK icon: a ring, and two hands meeting at its centre.
+ *
+ * The universal clock-face pictogram - the same silhouette Lucide's own
+ * "clock" glyph draws (a circle, and a short-then-long hand bent once at
+ * the centre) - which is worth keeping deliberately GENERIC rather than
+ * literal about what clock.c actually shows: this app never draws a dial
+ * or a hand at all, only two rows of digits, because a two-year-old cannot
+ * read a numeral face any better than an analogue one. The icon's job is
+ * "this picture means time", not "this is a thumbnail of the app's own
+ * screen" - chrono's icon makes the identical trade (a dial and a crown,
+ * not a row of seven-segment digits counting up).
+ *
+ * HAND-BUILT, not traced from third_party/lucide/'s vendored files: no
+ * clock.svg is vendored there (only the four files the *_ICON_LUCIDE
+ * candidates above actually convert), and this project's own rule is not
+ * to claim a faithful conversion without the source in hand to check it
+ * against - guessing coordinates and calling them "Lucide" is exactly the
+ * kind of imprecision that cost the four-counters icon a redraw once
+ * already. So this follows decision 0009's exception in SPIRIT (Lucide's
+ * grid, round caps, one constant stroke weight) built from this file's own
+ * primitives at LUCIDE_STROKE_HALF, the same footing draw_icon_four and
+ * draw_icon_morpion already stand on for the same reason.
+ *
+ * THE TWO HANDS ARE ONE STROKE, drawn as a single three-point polyline
+ * (tip, centre, tip) rather than two separate capsules - one connected
+ * piece of ink, the same rule chrono's crown-to-ring neck exists to keep.
+ *
+ * "TEN AND TWO", not straight-up-and-a-bend, and RENDERED AT LEAST TWICE
+ * before it looked like a clock rather than a defect. The first pass put
+ * the hour hand straight up and the minute hand a shallow ~40 degrees away;
+ * rendered pixel-accurate from the real firmware (not judged on the
+ * numbers), it read as a rounded triangle notched out of the ring, closer
+ * to a play button, because a short stroke at LUCIDE_STROKE_HALF fills its
+ * own narrow wedge solid. Widening to a symmetric "ten and two" - the pose
+ * every clock-face icon uses for exactly this reason - fixed the wedge but
+ * exposed the real constraint: A ROUND CAP REACHES A FULL RADIUS PAST THE
+ * POINT GIVEN (the same fact chrono's own neck comment already states),
+ * so a hand whose TIP sits at the ring's inner edge (24px out) actually
+ * INKS out to 24+LUCIDE_STROKE_HALF = 34, past the ring's own outer edge -
+ * the second render showed both hands fused into the ring's top arc, and
+ * the ring itself unreadable as a ring. The hands have to stop well short
+ * of 24 minus the cap radius (14px, not 18-22), which is what is here now:
+ * short hands, wide angle, a visible gap of white between their tips and
+ * the ring on every side.
+ */
+#define CLOCK_ICON_R       29.0f  // centreline; outer edge is +LUCIDE_STROKE_HALF, same family size as chrono/level
+// Twelve o'clock, hour hand: straight up, 11px, short. Four o'clock, minute
+// hand: 13px, angled well clear of the hour hand rather than mirroring it -
+// a symmetric pair (tried first) reads as a checkmark, not as two hands of
+// different length pointing in different directions. Both tips, PLUS their
+// own round cap (LUCIDE_STROKE_HALF), stay clear of the ring's inner edge
+// (24px out).
+#define CLOCK_ICON_HOUR_DX   0.0f
+#define CLOCK_ICON_HOUR_DY -11.0f
+#define CLOCK_ICON_MIN_DX   11.7f
+#define CLOCK_ICON_MIN_DY    5.9f
+
+static void draw_icon_clock(int ox, int oy, uint16_t color) {
+    float cx = (float)ox + 48.0f, cy = (float)oy + 48.0f;
+    shapes_fill_annulus_aa_land(cx, cy, CLOCK_ICON_R + LUCIDE_STROKE_HALF,
+                                 CLOCK_ICON_R - LUCIDE_STROKE_HALF, color);
+    float hx[3] = { cx + CLOCK_ICON_HOUR_DX, cx, cx + CLOCK_ICON_MIN_DX };
+    float hy[3] = { cy + CLOCK_ICON_HOUR_DY, cy, cy + CLOCK_ICON_MIN_DY };
+    shapes_stroke_polyline_aa_land(hx, hy, 3, LUCIDE_STROKE_HALF, color);
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE
@@ -1552,27 +1663,27 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
 #endif
     } else if (app == &g_fourApp) {
         draw_icon_four(ox, oy, color);
+    } else if (app == &g_levelApp) {
+        draw_icon_level(ox, oy, color);
+    } else if (app == &g_clockApp) {
+        draw_icon_clock(ox, oy, color);
     } else if (app == &g_morpionApp) {
         draw_icon_morpion(ox, oy, color);
     }
-    // g_levelApp (index 4, always in the table - see runtime_core.c) has no
-    // case above and none is added here: it falls through to the "draws
-    // nothing" comment below, same as any other app without a matching
-    // icon. That is a real, silent gap in the menu today, not a fixture
-    // artifact; recorded rather than papered over with a borrowed icon.
+    // Every real app (chrono, sketch, timer, four, level, clock, morpion -
+    // seven, the same seven runtime_core.c's g_apps[] declares) now has a
+    // branch above; there is no silent icon gap left for a real build.
 #if MENU_STUB_APPS
-    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the fifth in
-    // a stub build borrows one of the four icon-bearing real apps, cycling,
-    // so a capture at six or twelve apps shows the LAYOUT under real ink
+    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the seventh in
+    // a stub build borrows one of the seven real, icon-bearing apps,
+    // cycling, so a capture at twelve apps shows the LAYOUT under real ink
     // rather than a grid of holes - a layout is judged against what will
-    // actually sit in it. Starts at k=5, not 4: index 4 is the level, which
-    // has no icon either and must fall through to the same silent gap a
-    // real build gives it, not borrow one. Recursion is one level deep by
-    // construction: g_apps[k & 3] is always one of chrono/sketch/timer/four,
-    // which take the branches above.
+    // actually sit in it. Recursion is one level deep by construction:
+    // g_apps[k % 7] is always one of the seven real apps, which take the
+    // branches above.
     else {
-        for (int k = 5; k < g_appCount; k++) {
-            if (app == g_apps[k]) { draw_icon_for(g_apps[k & 3], ox, oy, color); return; }
+        for (int k = 7; k < g_appCount; k++) {
+            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 7], ox, oy, color); return; }
         }
     }
 #endif

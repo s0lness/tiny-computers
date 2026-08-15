@@ -75,27 +75,62 @@
  *
  * Which way up the puck is being held is a property of the DEVICE, not of
  * this app: it comes from the IMU, on i2c1, which core1 owns exclusively,
- * and it is being published through sensors.h and app_frame_t by another
- * change that is in flight at the time this file was written. This app must
- * NOT read the IMU itself, and does not.
+ * published through app_frame_t.tilt (firmware/runtime/tilt.h, decision
+ * 0012). This app does not read the IMU itself and never has; everything
+ * below asks clock_is_upright() and nothing else, so this is still the one
+ * place the signal enters the app.
  *
- * That field does not exist in this worktree yet, so this file carries ONE
- * function, right here, as the single place the signal enters the app.
- * Everything below asks this function and nothing else, so wiring the real
- * signal in is a one-line edit inside these braces rather than a hunt
- * through the drawing code.
+ * g_clockApp.landscape is true (see the app_t at the bottom of this file),
+ * so the runtime hands this app gravity already rotated into ITS OWN
+ * landscape drawing space (runtime_core.c's tilt_for_app) - the same space
+ * chrono, timer and four already draw in, and that rotation is
+ * `land.up = (panel.up + 3) % 4`.
  *
- * THE STAND-IN, until then: a short press of PWR flips the layout. That is
- * a real signal this device genuinely delivers (KEY_SHORT, sensors.h - the
- * AXP2101 latches it, the runtime passes it through untouched), so nothing
- * here is being tested against an input the hardware cannot produce, which
- * is the rule emu_abi.h holds the emulator to and the same rule is worth
- * holding an app to. It is a stand-in and not a feature: when the shared
- * signal lands, the body of this function becomes
+ * WHICH TWO OF THE FOUR EDGES MEAN "UPRIGHT" WAS MEASURED, not reasoned out
+ * from the rotation formula alone - the first version of this comment did
+ * that and got it backwards, and the "the puck is turned upright" section
+ * of feature-clock.ts caught it (the setting gesture used the wrong axis
+ * mapping and dialled in the wrong time). tilt.c's `up` defaults to
+ * TILT_UP_TOP and only updates once the in-plane component of gravity
+ * clears TILT_UP_MIN_G, so a puck lying flat with nothing yet measured
+ * reads panel.up = TOP, which the rotation above turns into
+ * `land.up = LEFT` for this app. That default HAS to mean "long-ways": a
+ * clock a child picks up before the IMU has produced a single sample must
+ * show the same face every other app already assumes. Turning the puck
+ * about the panel's own vertical axis (tilting the screen up or down
+ * toward the person reading it, gravity moving in panel Y) keeps land.up
+ * in {LEFT, RIGHT} - the SAME pair the flat default belongs to - which is
+ * exactly the small, natural adjustment a person makes while holding a
+ * landscape app normally, so LEFT/RIGHT is "long-ways". Turning the puck a
+ * genuine quarter turn about the screen's own normal (gravity moving in
+ * panel X instead) swaps which physical panel axis governs `up` and lands
+ * in the other pair, {TOP, BOTTOM} - that quarter turn is "upright".
  *
- *     return f->heldUpright;      // or whatever the field ends up called
+ * COASTING NEEDS NO BRANCH HERE. tilt.h's filter holds gx/gy and the
+ * derived `up` at their last belief while the trust gate has fully given up
+ * (the device is being carried) - `up` is hysteretic for precisely this -
+ * so simply reading f->tilt.up every tick already gives "hold the last
+ * layout" for free during a coasting episode. A beat-late flip once the
+ * carry ends and a fresh reading lands is tilt.h's own filter lag, the same
+ * one every other orientation-aware app on this device already lives with;
+ * this app trying to do better on its own would be exactly the
+ * written-twice seam tilt.h exists to prevent (see its header comment).
  *
- * and the KEY_SHORT branch and s->standInUpright go with it.
+ * !VALID IS THE CASE COASTING IS NOT. Coasting still has a belief, held
+ * only slightly stale; !valid means no belief exists at all - either this
+ * is the very first tick, before the IMU has produced a single sample, or
+ * the IMU has gone quiet for TILT_STALE_MS. There, up/gx/gy are not merely
+ * stale, they are not derived from anything, so reading them would not be
+ * "the last known orientation" in the sense this app means it, it would be
+ * whatever those fields happen to still contain. So on an invalid tilt this
+ * function does not touch f->tilt at all: it returns s->upright, the layout
+ * already painted. app_alloc() zeroes a fresh clock_state_t (app.h), so the
+ * very first call - before any tilt has ever arrived - reads s->upright as
+ * false, i.e. long-ways: the posture the owner described first ("un display
+ * horizontal qui marche le chronometre"), and the one every other app on
+ * this device already boots into. A child who picks the clock up before the
+ * IMU has produced a reading sees the same face she would a moment later,
+ * not a guess that might flip out from under her.
  * ========================================================================= */
 
 typedef struct clock_state_s clock_state_t;
@@ -273,9 +308,6 @@ struct clock_state_s {
     // them. Remembered separately because they are their own cell.
     uint8_t dotsInk;
 
-    // Only for the stand-in orientation signal - see clock_is_upright().
-    bool standInUpright;
-
     // Log throttling: the firmware log is how the tests and the owner read
     // this app's mind, and a line per frame would drown it.
     int lastLoggedH, lastLoggedM;
@@ -284,12 +316,15 @@ struct clock_state_s {
 
 static clock_state_t *s_state;
 
+// THE ONE PLACE THE ORIENTATION SIGNAL ENTERS THIS APP. See the section at
+// the top of this file for the full reasoning on the axis, on coasting, and
+// on !valid; the short version, MEASURED against the real emulator rather
+// than reasoned out on paper: TOP/BOTTOM is upright, LEFT/RIGHT (the pair
+// the flat default belongs to) is long-ways, and an invalid reading holds
+// whatever is already on screen.
 static bool clock_is_upright(clock_state_t *s, const app_frame_t *f) {
-    // THE ONE PLACE THE ORIENTATION SIGNAL ENTERS THIS APP. See the section
-    // at the top of this file: when sensors.h/app_frame_t publish it, this
-    // whole body becomes `return f->heldUpright;`.
-    if (f->key & KEY_SHORT) s->standInUpright = !s->standInUpright;
-    return s->standInUpright;
+    if (!f->tilt.valid) return s->upright;
+    return f->tilt.up == TILT_UP_TOP || f->tilt.up == TILT_UP_BOTTOM;
 }
 
 /* ---- cells --------------------------------------------------------------
