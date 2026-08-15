@@ -1649,35 +1649,52 @@ static void draw_icon_clock(int ox, int oy, uint16_t color) {
  * shape this small reads better drawn fresh than shrunk.
  * ------------------------------------------------------------------- */
 static void draw_icon_dino(int ox, int oy, uint16_t color) {
-    // Same construction as firmware/apps/dino.c's own draw_dino() at icon
-    // scale, second pass: a round head plus a separate round snout bump
-    // (not one tapered capsule, which reads as a beak at any scale), a
-    // thin neck distinctly narrower than both chest and head, legs
-    // attached below the torso's own silhouette so they read as visible
-    // limbs rather than vanishing into the belly, a tail sweeping back
-    // and UP past hip height - see draw_dino()'s own header for the full
-    // argument each of these choices answers.
-    float gy = (float)oy + 76.0f; // icon-local ground line
-    float hipX = (float)ox + 16.0f, hipY = gy - 15.0f;
-    float chX  = (float)ox + 24.0f, chY  = gy - 36.0f;
-    shapes_fill_capsule_aa_land(hipX, hipY, 8.0f, chX, chY, 12.0f, color);
-    float headX = (float)ox + 40.0f, headY = gy - 48.0f;
-    shapes_fill_capsule_aa_land(chX, chY, 6.0f, headX, headY, 5.0f, color);
-    shapes_fill_disc_aa_land(headX, headY, 9.0f, color);
-    shapes_fill_disc_aa_land((float)ox + 58.0f, gy - 44.0f, 5.0f, color);
-    // Tail tip pulled in to ox (the icon box's own left edge) rather than
-    // ox-8: at ox-8 the tip sat exactly on the CELL's left edge (the icon
-    // box already carries 8px of margin inside its cell), so the tapered
-    // quad's own AA fringe and its 2px tip radius bled 2-3px past that edge
-    // into the neighbouring cell - invisible until this icon sat next to a
-    // real neighbour in the live 11-app grid, where it showed up as ink
-    // outside the menu's own per-cell push rectangle (decision 0001). Same
-    // sweep, same silhouette, just kept inside this icon's own box.
-    shapes_fill_tapered_quad_aa_land(hipX, hipY, 7.0f, (float)ox + 2.0f, gy - 22.0f,
-                                      (float)ox, gy - 28.0f, 2.0f, color);
-    float legHipX = (float)ox + 12.0f, legHipY = gy - 9.0f;
-    shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 28.0f, gy, 4.0f, color);
-    shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 16.0f, gy, 4.0f, color);
+    // A SCALED COPY of draw_dino()'s third-pass silhouette, not a separate
+    // drawing. This icon was left behind when that function was redrawn, so
+    // it still carried the OLD vertical proportions (hip 15, chest 36, head
+    // 48 above the ground line) at a third of the size, where a hunched
+    // bird's thin neck and small parts stop being parts at all and read as
+    // a splatter. Same proportions as the app now means the picture on the
+    // grid and the picture in the game are the same animal.
+    //
+    // Every coordinate below is draw_dino()'s own, times ICON_SCALE, about
+    // a local origin at the icon box's horizontal middle. Changing the app's
+    // silhouette and forgetting this function is exactly what happened once;
+    // keeping the numbers visibly derived is what makes the next edit
+    // obviously owe an edit here too.
+    const float S = 0.45f;                       // 187px of dino into ~84px of icon
+    const float X0 = (float)ox + 44.0f;          // the dino's own x=0
+    const float gy = (float)oy + 72.0f;          // icon-local ground line
+
+    // Body: the long horizontal barrel the eye reads first.
+    float hipX = X0 - 6.0f * S,  hipY = gy - 62.0f * S;
+    float chX  = X0 + 36.0f * S, chY  = gy - 72.0f * S;
+    shapes_fill_capsule_aa_land(hipX, hipY, 30.0f * S, chX, chY, 25.0f * S, color);
+
+    // Neck forward, then head and snout as two discs (one tapered capsule
+    // reads as a beak at any scale - the second pass already learned that).
+    float headX = X0 + 58.0f * S, headY = gy - 106.0f * S;
+    shapes_fill_capsule_aa_land(chX, chY, 25.0f * S, headX, headY, 15.0f * S, color);
+    shapes_fill_disc_aa_land(headX, headY, 22.0f * S, color);
+    shapes_fill_disc_aa_land(X0 + 80.0f * S, gy - 100.0f * S, 14.0f * S, color);
+
+    // Tail: rooted at the body's BACK EDGE, for draw_dino()'s reason (a tail
+    // rooted at the hip spends its first stretch inside the belly and only
+    // the thin end survives). Its tip is pulled in to -38*S rather than the
+    // app's own -92*S: at full reach the tapered quad's AA fringe bled 2-3px
+    // past this icon box into the neighbouring cell, which is ink outside the
+    // menu's per-cell push rectangle and so decision 0001, invisible until
+    // this icon had a real neighbour in the live 11-app grid.
+    shapes_fill_tapered_quad_aa_land(X0 - 30.0f * S, gy - 64.0f * S, 26.0f * S,
+                                      X0 - 26.0f,    gy - 72.0f * S,
+                                      X0 - 38.0f,    gy - 86.0f * S, 3.0f, color);
+
+    // Legs below the belly. The app's little forearm is deliberately dropped
+    // here: at this scale it is a 7px blob against a 20px head, which adds
+    // noise rather than the "theropod" cue it carries at full size.
+    float legHipX = X0 + 14.0f * S, legHipY = gy - 38.0f * S;
+    shapes_fill_capsule_aa_land(legHipX, legHipY, 16.0f * S, X0 + 24.0f * S, gy, 11.0f * S, color);
+    shapes_fill_capsule_aa_land(legHipX, legHipY, 16.0f * S, X0 - 4.0f * S,  gy, 11.0f * S, color);
 }
 
 /* ---------------------------------------------------------------------
