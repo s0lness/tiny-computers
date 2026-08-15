@@ -68,22 +68,31 @@
 // filter, and is never wrong in a way a jump could be.
 //
 // =============================================================================
-// THE WALL IS AN ARC, NOT A GRID - DECISION 0009's TARGET, HIT HEAD ON
+// THE WALL IS THREE NESTED ARCS, NOT A GRID - DECISION 0009's TARGET, HIT
+// HEAD ON, THEN HIT AGAIN ONCE THE OWNER ASKED FOR THREE ROWS
 // =============================================================================
 //
 // "A wall of rectangular bricks is the single most ruler-shaped thing in all
 // of games" - decision 0009 forbids hard edges, right angles and dead-straight
-// lines, and a rectangular brick grid is built from nothing else. So there is
-// no grid here: ten round bricks (a "brick" is a filled disc, the cheapest
-// shape decision 0009's float brush can carry - see shapes_fill_disc_aa_land's
-// own comment on a disc being a zero-length capsule) are laid out along ONE
-// gentle arc across the top of the field, like a rainbow, their centres
-// computed with sinf/cosf from a fixed peak and half-angle
-// (ARC_CX/ARC_CY/ARC_R/ARC_THETA_MAX_DEG below) rather than stepped across
-// rows and columns. Nothing about the arrangement is a right angle, and
-// nothing about an individual brick is either: it is a circle, anti-aliased
-// by coverage exactly like the sketchpad's own ink and the bubble level's
-// dial.
+// lines, and a rectangular brick grid is built from nothing else. Three
+// straight rows would be exactly that grid with the columns erased, which is
+// why there is still no grid here after the owner asked for "3 rows of balls
+// in to clear": eighteen round bricks, six per row, sit on THREE CONCENTRIC
+// ARCS sharing one centre (ARC_CX, ARC_CY) and three different radii
+// (ROW_PEAK_Y/ROW below - each row's radius is just ARC_CY minus that row's
+// topmost point), the same sinf/cosf placement the single-arc version used,
+// run three times at three radii instead of once. Nested arcs read as
+// concentric rainbow bands - "three rows to clear" to an eye that cannot read
+// a word of it - precisely because each row is still a curve, never a
+// straight shelf: a grid announces itself by columns lining up vertically
+// AND rows lining up horizontally at the same right angle everywhere, and a
+// family of arcs sharing one centre has neither - every brick's neighbour in
+// its own row curves away from it, and the row above it curves away too, at
+// a DIFFERENT rate (a different radius), so no two edges in the whole wall
+// are ever parallel the way a grid's are. Nothing about the arrangement is a
+// right angle, and nothing about an individual brick is either: it is a
+// circle, anti-aliased by coverage exactly like the sketchpad's own ink and
+// the bubble level's dial.
 //
 // The paddle follows the same rule for the same reason. A flat bar with
 // square ends is the paddle-shaped version of the ruler the wall above
@@ -96,25 +105,49 @@
 // two sqrtf calls per pixel and no lookup table, and it reads as one bowed,
 // rounded stroke rather than a bar with two shapes stuck together.
 //
-// The ball is the only shape with no arrangement to speak of: a plain disc,
-// the same primitive as a brick, just solid black instead of coloured (see
-// "COLOUR" below for why the split is black actors / coloured bricks rather
-// than an all-black or all-coloured picture).
+// The ball is the only shape with no arrangement to speak of: a plain,
+// SOLID disc - the one filled shape in the whole picture now (see "ONE INK"
+// below for why that, not colour, is what keeps it unmistakable).
 //
 // =============================================================================
-// COLOUR: THE ACTORS STAY BLACK, THE WORLD GETS THE RAINBOW
+// ONE INK: A RING VS A SOLID DISC, NOT A HUE
 // =============================================================================
 //
-// AGENTS.md says to use colour if it earns its place, and names the timer and
-// menu icons as deliberately one ink. Connect Four earns colour by using it
-// to carry real state (whose piece is whose); here it is used to make ten
-// discs read as ten DIFFERENT round bricks rather than one shape stamped ten
-// times, and to make a breaking wall look like it is actually thinning out
-// rather than merely getting smaller. That is worth the colour. What stays
-// black is the ball and the paddle - the two things that MOVE, the "pen" of
-// this app the way the sketchpad's own ink is - so the picture keeps the
-// device's usual one-ink read for the parts that act, and spends colour only
-// on the parts that get acted on.
+// The owner's brief was explicit: "breakout should be black & white". The
+// ten-brick version used a palette (a different colour per brick) to make a
+// wall of identical discs read as separate, distinguishable objects, and to
+// make it visibly thin out as it broke. Both of those jobs still have to get
+// done with one ink, so the split moved from HUE to SHAPE: the ball stays
+// the one filled, SOLID black disc on the whole screen; every brick is now a
+// black RING (an annulus, the same primitive dino.c's record ripple already
+// draws) instead of a filled circle. A solid blob and a thin drawn outline
+// are unmistakable apart at a glance even in pure black on white - the same
+// distinction AGENTS.md's own icon set leans on between a filled shape and a
+// stroked one - so the ball can never be mistaken for a brick, or a brick
+// for the ball, with zero colour spent on the question.
+//
+// Bricks are told apart from EACH OTHER the way the ball is told apart from
+// them: not by hue, but by shape, position and size. Position does most of
+// the work for free - eighteen rings at eighteen different centres are
+// eighteen different objects the instant two of them are more than a
+// ring's-width apart, which the arc spacing already guarantees (see
+// ball_bricks_bounce's own radius sum - bricks never overlap by
+// construction). Size carries the row: each row's ring is drawn at a
+// different band thickness (ROW_BAND_HALF below, thin outward and thicker
+// toward the paddle), so even a single row seen in isolation - all its own
+// rings the same radius, evenly spaced along one curve - reads as one
+// coherent BAND, and the three bands read as three visibly different
+// weights of line rather than three arbitrary repeats of the same mark.
+// "Clearing the wall" still thins the picture out exactly the way the old
+// palette did: a broken ring's ink is just gone, the same subtraction as a
+// broken coloured disc's ink used to be.
+//
+// What stays black-and-only-black, never a ring, is the ball and the
+// paddle - the two things that MOVE, the "pen" of this app the way the
+// sketchpad's own ink is - so the picture keeps a second, orthogonal cue
+// (filled vs stroked) between what acts and what gets acted on, on top of
+// the cue (position/size) that tells the acted-on things apart from each
+// other.
 //
 // =============================================================================
 // THE GAME LOOP: ONE FIXED-TIMESTEP CLOCK, NOT A DTMS EULER STEP
@@ -207,7 +240,12 @@
 // wall's regrow wave, when several bricks can cross their own grow schedule
 // inside a single coarse tick) the fallback is one big union rect instead -
 // still correct, just less surgical, and still nowhere near the panel's
-// per-tick budget. See "MEASURED COST" in the task report for the actual
+// per-tick budget. Eighteen bricks (three rows of six) rather than the
+// original ten does not change this argument's shape, only the constant
+// N_BRICKS it is parametrised on - the six-pushes-or-fall-back-to-one
+// discipline never depended on how many bricks exist, only on how many
+// change in the SAME tick, which the regrow wave's own stagger still bounds
+// the same way. See "MEASURED COST" in the task report for the actual
 // numbers `bun run tools/gate/run.ts --measure` prints for this app.
 //
 // =============================================================================
@@ -228,12 +266,12 @@
 // asking for quicker paddle response is a harder test of that lag than the
 // bubble level ever was.
 //
-// Whether ten bricks at fifteen pixels each read as "a rainbow" or as "some
-// dots" from across a room to a toddler - decision 0009's own rule about
-// whether a picture is any good is checked by no tool in this tree; the
-// contact sheet (preview/breakout-*.png, tools/preview-breakout.ts) is where
-// that question has to be judged, by an eye, the same as every icon on this
-// device already is.
+// Whether eighteen thin black rings on three nested arcs read as "three rows
+// to clear" or as "some circles" from across a room to a toddler - decision
+// 0009's own rule about whether a picture is any good is checked by no tool
+// in this tree; the contact sheet (preview/breakout-*.png,
+// tools/preview-breakout.ts) is where that question has to be judged, by an
+// eye, the same as every icon on this device already is.
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -286,14 +324,30 @@
 // never lets a hit speed the ball up on its own.
 #define PADDLE_ENGLISH 0.09f
 
-/* ---- the wall: ten discs on one arc -------------------------------- */
-#define N_BRICKS 10
-#define BRICK_R 15.0f
-#define ARC_CX 224.0f          // LAND_W / 2
-#define ARC_PEAK_Y 60.0f       // topmost brick's centre y
-#define ARC_R 260.0f           // the arc's own (off-screen, below) radius
-#define ARC_CY (ARC_PEAK_Y + ARC_R)     // 320
-#define ARC_THETA_MAX_DEG 36.0f // half-angle: end bricks sit near x=70/378, y=~113
+/* ---- the wall: eighteen rings on three concentric arcs (see the header
+ * comment's "THE WALL IS THREE NESTED ARCS" section for why nesting arcs,
+ * not stacking straight shelves, is what "three rows" means under decision
+ * 0009). All three rows share one centre (ARC_CX, ARC_CY); a row's own
+ * radius is simply that shared centre minus the row's topmost point
+ * (ROW_PEAK_Y), so "three rows" is three radii, not three unrelated
+ * layouts. -------------------------------------------------------------- */
+#define N_ROWS 3
+#define BRICKS_PER_ROW 6
+#define N_BRICKS (N_ROWS * BRICKS_PER_ROW)
+#define BRICK_R 15.0f            // outer ink radius, fully grown
+#define ARC_CX 224.0f            // LAND_W / 2
+#define ARC_CY 320.0f            // the one centre all three rows curve around
+#define ARC_THETA_MAX_DEG 36.0f  // half-angle, shared by every row
+
+// Row 0 is outermost (topmost, farthest from the paddle), row 2 innermost
+// (closest to the paddle) - see ROW_PEAK_Y/ROW_BAND_HALF below, and the
+// header comment on why the band thickness grows toward the paddle.
+#define ROW0_PEAK_Y 55.0f
+#define ROW1_PEAK_Y 98.0f
+#define ROW2_PEAK_Y 141.0f
+#define ROW0_BAND_HALF 2.5f
+#define ROW1_BAND_HALF 3.0f
+#define ROW2_BAND_HALF 3.5f
 
 /* ---- speed ------------------------------------------------------------ */
 #define BALL_SPEED_BASE 0.16f // px/ms
@@ -319,29 +373,24 @@
 
 /* ---------------------------------------------------------------------
  * Colour. Unswapped RGB565 (px_swap applied once, at the final pixel
- * write - see paint_rect). The actors (ball, paddle) stay pure black; only
- * bricks get the palette. See the header comment's "COLOUR" section.
+ * write - see paint_rect). Everything drawn is one of these two values now
+ * - see the header comment's "ONE INK" section for why a ring vs a solid
+ * disc replaced a palette.
  * ------------------------------------------------------------------- */
 #define RGB565_WHITE 0xFFFFu
 #define RGB565_BLACK 0x0000u
 
-static const uint16_t BRICK_PALETTE[8] = {
-    0xF800u, // red
-    0xFCA0u, // orange
-    0xFFE0u, // yellow
-    0x07E0u, // green
-    0x07FFu, // cyan
-    0x001Fu, // blue
-    0x781Fu, // violet
-    0xF81Fu, // magenta
-};
+// Per-row ring thickness (half the band's width, ROW_BAND_HALF above),
+// indexed by row = brick index / BRICKS_PER_ROW - see the header comment's
+// "ONE INK" section on why size (not hue) is what tells a row apart.
+static const float ROW_BAND_HALF[N_ROWS] = { ROW0_BAND_HALF, ROW1_BAND_HALF, ROW2_BAND_HALF };
+static const float ROW_PEAK_Y[N_ROWS]    = { ROW0_PEAK_Y, ROW1_PEAK_Y, ROW2_PEAK_Y };
 
 /* ---------------------------------------------------------------------
  * State: one struct from the arena (app.h), never file-scope.
  * ------------------------------------------------------------------- */
 typedef struct {
     float cx, cy;    // fixed for life; only ever set once, in enter()
-    uint16_t color;
     bool alive;       // true = fully present and collidable
 } brick_t;
 
@@ -440,29 +489,36 @@ static void paint_rect(const breakout_state_t *s, rect_t r) {
             float fy = (float)ly + 0.5f;
             uint16_t outv = RGB565_WHITE;
 
-            // The wall: whichever brick covers this pixel most. Bricks
-            // never overlap each other by construction (the arc's own
-            // spacing, chosen with room to spare), so "most" is really
-            // "the only one that can", found with a cheap box reject
-            // before any sqrtf.
+            // The wall: whichever brick's RING covers this pixel most - see
+            // the header comment's "ONE INK" section on why a brick is a
+            // stroked annulus (outer radius br, half-thickness the row's own
+            // ROW_BAND_HALF) rather than a filled disc now that colour
+            // cannot tell it apart from the ball. Bricks never overlap each
+            // other by construction (the arc's own spacing, chosen with
+            // room to spare), so "most" is really "the only one that can",
+            // found with a cheap box reject before any sqrtf - the box and
+            // the far/near radius rejects below both grow by that row's
+            // band, since the ring's ink now lives on BOTH sides of br.
             {
                 float bestCov = 0.0f;
-                uint16_t bestColor = RGB565_WHITE;
                 for (int i = 0; i < N_BRICKS; i++) {
                     float br = s->drawnBrickR[i];
                     if (br <= 0.01f) continue;
+                    float band = ROW_BAND_HALF[i / BRICKS_PER_ROW];
                     float dxk = fx - s->bricks[i].cx;
-                    if (fabsf(dxk) > br + 2.0f) continue;
+                    if (fabsf(dxk) > br + band + 2.0f) continue;
                     float dyk = fy - s->bricks[i].cy;
-                    if (fabsf(dyk) > br + 2.0f) continue;
+                    if (fabsf(dyk) > br + band + 2.0f) continue;
                     float d2 = dxk * dxk + dyk * dyk;
-                    float rr = br + 1.5f;
-                    if (d2 > rr * rr) continue;
-                    float d = sqrtf(d2) - br;
+                    float rrOuter = br + band + 1.5f;
+                    if (d2 > rrOuter * rrOuter) continue;
+                    float rrInner = br - band - 1.5f;
+                    if (rrInner > 0.0f && d2 < rrInner * rrInner) continue; // inside the ring's own hole
+                    float d = fabsf(sqrtf(d2) - br) - band;
                     float c = coverage_from_dist(d);
-                    if (c > bestCov) { bestCov = c; bestColor = s->bricks[i].color; }
+                    if (c > bestCov) bestCov = c;
                 }
-                if (bestCov > 0.0f) outv = rgb565_mix(outv, bestColor, bestCov);
+                if (bestCov > 0.0f) outv = rgb565_mix(outv, RGB565_BLACK, bestCov);
             }
 
             // The paddle: intersection of a band around a large arc (the
@@ -551,12 +607,17 @@ static rect_t paddle_rect(float x) {
     return r;
 }
 
-static rect_t brick_rect(float cx, float cy, float r_) {
+// `band` is the drawing row's own ROW_BAND_HALF: a ring's ink reaches
+// `r_ + band` outward now, not just `r_` the way a filled disc's did, so the
+// bounding box has to grow by it too or the ring's own outer edge is left
+// outside the pushed (and cleared) rectangle - exactly decision 0001's
+// shape of bug, caught here before it ever reached a build.
+static rect_t brick_rect(float cx, float cy, float r_, float band) {
     rect_t r;
-    r.x0 = (int)floorf(cx - r_ - 1.5f);
-    r.y0 = (int)floorf(cy - r_ - 1.5f);
-    r.x1 = (int)ceilf(cx + r_ + 1.5f);
-    r.y1 = (int)ceilf(cy + r_ + 1.5f);
+    r.x0 = (int)floorf(cx - r_ - band - 1.5f);
+    r.y0 = (int)floorf(cy - r_ - band - 1.5f);
+    r.x1 = (int)ceilf(cx + r_ + band + 1.5f);
+    r.y1 = (int)ceilf(cy + r_ + band + 1.5f);
     return r;
 }
 
@@ -739,14 +800,22 @@ static void breakout_enter(void) {
 
     s->paddleX = PADDLE_CENTER_X;
 
+    // Three concentric arcs, one per row, sharing ARC_CX/ARC_CY - see the
+    // header comment's "THE WALL IS THREE NESTED ARCS" section. Row 0 is
+    // outermost (its own radius, ARC_CY - ROW_PEAK_Y[0], is the LARGEST),
+    // row 2 innermost, closest to the paddle.
     float thetaMax = ARC_THETA_MAX_DEG * BREAKOUT_PI / 180.0f;
-    for (int i = 0; i < N_BRICKS; i++) {
-        float t = (N_BRICKS == 1) ? 0.0f : ((float)i / (float)(N_BRICKS - 1)) * 2.0f - 1.0f; // -1..1
-        float theta = t * thetaMax;
-        s->bricks[i].cx = ARC_CX + ARC_R * sinf(theta);
-        s->bricks[i].cy = ARC_CY - ARC_R * cosf(theta);
-        s->bricks[i].color = BRICK_PALETTE[i % 8];
-        s->bricks[i].alive = true;
+    for (int row = 0; row < N_ROWS; row++) {
+        float rowR = ARC_CY - ROW_PEAK_Y[row];
+        for (int k = 0; k < BRICKS_PER_ROW; k++) {
+            int i = row * BRICKS_PER_ROW + k;
+            float t = (BRICKS_PER_ROW == 1) ? 0.0f
+                : ((float)k / (float)(BRICKS_PER_ROW - 1)) * 2.0f - 1.0f; // -1..1
+            float theta = t * thetaMax;
+            s->bricks[i].cx = ARC_CX + rowR * sinf(theta);
+            s->bricks[i].cy = ARC_CY - rowR * cosf(theta);
+            s->bricks[i].alive = true;
+        }
     }
     s->aliveCount = N_BRICKS;
     s->celebrating = false;
@@ -812,7 +881,7 @@ static void breakout_tick(const app_frame_t *f) {
         for (int k = 0; k < nChangedBricks; k++) {
             int i = changedBricks[k];
             float maxR = curR[i] > s->drawnBrickR[i] ? curR[i] : s->drawnBrickR[i];
-            dirty[nd++] = brick_rect(s->bricks[i].cx, s->bricks[i].cy, maxR);
+            dirty[nd++] = brick_rect(s->bricks[i].cx, s->bricks[i].cy, maxR, ROW_BAND_HALF[i / BRICKS_PER_ROW]);
         }
 
         s->drawnBallX = newBallX; s->drawnBallY = newBallY;
@@ -830,7 +899,7 @@ static void breakout_tick(const app_frame_t *f) {
         for (int k = 0; k < nChangedBricks; k++) {
             int i = changedBricks[k];
             float maxR = curR[i] > s->drawnBrickR[i] ? curR[i] : s->drawnBrickR[i];
-            u = rect_union(u, brick_rect(s->bricks[i].cx, s->bricks[i].cy, maxR));
+            u = rect_union(u, brick_rect(s->bricks[i].cx, s->bricks[i].cy, maxR, ROW_BAND_HALF[i / BRICKS_PER_ROW]));
         }
 
         s->drawnBallX = newBallX; s->drawnBallY = newBallY;

@@ -277,6 +277,202 @@
  * alarm for it would teach her that the alarm means nothing in particular.
  * A drop needs its own short knock, which is a sound_synth.c change, not
  * an app change.
+ *
+ * ---------------------------------------------------------------------
+ * 8. THE CHOICE: VS HUMAN OR VS CPU, AND WHY THESE TWO PICTURES
+ * ---------------------------------------------------------------------
+ *
+ * The owner's brief, verbatim: "j'aimerais un choix entre 'vs. CPU' et 'vs.
+ * human' [...] et si c'est CPU tu joueras contre un cpu, et un human si
+ * c'est un human." The device gained a second opponent (section 9) and
+ * every game now opens by asking which one, before a single piece is on the
+ * board.
+ *
+ * SHE CANNOT READ, SO THIS IS NOT TWO LABELS, IT IS TWO PICTURES, and the
+ * picture is the actual design problem here, harder than the opponent. Two
+ * words in any language are out. Two abstract icons that need a caption are
+ * out too, because a caption is the same failure with extra steps. What is
+ * left is a pair of pictures that mean something to her BEFORE anyone
+ * explains them - and the two things this app already has, by the time she
+ * would ever see this screen, are the two pieces she plays with and her own
+ * two hands.
+ *
+ * THE PICTURES ARE THE GAME'S OWN PIECES. "Vs human" is drawn as the two
+ * pieces she is about to see on the board: a red disc and a blue disc,
+ * side by side, in the exact colours and the exact roundness section 4
+ * already argued for. Two round things next to each other, echoing what
+ * "two people passing a puck" already looks like once a game is under way -
+ * the picture does not invent a new vocabulary, it borrows the one the app
+ * teaches her the instant she starts playing, so every game she finishes
+ * makes the picture MORE legible next time, not less. "Vs cpu" is drawn as
+ * one thing instead of two: a single grey face, with two dot eyes and a
+ * short antenna. Alone where the other option is a pair, cold grey where
+ * the other option is the two warm/cool colours she already knows, and
+ * carrying one small detail (the antenna) that a disc never has. A face is
+ * about the most primitive shape there is to a two-year-old - faces are
+ * recognised before almost anything else is - so "a face, but a strange
+ * one, alone" is legible on sight even to someone who has never played this
+ * game before, and "two of my colours together" is legible to her doubly so
+ * once she has played it once. Three independent differences (count: one
+ * versus two; temperature: cold grey versus warm/cool saturated colour;
+ * a feature neither piece has: the antenna) rather than one, which is the
+ * same redundancy section 1 already argues for on the board itself - a
+ * single cue that fails to land costs the whole picture, three do not.
+ *
+ * WHY NOT LUCIDE, WHICH THE MENU USES FOR ITS THREE ICONS (decision 0009's
+ * own named exception). That exception is scoped to the menu's three icons
+ * specifically, and for a reason that does not transfer here: those three
+ * pictures (a stopwatch, a pencil, a clock face) already have a Lucide
+ * source to convert from, and a game piece does not - "two red-and-blue
+ * discs" and "a grey face with an antenna" are this app's own invention, so
+ * decision 0009's actual rule applies unmodified: float primitives, no
+ * ruler, nothing straight that does not have to be. Every shape on this
+ * screen is fill_disc/fill_ring/fill_rrect, the exact three functions
+ * section 4 already built for the board itself - the choice screen adds no
+ * drawing primitive of its own, only new call sites.
+ *
+ * THE GESTURE IS THE SAME ONE, because section 2's whole argument (a
+ * dropout-prone controller, RELEASE as the verb that must not fire by
+ * accident) does not stop being true because the target changed shape. Two
+ * halves of the screen, LEFT for human and RIGHT for cpu, each 224px wide -
+ * a target four times a child's fingertip (AGENTS.md), which no other
+ * control on this device gets to be. ARM_SAMPLES/ARM_MS/ARM_RATE_HZ (a
+ * stray cannot arm a gesture) and RELEASE_GRACE_MS (a dropout cannot fake a
+ * lift) are the SAME constants the board's own column-picking gesture uses,
+ * not new numbers re-derived for a new screen - the hardware did not change
+ * between the two screens, so the arithmetic that describes it should not
+ * either. The one addition is a CONFIRMED hover, exactly menu.c's
+ * MENU_HOVER_CONFIRM_MS (decision 0013, 150ms, measured there against this
+ * same controller's 80-250px position jitter on a still finger): a side
+ * only lights up once the thumb has read as being over it continuously for
+ * 150ms, so a jitter excursion cannot flicker the highlight across a 224px
+ * target that is nearly three times wider than the 112px cell that number
+ * was measured against. Releasing commits whichever side is CURRENTLY LIT,
+ * never whichever side the last raw sample happened to touch - "what
+ * launches is always what was lit", decision 0013's own invariant, reused
+ * rather than re-argued.
+ *
+ * RE-CHOOSABLE WITHOUT FINDING A BUTTON. A child who picked the wrong
+ * picture, or who simply wants to play the other way next, must not need to
+ * locate a control that is not on screen - decision 0002 4b forbids a
+ * button that says so anyway. The answer already exists in this app's own
+ * shape: EVERY finished game already drains the board and deals a fresh
+ * one by itself (section 3). The choice screen is now simply where that
+ * fresh deal begins - a won game, a drawn game, or an adult's BOOT press
+ * all drain the board and land back on this same screen, asking again, with
+ * no new gesture to learn and no button to find. The cost is that a session
+ * of "just keep playing the CPU" asks again every single game rather than
+ * remembering - accepted on purpose, because a remembered mode is a second
+ * kind of state this screen would have to announce without words, and
+ * because re-tapping the same picture she just tapped is not a real cost at
+ * this device's timescale.
+ *
+ * ---------------------------------------------------------------------
+ * 9. THE CPU OPPONENT: BEATABLE ON PURPOSE, AND HOW MUCH THAT WAS TUNED
+ * ---------------------------------------------------------------------
+ *
+ * Connect Four is a solved game: a perfect first player wins with correct
+ * play, every time. A machine that plays anywhere near its ceiling is not a
+ * playmate for a two-year-old, it is a wall - see section 6's own account
+ * of the FIRST cpu opponent this file had, deleted once two humans were
+ * what the owner actually wanted, but whose failure mode (a five-year-old
+ * loses every game and stops opening the app) is exactly the failure this
+ * one is designed away from. A uniformly random opponent is not the answer
+ * either: it drops pieces nowhere in particular, never seems to notice an
+ * obvious win or an obvious block, and reads as broken rather than as
+ * gentle - a two-year-old cannot tell "weak" from "not paying attention",
+ * but she can tell "dead" from "playing".
+ *
+ * THE CPU IS ALWAYS BLUE AND ALWAYS PLAYS SECOND - red still plays first
+ * (section 6's colour comment), and in vs-cpu play red is always the hand
+ * holding the puck.
+ *
+ * THREE RULES, EACH A COIN FLIP RATHER THAN A CERTAINTY, evaluated one ply
+ * deep (does THIS move win or block right now; nothing further ahead - a
+ * plan the machine cannot execute is not one it can be caught executing):
+ *
+ *   1. an immediate win, taken 40% of the time it exists;
+ *   2. otherwise, HER immediate win, blocked 10% of the time it exists;
+ *   3. otherwise, a column touching her last drop 70% of the time one is
+ *      available, else any legal column - both picked uniformly at random
+ *      among the candidates that tie.
+ *
+ * WHY A COIN AND NOT A SWITCH. The task's own tension: taking a win and
+ * blocking a loss are what make an opponent read as playing at all rather
+ * than idling (a CPU that lets an obvious four sit there forever is not
+ * "gentle", it looks broken the same way a fully random one does) - but
+ * doing BOTH, always, is already close to unbeatable by someone who cannot
+ * plan a move ahead, because it forecloses every simple trap without her
+ * ever getting to spring one. Two knobs, not one, because the two failures
+ * they guard against are different failures: never taking a free win reads
+ * as a machine that is not really playing; always blocking reads as a wall
+ * that never lets a plan through.
+ *
+ * THE NUMBERS THEMSELVES CAME FROM A SWEEP, not a guess: a fast standalone
+ * mirror of this exact logic (thousands of games a second, used only to
+ * find a promising region - never the reported number, see "measured, not
+ * assumed" below) tried CPU_TAKE_WIN_PCT and CPU_BLOCK_PCT independently
+ * against both naive models and found the two knobs are NOT
+ * interchangeable: CPU_BLOCK_PCT moves the win rate far more than
+ * CPU_TAKE_WIN_PCT does (dropping block from 50 to 0 at a fixed take moved
+ * the random model's child-win rate from about 17% to about 43%; the same
+ * sweep on take alone, at a fixed block, moved it by less than 10 points),
+ * and CPU_NEAR_BIAS_PCT barely moved either model's win rate at all across
+ * 0-100% - which is the confirmation that rule 3 really is the cosmetic,
+ * "reads as engaged" preference section 8's argument for it claims, not a
+ * hidden source of strength. 40/10 keeps taking a win the more common of
+ * the two (it still closes out an obvious four more often than not, so the
+ * game visibly ends when it should) while blocking - the lever that
+ * actually decides who tends to win - stays low.
+ *
+ * RULE 3 IS THE "IT IS ANSWERING ME" CUE, and the task calls this out
+ * specifically: a reply near her own last move reads as engaged in a way
+ * that raw strength does not, at this age more than positional cleverness
+ * does. It is a preference, not a plan - the near column is not scored as
+ * stronger play, it is scored as more legible play, and it is the ONLY
+ * place this file uses the board's geometry at all beyond the two win/block
+ * checks. Falls back to a uniformly random legal column when no move is
+ * near her last one (the opening move, or after she plays an edge), so the
+ * cpu is never left with nothing to prefer.
+ *
+ * NO SEARCH, NO TABLE. Every candidate move is evaluated by temporarily
+ * placing a piece and asking win_cells() the same question land_piece()
+ * already asks after a real move - the same function, reused, not a second
+ * implementation of "is this four in a row" to keep in sync. One ply, seven
+ * columns at most per check, twice (win, then block): the whole decision is
+ * a few dozen calls to code that already exists for the real board. The
+ * memory ceiling this device is built against (AGENTS.md, and the incident
+ * this task was briefed against) is not spent on lookahead; see "Measured
+ * cost" at the very end of this file's header for the actual number.
+ *
+ * MEASURED, NOT ASSUMED. Played by a standalone tool
+ * (tools/four-cpu-winrate.ts) against a NAIVE PLAYER MODEL - a human who
+ * cannot plan ahead, modelled as choosing uniformly at random among the
+ * columns that are not full, with a second, slightly sharper model that
+ * additionally takes an obvious win when it sees one 50% of the time (an
+ * older sibling helping, or a lucky glance) - driving the REAL compiled
+ * firmware (decision 0003: not a reimplementation of this file's own logic,
+ * the same emu.wasm the gate and every other test in this repository runs
+ * against) through thousands of complete games. The result, and the exact
+ * command to reproduce it, is recorded in that tool's own header, because a
+ * number belongs next to the code that produced it rather than copied into
+ * a comment that can drift out of date the next time a constant here
+ * changes - re-run it after touching CPU_TAKE_WIN_PCT, CPU_BLOCK_PCT or
+ * CPU_NEAR_BIAS_PCT below, and update neither this paragraph nor that one by
+ * hand.
+ *
+ * THE CPU'S MOVE IS A DECISION, NOT AN EVENT, per the task's own framing: a
+ * piece that simply appears is confusing regardless of how well it was
+ * chosen. PH_CPU_MOVE gives it the same two beats a human's own gesture
+ * already has - a pause with nothing lit (CPU_THINK_MS, "it is thinking",
+ * the waiting piece bobbing exactly as it does on a human's own turn before
+ * they have touched anything), then the SAME chute wash and landing ring a
+ * human's dragging thumb produces, held over the column it has chosen for
+ * CPU_AIM_MS before the piece actually falls (start_fall(), the identical
+ * function a human release calls - see hilite_col()/waiting_col()'s
+ * cpu_aiming() branch). She sees it pause, sees where it is looking, and
+ * only then sees it drop - the same three things the highlight already
+ * tells a human about themselves, aimed back at her.
  */
 #include <stdio.h>
 #include <math.h>
@@ -685,6 +881,47 @@ _Static_assert(SAFE_Y0 + (CELL - 8) + BOB_RISE_PX <= SAFE_Y1 - 2 * SLAB_PAD - RO
 #define ARM_MS 40
 #define ARM_RATE_HZ 15u
 
+// The choice screen's confirmed hover: the SAME measured value menu.c's
+// MENU_HOVER_CONFIRM_MS uses (decision 0013), reused rather than re-derived
+// - this controller's position jitter did not change because the target
+// did. It matters less here than it does for the menu's 112px cells (this
+// screen's targets are 224px, nearly three times as wide), which is exactly
+// why 150ms, tuned against the tighter case, is more than enough margin for
+// this one.
+#define CHOOSE_CONFIRM_MS 150
+#define CHOOSE_POP_MS 180
+#define CHOOSE_POP_SCALE 1.10f   // matches the waiting piece's own hand-off
+                                  // pop (POP_PEAK_SCALE) in spirit: an
+                                  // arriving choice announces itself with
+                                  // the same small balloon every other
+                                  // "this is what happens if you let go"
+                                  // cue on this device uses.
+
+// The cpu's own turn (section 9): a pause with nothing lit, then the same
+// highlight a human's thumb would leave on the column it has chosen, held
+// for a beat before the piece actually drops. Both numbers keep the same
+// company as this file's other beats (HANDOFF_MS 420, the ~380ms fall):
+// long enough to read as a pause and then as a look, short enough that a
+// two-year-old is not left waiting on a toy that seems to have stopped.
+#define CPU_THINK_MS 550
+#define CPU_AIM_MS   350
+
+// CPU tuning: see section 9 for the argument and
+// tools/four-cpu-winrate.ts for the measured result. All three are coin
+// flips (rng_chance below), not switches - re-run that tool after changing
+// any of them.
+#define CPU_TAKE_WIN_PCT  40   // finishes an obvious four this often
+#define CPU_BLOCK_PCT     10   // blocks HER obvious four this often - the
+                                 // loose one, and the main lever on the
+                                 // measured win rate (found by sweeping
+                                 // both against the naive player model
+                                 // before this file was written: block
+                                 // moves the win rate far more than take
+                                 // does, and near-bias barely moves it at
+                                 // all - see tools/four-cpu-winrate.ts)
+#define CPU_NEAR_BIAS_PCT 70   // prefers a column touching her last drop
+                                 // this often, over a cold pick
+
 /* =====================================================================
  * Colour.
  *
@@ -749,9 +986,13 @@ static uint16_t col_slab(uint8_t player) {
  * State. One arena allocation, per app.h.
  * ================================================================== */
 enum {
+    PH_CHOOSE,   // vs human or vs cpu - section 8. The first phase, and
+                  // where every drain (section 3) lands again.
     PH_PLAY,     // whoever's turn it is may play; their gesture is live once
                   // the hand-off has elapsed (turnStartMs, section 6)
     PH_FALL,     // a piece is falling
+    PH_CPU_MOVE, // the machine's turn: think, then aim, then start_fall() -
+                  // section 9
     PH_WIN,      // the winning line breathes
     PH_DRAWPAUSE,// a full board, nobody won: a beat before the drain
     PH_DRAIN,    // the board empties and the next game begins
@@ -784,6 +1025,25 @@ typedef struct {
     uint8_t  winCells[6];
     int      winCount;
     uint8_t  winner;
+
+    // The choice screen (section 8). hoverCol doubles as "which side is
+    // CONFIRMED lit" here (0 human, 1 cpu, -1 neither) - safe because
+    // PH_CHOOSE and PH_PLAY never overlap. chooseCandidate/SinceMs are the
+    // raw (unconfirmed) side under the thumb this tick and when it last
+    // changed, which is what the MENU_HOVER_CONFIRM_MS-style 150ms hold
+    // below is timed against; choosePopSinceMs times the confirmed side's
+    // small pop-in.
+    int      chooseCandidate;
+    uint32_t chooseCandidateSinceMs;
+    uint32_t choosePopSinceMs;
+
+    // Persists for one game (set once, at the choice screen's release, and
+    // never touched by reset_game() so it survives the deal it triggers).
+    uint8_t  vsCpu;                 // 0 vs human, 1 vs cpu (section 9)
+    int      lastHumanCol;          // her most recent drop, for the cpu's
+                                     // "answers her" bias; -1 until she has
+                                     // played one
+    uint32_t rng;                   // xorshift32 state, reseeded per game
 
     uint32_t lastRenderMs;
     uint8_t  dirty;                // bit c set: column c must be repainted
@@ -853,6 +1113,87 @@ static int win_cells(const four_state_t *s, int c, int r, uint8_t p, uint8_t *ou
         return n;
     }
     return 0;
+}
+
+/* =====================================================================
+ * The cpu opponent (section 9). A tiny xorshift32 PRNG - the same shape as
+ * dino.c's own (each app carries its own copy, decision 0002 4b: an app
+ * refers to nothing outside itself) - and a one-ply column picker built
+ * entirely from board helpers that already exist above.
+ * ================================================================== */
+static uint32_t rng_next(uint32_t *state) {
+    uint32_t x = *state;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
+}
+
+// True with probability pct/100. pct is a compile-time constant at every
+// call site below, so this is one modulo and one compare, not a table.
+static bool rng_chance(uint32_t *state, int pct) {
+    return (int)(rng_next(state) % 100u) < pct;
+}
+
+static int rng_pick(uint32_t *state, const int *items, int n) {
+    return items[rng_next(state) % (uint32_t)n];
+}
+
+static int iabs(int x) { return x < 0 ? -x : x; }
+
+// Would dropping `p` into column c (at the row it would actually land on)
+// complete a four? Reuses win_cells() - the same question land_piece() asks
+// after a REAL move - by placing the piece, asking, and putting the cell
+// back. No second "is this a win" implementation to keep in sync with the
+// real one.
+static bool move_wins(four_state_t *s, int c, uint8_t p) {
+    int r = landing_row(s, c);
+    if (r < 0) return false;
+    uint8_t save = s->board[r * COLS + c];
+    s->board[r * COLS + c] = p;
+    uint8_t tmp[6];
+    bool win = win_cells(s, c, r, p, tmp) > 0;
+    s->board[r * COLS + c] = save;
+    return win;
+}
+
+// The cpu's whole decision, one call, one ply. See this file's header
+// section 9 for the argument; this function is the three rules it
+// describes and nothing more.
+static int cpu_choose_col(four_state_t *s) {
+    uint8_t me = s->turn, her = other_player(me);
+
+    int legal[COLS], nLegal = 0;
+    for (int c = 0; c < COLS; c++) if (landing_row(s, c) >= 0) legal[nLegal++] = c;
+    if (nLegal == 0) return -1;   // should not happen: a full board reaches
+                                    // PH_DRAWPAUSE before the cpu ever moves
+
+    // 1. an immediate win, most of the time.
+    for (int i = 0; i < nLegal; i++) {
+        if (move_wins(s, legal[i], me) && rng_chance(&s->rng, CPU_TAKE_WIN_PCT)) {
+            return legal[i];
+        }
+    }
+
+    // 2. otherwise, block HER immediate win, less of the time - see the
+    //    header for why this one is the loose knob.
+    for (int i = 0; i < nLegal; i++) {
+        if (move_wins(s, legal[i], her) && rng_chance(&s->rng, CPU_BLOCK_PCT)) {
+            return legal[i];
+        }
+    }
+
+    // 3. otherwise, prefer a column touching her last drop - reads as
+    //    answering her, not as picking cold (task's own framing).
+    if (s->lastHumanCol >= 0 && rng_chance(&s->rng, CPU_NEAR_BIAS_PCT)) {
+        int near[COLS], nNear = 0;
+        for (int i = 0; i < nLegal; i++) {
+            if (iabs(legal[i] - s->lastHumanCol) <= 1) near[nNear++] = legal[i];
+        }
+        if (nNear > 0) return rng_pick(&s->rng, near, nNear);
+    }
+    return rng_pick(&s->rng, legal, nLegal);
 }
 
 /* =====================================================================
@@ -1058,9 +1399,19 @@ static bool gesture_live(const four_state_t *s, uint32_t nowMs) {
     return s->phase == PH_PLAY && handoff_u(s, nowMs) < 0.0f;
 }
 
+// True during PH_CPU_MOVE's second beat, once the machine has finished
+// "thinking" and is showing where it has decided to play - the highlight
+// equivalent of a human thumb being s->armed. See section 9.
+static bool cpu_aiming(const four_state_t *s, uint32_t nowMs) {
+    if (s->phase != PH_CPU_MOVE) return false;
+    uint32_t elapsed = nowMs - s->phaseStartMs;
+    return elapsed >= (uint32_t)CPU_THINK_MS && elapsed < (uint32_t)(CPU_THINK_MS + CPU_AIM_MS);
+}
+
 // Which column is currently highlighted, and in whose colour.
-static int hilite_col(const four_state_t *s) {
+static int hilite_col(const four_state_t *s, uint32_t nowMs) {
     if (s->phase == PH_PLAY && s->armed) return s->hoverCol;
+    if (cpu_aiming(s, nowMs)) return s->hoverCol;
     // The chute and its landing ring STAY UP while the piece falls, rather
     // than blinking out the instant the thumb lets go. The fall is the answer
     // to the promise the ring was making, and watching the piece slide down
@@ -1096,9 +1447,10 @@ static uint8_t slab_player(const four_state_t *s) {
 // piece sits at parkCol and keeps saying whose turn it is. That is the
 // steady state, and after the hand-off has faded it is the ONLY thing left
 // saying it besides the slab tint - see section 3.
-static int waiting_col(const four_state_t *s) {
-    if (s->phase != PH_PLAY) return -1;
-    return s->armed ? s->hoverCol : s->parkCol;
+static int waiting_col(const four_state_t *s, uint32_t nowMs) {
+    if (s->phase == PH_PLAY) return s->armed ? s->hoverCol : s->parkCol;
+    if (s->phase == PH_CPU_MOVE) return cpu_aiming(s, nowMs) ? s->hoverCol : s->parkCol;
+    return -1;
 }
 
 // The drain's per-column progress: how far column c's pieces have slid, in
@@ -1109,10 +1461,64 @@ static float drain_offset(const four_state_t *s, uint32_t nowMs, int c) {
     return 0.5f * DRAIN_GRAVITY * t * t;
 }
 
+// The choice screen (section 8): "vs human" as the two pieces she is about
+// to play with, "vs cpu" as one grey face, alone. Built entirely from
+// fill_disc/fill_ring/fill_rrect - no new drawing primitive, only new call
+// sites, per decision 0009 (the float brush, since neither picture has a
+// Lucide source to convert from).
+static void render_choose(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
+    gfx_fill_rect_land(lx0, 0, lx1 - lx0, LAND_H, PX_WHITE);
+
+    float cxHuman = (float)LAND_W * 0.25f;
+    float cxCpu   = (float)LAND_W * 0.75f;
+    float cy      = (float)LAND_H * 0.5f;
+
+    // The confirmed side gets a small pop, exactly the balloon every other
+    // "this is what happens if you let go" cue on this device already uses
+    // (ease_out_back, section 6's hand-off, the palette this idiom comes
+    // from) - not a colour wash, because the picture IS the feedback here.
+    float scaleHuman = 1.0f, scaleCpu = 1.0f;
+    if (s->hoverCol == 0 || s->hoverCol == 1) {
+        float u = (float)(nowMs - s->choosePopSinceMs) / (float)CHOOSE_POP_MS;
+        float grown = 1.0f + (CHOOSE_POP_SCALE - 1.0f) * ease_out_back(u > 1.0f ? 1.0f : u);
+        if (s->hoverCol == 0) scaleHuman = grown; else scaleCpu = grown;
+    }
+
+    // "vs human": the two pieces she is about to see on the real board, in
+    // their real colours - the picture borrows the game's own vocabulary
+    // rather than inventing one (section 8). Sized well past a real piece
+    // (HOLE_R*1.15 reads as "a piece" at board scale; this is the picture
+    // that has to carry the whole choice on an otherwise empty screen, so
+    // it is drawn nearly twice a piece's size instead).
+    float r = HOLE_R * 1.6f * scaleHuman;
+    float gap = HOLE_R * 1.6f * 0.55f;
+    fill_disc(cxHuman - gap, cy, r, col_piece(P_RED), lx0, lx1, 256);
+    fill_disc(cxHuman + gap, cy, r, col_piece(P_BLUE), lx0, lx1, 256);
+
+    // "vs cpu": one grey face, alone - cold where the pieces are warm/cool
+    // and saturated, singular where they are a pair, and carrying features
+    // (eyes, a mouth, an antenna) neither piece has. Four independent
+    // differences, section 8's own argument for why this is not one cue
+    // that can fail.
+    uint16_t grey = px_swap(0x8410);   // a plain, saturation-free mid grey:
+                                         // "metal", not a pale UI tint
+    uint16_t dark = px_swap(0x2104);   // eyes/mouth: darker than the face,
+                                         // same hue
+    float hr = HOLE_R * 1.6f * scaleCpu;
+    fill_disc(cxCpu, cy, hr, grey, lx0, lx1, 256);
+    fill_disc(cxCpu - hr * 0.32f, cy - hr * 0.12f, hr * 0.15f, dark, lx0, lx1, 256);
+    fill_disc(cxCpu + hr * 0.32f, cy - hr * 0.12f, hr * 0.15f, dark, lx0, lx1, 256);
+    fill_rrect(cxCpu, cy + hr * 0.32f, hr * 0.24f, hr * 0.05f, hr * 0.05f, dark, lx0, lx1, 256);
+    fill_rrect(cxCpu, cy - hr - hr * 0.28f, hr * 0.06f, hr * 0.22f, hr * 0.06f, grey, lx0, lx1, 256);
+    fill_disc(cxCpu, cy - hr - hr * 0.5f, hr * 0.16f, grey, lx0, lx1, 256);
+}
+
 static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     if (lx0 < 0) lx0 = 0;
     if (lx1 > LAND_W) lx1 = LAND_W;
     if (lx1 <= lx0) return;
+
+    if (s->phase == PH_CHOOSE) { render_choose(s, nowMs, lx0, lx1); return; }
 
     // 1. paper.
     gfx_fill_rect_land(lx0, 0, lx1 - lx0, LAND_H, PX_WHITE);
@@ -1124,7 +1530,7 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     //    or grey when that column cannot take a piece); or, at a turn change,
     //    the hand-off's own announcement washing out; or, during the drain, a
     //    white channel the pieces slide out through.
-    int hc = hilite_col(s);
+    int hc = hilite_col(s, nowMs);
     float ho = handoff_u(s, nowMs);
     if (s->phase == PH_DRAIN) {
         for (int c = 0; c < COLS; c++) {
@@ -1231,7 +1637,7 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     //    au-dessus, quitte a reduire la hauteur" - and it is the stronger
     //    cue of the two anyway (section 3): a filled 42px disc against a
     //    chevron's stroke, at the same job.
-    int wc = waiting_col(s);
+    int wc = waiting_col(s, nowMs);
     if (wc >= 0) {
         float wy = HOPPER_CY;
         float scale = 1.0f;
@@ -1245,7 +1651,7 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
             // arriving and the colour sweep are one statement.
             float u = ho / HANDOFF_POP_FRAC;
             scale = ease_out_back(u > 1.0f ? 1.0f : u);
-        } else if (!s->armed) {
+        } else if (!s->armed && !cpu_aiming(s, nowMs)) {
             // The idle invitation: it is your turn, and you are this colour.
             // It floats UP from its resting place and settles back, never
             // below - a cue that rises reads as offering itself, and the
@@ -1373,6 +1779,14 @@ static void reset_game(four_state_t *s, uint32_t nowMs) {
     for (int c = 0; c < COLS; c++) s->height[c] = 0;
     s->winCount = 0;
     s->winner = P_NONE;
+    s->lastHumanCol = -1;
+    // Reseeded per game, the same "not just once at boot" reasoning as
+    // dino.c's own PRNG comment: without it, two games started at the same
+    // millisecond in a scripted test would play the machine identically.
+    // Deliberately NOT vsCpu - that is set once, immediately before this is
+    // called, by whichever caller decided the game (the choice screen's
+    // release), and this function has no opinion about it.
+    s->rng = nowMs ^ 0x9E3779B9u;
     // Red starts every game rather than the loser or the alternate side.
     // Both players are hands now, so there is no fairness argument either
     // way, and a fixed starter is one less thing on a screen that may not
@@ -1380,6 +1794,82 @@ static void reset_game(four_state_t *s, uint32_t nowMs) {
     // comes up red.
     hand_over_to(s, nowMs, P_RED);
     printf("four: new game\r\n");
+}
+
+/* ---------------------------------------------------------------------
+ * The choice screen (section 8): vs human or vs cpu. Its own small gesture,
+ * built the same way gesture_tick() below is (arm against strays, a
+ * release grace against dropouts), plus a confirmed hover so a 224px-wide
+ * target cannot flicker under this controller's measured position jitter.
+ * ------------------------------------------------------------------- */
+static void start_choose(four_state_t *s, uint32_t nowMs) {
+    s->phase = PH_CHOOSE;
+    s->phaseStartMs = nowMs;
+    s->contactSeen = false;
+    s->armed = false;
+    s->contactCount = 0;
+    s->hoverCol = -1;
+    s->chooseCandidate = -1;
+    s->chooseCandidateSinceMs = nowMs;
+    s->choosePopSinceMs = nowMs;
+    mark_all(s);
+}
+
+// Landscape x < half is "vs human" (0), the rest is "vs cpu" (1) - two
+// targets, each 224px, four times a child's fingertip (AGENTS.md).
+static int side_from_x(int lx) { return lx < LAND_W / 2 ? 0 : 1; }
+
+static void choose_gesture_tick(four_state_t *s, const app_frame_t *f) {
+    if (f->touchDown) {
+        if (!s->contactSeen) {
+            s->contactSeen = true;
+            s->gestureStartMs = f->nowMs;
+            s->contactCount = 0;
+        }
+        s->lastContactMs = f->nowMs;
+        s->contactCount++;
+
+        uint32_t elapsed = f->nowMs - s->gestureStartMs;
+        if (!s->armed && s->contactCount >= ARM_SAMPLES && elapsed >= ARM_MS &&
+            (uint32_t)s->contactCount * 1000u >= ARM_RATE_HZ * elapsed) {
+            s->armed = true;
+        }
+
+        if (s->armed) {
+            // Same panel-to-landscape inversion gesture_tick() below uses.
+            int lx = f->touchY;
+            int side = side_from_x(lx);
+            if (side != s->chooseCandidate) {
+                s->chooseCandidate = side;
+                s->chooseCandidateSinceMs = f->nowMs;
+            } else if (side != s->hoverCol &&
+                       (f->nowMs - s->chooseCandidateSinceMs) >= CHOOSE_CONFIRM_MS) {
+                s->hoverCol = side;
+                s->choosePopSinceMs = f->nowMs;
+                mark_all(s);
+            }
+        }
+        return;
+    }
+
+    // No contact this tick: almost always a dropout, not a lift - the same
+    // reasoning gesture_tick() below is built on.
+    if (!s->contactSeen) return;
+    if ((f->nowMs - s->lastContactMs) < RELEASE_GRACE_MS) return;
+
+    bool wasArmed = s->armed;
+    int side = s->hoverCol;
+    s->contactSeen = false;
+    s->armed = false;
+    s->contactCount = 0;
+
+    if (!wasArmed || side < 0) return;   // a lift with nothing confirmed
+                                           // lit does nothing, same as a
+                                           // release over a full column
+
+    s->vsCpu = (uint8_t)(side == 1 ? 1 : 0);
+    reset_game(s, f->nowMs);
+    printf("four: choice vsCpu=%d\r\n", (int)s->vsCpu);
 }
 
 // A piece has finished falling: commit it, and decide what happens next.
@@ -1506,6 +1996,12 @@ static void gesture_tick(four_state_t *s, const app_frame_t *f) {
         return;
     }
     s->parkCol = col;
+    // Recorded regardless of vsCpu (harmless when nobody reads it in
+    // vs-human play): the cpu's own "answers her" bias (section 9) reads
+    // this, and it must be whoever's hand just released here, not
+    // whichever colour that happens to be - in vs-cpu play that is always
+    // red, but this line does not need to know that.
+    s->lastHumanCol = col;
     start_fall(s, f->nowMs, col, s->turn);
 }
 
@@ -1516,11 +2012,12 @@ static void four_enter(void) {
     s_state = APP_STATE(four_state_t);
     four_state_t *s = s_state;
 
-    // No generator to seed any more: with both sides played by a hand there
-    // is nothing in this app that has to decide anything, so nothing that has
-    // to be unpredictable. That is also what makes a scripted game in the
-    // emulator exactly reproducible, which the tests lean on.
-    reset_game(s, 0);
+    // Every entry, and every fresh deal after it (section 3), opens on the
+    // choice screen (section 8) rather than dealing a board directly - the
+    // cpu opponent means the app now has something to ask before it has
+    // anything to decide, and reset_game() itself is only ever called from
+    // the choice screen's own release, once vsCpu is set.
+    start_choose(s, 0);
     s->dirtyAll = false;         // enter() must not push: the runtime pushes
     s->dirty = 0;                // the whole panel once after it returns
     render_span(s, 0, 0, LAND_W);
@@ -1534,8 +2031,10 @@ static void four_tick(const app_frame_t *f) {
 
     // BOOT abandons the game and deals a fresh board, the same "one physical
     // button, one obvious job" chrono gives it. It is an adult's escape
-    // hatch (and the emulator's), not something she needs.
-    if (f->bootClicked && s->phase != PH_DRAIN) {
+    // hatch (and the emulator's), not something she needs - and it is
+    // ANOTHER way back to the choice screen (section 8), on top of the one
+    // every finished game already gives her.
+    if (f->bootClicked && s->phase != PH_DRAIN && s->phase != PH_CHOOSE) {
         s->phase = PH_DRAIN;
         s->phaseStartMs = now;
         s->contactSeen = false;
@@ -1544,9 +2043,25 @@ static void four_tick(const app_frame_t *f) {
         mark_all(s);
     }
 
-    gesture_tick(s, f);
+    // The choice screen and the cpu's own turn run their own small gesture
+    // (or none at all); everywhere else this is the two-player gesture
+    // section 2 argues for. The two never overlap - PH_CHOOSE and
+    // PH_CPU_MOVE both hold gesture_tick()'s shared fields for their own,
+    // different, purposes (four_state_t's own comment) - so exactly one of
+    // these runs on any given tick.
+    if (s->phase == PH_CHOOSE) choose_gesture_tick(s, f);
+    else if (s->phase != PH_CPU_MOVE) gesture_tick(s, f);
 
     switch (s->phase) {
+    case PH_CHOOSE:
+        // Nothing to animate at rest; only the confirmed side's small pop,
+        // and only while it is still running.
+        if (s->hoverCol >= 0 && (now - s->choosePopSinceMs) < (uint32_t)CHOOSE_POP_MS &&
+            (now - s->lastRenderMs) >= RENDER_MIN_MS) {
+            mark_all(s);
+        }
+        break;
+
     case PH_PLAY:
         if (handoff_u(s, now) >= 0.0f) {
             // The hand-off's own animation: the chute fading out and the
@@ -1559,6 +2074,15 @@ static void four_tick(const app_frame_t *f) {
             // already indistinguishable from the settled one, and the bob
             // below repaints this same column within BOB_STEP_MS regardless.
             if ((now - s->lastRenderMs) >= RENDER_MIN_MS) mark(s, s->parkCol);
+        } else if (s->vsCpu && s->turn == P_BLUE) {
+            // The hand-off just finished and it is the machine's turn:
+            // section 9. Decided once (cpu_choose_col() is not free, and
+            // must not be re-rolled every tick), then held through the
+            // think-and-aim beats below.
+            s->phase = PH_CPU_MOVE;
+            s->phaseStartMs = now;
+            s->fallCol = cpu_choose_col(s);
+            mark_all(s);
         } else if (!s->armed && (now - s->lastRenderMs) >= BOB_STEP_MS) {
             // The idle bob, on its own slower clock. A 5px travel over 1.3s
             // moves under half a pixel per 60fps frame, so repainting at the
@@ -1568,6 +2092,25 @@ static void four_tick(const app_frame_t *f) {
             mark(s, s->parkCol);
         }
         break;
+
+    case PH_CPU_MOVE: {
+        // See section 9 and cpu_aiming(): a pause with nothing lit, then
+        // the same highlight a human's thumb would leave, held for a beat,
+        // then the same start_fall() a human's release calls.
+        uint32_t elapsed = now - s->phaseStartMs;
+        if (elapsed < (uint32_t)CPU_THINK_MS) {
+            if (!s->armed && (now - s->lastRenderMs) >= BOB_STEP_MS) mark(s, s->parkCol);
+        } else if (elapsed < (uint32_t)(CPU_THINK_MS + CPU_AIM_MS)) {
+            if (s->hoverCol != s->fallCol) {
+                mark(s, s->hoverCol);
+                mark(s, s->fallCol);
+                s->hoverCol = s->fallCol;
+            }
+        } else {
+            start_fall(s, now, s->fallCol, s->turn);
+        }
+        break;
+    }
 
     case PH_FALL: {
         // Integrated from f->dtMs on every tick, so the fall takes the same
@@ -1617,7 +2160,11 @@ static void four_tick(const app_frame_t *f) {
     case PH_DRAIN: {
         uint32_t total = (uint32_t)(COLS - 1) * DRAIN_STAGGER_MS + DRAIN_SETTLE_MS;
         if ((now - s->phaseStartMs) >= total) {
-            reset_game(s, now);
+            // Back to the choice screen, not straight into a new board
+            // (section 8): this is the "re-choosable without finding a
+            // button" path - every finished game, and every BOOT press,
+            // lands here and asks again.
+            start_choose(s, now);
             break;
         }
         if ((now - s->lastRenderMs) >= RENDER_MIN_MS) {

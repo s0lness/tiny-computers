@@ -40,7 +40,6 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-const APP_FOUR = 3;
 
 const args = process.argv.slice(2);
 const labelIdx = args.indexOf("--label");
@@ -74,6 +73,18 @@ async function loadDevice() {
     memory = inst.exports.memory as WebAssembly.Memory;
     const e = inst.exports as any;
     if (e.emu_init() !== 1) throw new Error("emu_init() failed");
+
+    // Resolved by name from emu_device(), not hardcoded (house rule: two
+    // preview tools once rendered the wrong app for hours because they
+    // hardcoded an index).
+    const jsonBytes = new Uint8Array(memory.buffer, e.emu_device());
+    let end = 0; while (jsonBytes[end] !== 0) end++;
+    const apps: string[] = JSON.parse(dec.decode(jsonBytes.subarray(0, end))).apps || [];
+    const APP_FOUR = apps.indexOf("four");
+    if (APP_FOUR < 0) {
+        throw new Error("this emu.wasm has no four app in its table - rebuild it: bun run emulator/wasm/build.ts");
+    }
+
     e.emu_tick(0);
     e.emu_app_switch(APP_FOUR);
     e.emu_tick(10);
@@ -165,6 +176,14 @@ async function main() {
     const idle = (ms: number) => { for (let i = 0; i < ms; i += 15) { t += 15; dev.touch(false, 0, 0, t); } };
     const hold = (col: number, ms: number) => { for (let i = 0; i < ms; i += 15) { t += 15; dev.touch(true, colX(col), THUMB_LY, t); } };
     const play = (col: number) => { hold(col, 140); idle(1600); };
+    const holdAt = (lx: number, ly: number, ms: number) => { for (let i = 0; i < ms; i += 15) { t += 15; dev.touch(true, lx, ly, t); } };
+
+    // The app now opens on a choice screen (four.c section 8): capture it
+    // first, then pick "vs human" before the rest of this file's board
+    // shots, which all assume ordinary two-player play.
+    await write("choice", dev.fb());
+    holdAt(LAND_W * 0.25, THUMB_LY, 350);
+    idle(650);
 
     // An opening board with a few pieces in it, so the highlight has a stack
     // to sit on and the board does not read as an empty template. Two pieces

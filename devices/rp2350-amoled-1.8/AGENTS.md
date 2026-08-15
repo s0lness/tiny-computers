@@ -193,9 +193,15 @@ firmware/runtime/    the runtime: runtime.c (board entry point, startup,
                       emu.wasm unmodified)
 firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
-                      four.c (Connect Four for two people passing the puck,
-                      slide a thumb and release to drop; nothing plays by
-                      itself), level.c (a bubble level: tip the puck, a dot
+                      four.c (Connect Four: opens on a wordless choice
+                      between two pieces (vs a second person) and one grey
+                      face (vs the cpu) - see the file's own header section
+                      8; two people pass the puck, slide a thumb and
+                      release to drop, and a chosen cpu opponent plays
+                      itself with the same gesture, tuned beatable and
+                      measured against a naive player model, see section 9
+                      and tools/four-cpu-winrate.ts), level.c (a bubble
+                      level: tip the puck, a dot
                       slides downhill, hold it flat and a ring closes round
                       it - reads app_frame_t.tilt like any other app, see
                       "Which way is down" below), clock.c (two faces, set by

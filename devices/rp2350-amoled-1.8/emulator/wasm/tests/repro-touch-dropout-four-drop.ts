@@ -61,6 +61,7 @@ const SAFE_W = LAND_W - 2 * BEZEL;
 const CELL = 48;
 const BOARD_X0 = SAFE_X0 + Math.floor((SAFE_W - COLS * CELL) / 2);
 const RELEASE_GRACE_MS = 300;  // four.c's own, see its header section 2
+const HANDOFF_MS = 420;        // four.c's own
 const colX = (c: number) => BOARD_X0 + Math.floor(CELL / 2) + c * CELL;
 
 let passCount = 0;
@@ -104,8 +105,26 @@ async function freshDevice() {
     exp.emu_app_switch(APP_FOUR);
     exp.emu_tick(10);
     if (exp.emu_app_current() !== APP_FOUR) throw new Error("failed to switch into four");
+
+    // The app now opens on a choice screen (vs human / vs cpu - four.c's
+    // header, section 8). This file drives the two-player gesture, so every
+    // fresh device is walked through picking "vs human" here, with CLEAN
+    // input (not through TouchSim), before any trial's own touch stream
+    // begins - the choice screen gets its own dedicated dropout coverage in
+    // repro-touch-dropout-four-choice.ts, so this file does not need to
+    // retest it under duress.
+    let setupT = 10;
+    const setupPress = (lx: number, ly: number, down: boolean) => {
+        setupT += 15;
+        exp.emu_touch(down ? 1 : 0, PANEL_W - 1 - Math.round(ly), Math.round(lx));
+        exp.emu_tick(setupT);
+    };
+    for (let e = 0; e < 350; e += 15) setupPress(LAND_W * 0.25, 200, true);
+    for (let e = 0; e < RELEASE_GRACE_MS + 350; e += 15) setupPress(0, 0, false);
+    for (let e = 0; e < HANDOFF_MS + 200; e += 15) setupPress(0, 0, false);
     fwLog.length = 0;
     return {
+        startMs: setupT,
         // The report is in PANEL coordinates already (TouchSim works in the
         // panel's own space, like the real controller): the LANDSCAPE point a
         // caller wants is converted on the way in, at setPointer.
@@ -153,7 +172,7 @@ async function main() {
         const col = i % COLS;
         const [pxx, pyy] = landToPanel(colX(col), THUMB_LY);
         sim.setPointer(true, pxx, pyy);
-        let t = 1000;
+        let t = dev.startMs;
         let dropped = false;
         for (let held = 0; held < HOLD_MS; held += STEP_MS) {
             t += STEP_MS;
@@ -199,7 +218,7 @@ async function main() {
         const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
         const from = i % COLS;
         const to = (i * 3 + 4) % COLS;
-        let t = 1000;
+        let t = dev.startMs;
 
         // press, slide, then hold still on the target
         for (let e = 0; e < SLIDE_MS; e += STEP_MS) {
@@ -263,7 +282,7 @@ async function main() {
     console.log("");
     const devD = await freshDevice();
     const simD = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
-    let tD = 1000;
+    let tD = devD.startMs;
     const [dx, dy] = landToPanel(colX(2), THUMB_LY);
     simD.setPointer(true, dx, dy);
     for (let e = 0; e < 500; e += STEP_MS) { tD += STEP_MS; devD.feed(simD.poll(tD), tD); }
@@ -331,7 +350,7 @@ async function main() {
     for (const spacingMs of [17, 33, 60, 120, 200, 400]) {
         for (const count of [1, 2, 3]) {
             const devC = await freshDevice();
-            let tC = 1000;
+            let tC = devC.startMs;
             const [sx, sy] = landToPanel(colX(3), THUMB_LY);
             for (let k = 0; k < count; k++) {
                 // one phantom contact...
@@ -365,7 +384,7 @@ async function main() {
     const simC2 = new TouchSim(strayProfile, PANEL_W, PANEL_H);
     simC2.setPointer(false, 0, 0);
     let strayDrops = 0;
-    let tC2 = 1000;
+    let tC2 = devC2.startMs;
     for (let e = 0; e < 120000; e += STEP_MS) {
         tC2 += STEP_MS;
         devC2.feed(simC2.poll(tC2), tC2);

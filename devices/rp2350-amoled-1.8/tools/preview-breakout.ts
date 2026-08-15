@@ -17,8 +17,9 @@
  *
  * THE SHOTS, and why these four:
  *
- *   entry        the picture at switch-in: full ten-brick wall on its arc,
- *                ball mid-field, paddle centred (no tilt has been sent).
+ *   entry        the picture at switch-in: full eighteen-brick wall on its
+ *                three nested arcs, ball mid-field, paddle centred (no
+ *                tilt has been sent).
  *   midgame      some time in, untouched: a few bricks gone, the ball and
  *                paddle wherever the physics alone put them.
  *   celebrating  mid-regrow wave, shortly after the wall was fully cleared:
@@ -96,18 +97,26 @@ async function loadDevice() {
     };
 }
 
-// ---- brick-ink measure, to find the clear/regrow moments -----------------
-function isWhiteOrBlack(r: number, g: number, b: number): "white" | "black" | "colour" {
+// ---- wall-ink measure, to find the clear/regrow moments -------------------
+// Was a saturated-colour test back when bricks were a palette; now that
+// bricks are black rings (breakout.c's own "ONE INK" section), the same
+// "neither pure white nor pure black" bucket instead catches the
+// anti-aliased grey fringe every curve leaves - the wall's rings dominate it
+// (far more edge per unit area than the ball's one filled disc or the
+// paddle's own band), which is what still makes it a usable "how much wall
+// is left" proxy for finding the shots below. See feature-breakout.ts's
+// countWallInk for the same measure used as a test assertion.
+function pixelKind(r: number, g: number, b: number): "white" | "black" | "grey" {
     if (r >= 30 && g >= 60 && b >= 30) return "white";
     if (r <= 1 && g <= 1 && b <= 1) return "black";
-    return "colour";
+    return "grey";
 }
-function brickInk(fb: Uint8Array): number {
+function wallInk(fb: Uint8Array): number {
     let n = 0;
     for (let i = 0; i < PANEL_W * PANEL_H; i++) {
         const v = (fb[i * 2]! << 8) | fb[i * 2 + 1]!;
         const r = (v >> 11) & 0x1f, g = (v >> 5) & 0x3f, b = v & 0x1f;
-        if (isWhiteOrBlack(r, g, b) === "colour") n++;
+        if (pixelKind(r, g, b) === "grey") n++;
     }
     return n;
 }
@@ -185,26 +194,34 @@ async function main() {
     const dev = await loadDevice();
     await write("entry", dev.fb());
 
-    const initialInk = brickInk(dev.fb());
+    const initialInk = wallInk(dev.fb());
 
     // midgame: step until a few bricks are visibly gone, capped so this
     // never hangs if the constants ever change enough to make that slow.
     let midgameShot: Uint8Array | null = null;
     for (let i = 0; i < 3000 && !midgameShot; i++) {
         dev.step(200);
-        const ink = brickInk(dev.fb());
+        const ink = wallInk(dev.fb());
         if (ink < initialInk * 0.85) midgameShot = dev.fb();
     }
     await write("midgame", midgameShot ?? dev.fb());
 
-    // Keep going until the wall fully clears (ink bottoms out near zero),
-    // then capture mid-regrow and fully-regrown. Measured empirically
-    // during development at up to ~190s of simulated time for one clear;
-    // the cap below is generous, not tuned.
+    // Keep going until the wall fully clears (ink bottoms out near the
+    // floor left by the ball/paddle's own anti-aliased edges), then capture
+    // mid-regrow and fully-regrown. The floor moved when bricks stopped
+    // being filled discs: a ring's ink is ALL edge, so "zero bricks alive"
+    // no longer reads as "ink near zero" the way a filled wall's did - it
+    // reads as "ink near whatever the ball and paddle's own edges alone
+    // draw" (measured empirically at 18 bricks: ~7% of the entry ink, not
+    // the near-0% a solid wall left). 10% (comfortably above that floor,
+    // comfortably below "still several bricks up") is what actually detects
+    // it now; 5% never fired, because it was calibrated for a filled wall,
+    // not a ring one. Measured empirically at ~25s of simulated time for one
+    // clear; the cap below is generous, not tuned.
     let clearedAtT: number | null = null;
     for (let i = 0; i < 15000 && clearedAtT === null; i++) {
         dev.step(50);
-        if (brickInk(dev.fb()) < initialInk * 0.05) clearedAtT = dev.now();
+        if (wallInk(dev.fb()) < initialInk * 0.10) clearedAtT = dev.now();
     }
     if (clearedAtT === null) {
         console.log("did not observe a full clear within the time budget - skipping the celebrating/regrown shots");
@@ -216,7 +233,7 @@ async function main() {
 
     for (let i = 0; i < 200; i++) {
         dev.step(50);
-        if (brickInk(dev.fb()) >= initialInk * 0.95) break;
+        if (wallInk(dev.fb()) >= initialInk * 0.95) break;
     }
     await write("regrown", dev.fb());
 }

@@ -39,6 +39,10 @@ const TESTS_DIR = join(DEVICE_ROOT, "emulator", "wasm", "tests");
 export const CLEAN_INPUT_BASELINE: Record<string, string> = {
   "feature-four.ts":
     "statement of what Connect Four is; the dropout half is repro-touch-dropout-four-drop.ts",
+  "feature-four-choice.ts":
+    "statement of what the vs-human/vs-cpu choice screen is (four.c section 8); the dropout/jitter half is repro-touch-dropout-four-choice.ts",
+  "feature-four-cpu.ts":
+    "statement of what the cpu opponent does (four.c section 9: only moves on its own turn, only legal drops, beatable) - a behavioural/legality check, not a gesture-under-duress one; its own touches are the same clean gesture feature-four.ts already covers under both clean and dropout input",
   "feature-clock.ts":
     "statement of what the clock is; the dropout half is repro-touch-dropout-clock-set.ts",
   "feature-morpion.ts":

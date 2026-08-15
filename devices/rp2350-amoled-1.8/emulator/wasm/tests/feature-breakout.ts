@@ -52,7 +52,7 @@ const PADDLE_Y = 300, PADDLE_HALF_W = 46;
 const PADDLE_CENTER_X = (PLAY_L + PLAY_R) / 2; // 224
 const PADDLE_TRAVEL_MAX = (PLAY_R - PLAY_L) / 2 - PADDLE_HALF_W; // 152
 const PADDLE_GX_FULL = 0.4;
-const N_BRICKS = 10;
+const N_BRICKS = 18; // 3 rows x 6, see breakout.c's own N_ROWS/BRICKS_PER_ROW
 const BEZEL = 10; // gfx.h's PANEL_BEZEL_MARGIN_PX
 
 const FRAME_MS = 16;
@@ -153,7 +153,23 @@ function ballCentreAwayFromPaddle(fb: Uint8Array): { x: number; y: number; n: nu
   return n === 0 ? { x: NaN, y: NaN, n: 0 } : { x: sx / n, y: sy / n, n };
 }
 
-function countBrickInk(fb: Uint8Array): number {
+// Was "countBrickInk" over SATURATED pixels back when bricks were a
+// colour palette - a red/orange/yellow/... brick failed both isWhite and
+// isBlack by having one RGB565 channel far from the others, cleanly telling
+// it apart from the ball/paddle's own anti-aliased BLACK-vs-white edges.
+// Now that bricks are black rings (decision: black & white, see breakout.c's
+// header "ONE INK" section), that same "neither white nor black" bucket
+// catches the ANTI-ALIASED GREY FRINGE of every curve on screen instead -
+// the wall's rings still dominate it (a thin ring's edge-to-area ratio is
+// far higher than a filled disc's, so the wall contributes much more fringe
+// than the ball or paddle's own edges do), which is why the thresholds
+// below (>1000 at entry, <30% at the low point, >=95% once regrown) still
+// hold with real margin - measured 3610px at entry, falling to 440px at the
+// wall's own low point. This is deliberately still framebuffer-only,
+// per AGENTS.md's "Regression tests" convention (never an internal), so it
+// still cannot distinguish "the wall is mostly gone" from "the wall never
+// existed" with certainty - only the entry-vs-later comparison can.
+function countWallInk(fb: Uint8Array): number {
   let n = 0;
   for (let ly = 0; ly < LAND_H; ly++) {
     for (let lx = 0; lx < LAND_W; lx++) {
@@ -200,8 +216,8 @@ async function main() {
   {
     const { dev } = await enterBreakout();
     check("switched into breakout", dev.appCurrent() === APP_BREAKOUT, `app_current()=${dev.appCurrent()}`);
-    const ink = countBrickInk(dev.fb());
-    check("the wall is on screen at entry", ink > 1000, `${ink} coloured pixels`);
+    const ink = countWallInk(dev.fb());
+    check("the wall is on screen at entry", ink > 1000, `${ink} grey-fringe (wall) pixels`);
   }
 
   // ---- the paddle follows tilt.gx, clamped at the rails ------------------
@@ -306,7 +322,7 @@ async function main() {
   {
     const { dev, t: t0 } = await enterBreakout();
     let t = t0;
-    const initialInk = countBrickInk(dev.fb());
+    const initialInk = countWallInk(dev.fb());
     let minInk = initialInk;
     let sawFullWallAgain = false;
     const stepMs = 40;
@@ -315,7 +331,7 @@ async function main() {
       t += stepMs;
       dev.tick(t);
       if (elapsed % 2000 !== 0) continue;
-      const ink = countBrickInk(dev.fb());
+      const ink = countWallInk(dev.fb());
       if (ink < minInk) minInk = ink;
       if (elapsed > 5000 && ink >= initialInk * 0.95) { sawFullWallAgain = true; break; }
     }

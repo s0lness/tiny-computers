@@ -323,8 +323,22 @@ async function loadRawDevice() {
     exp.emu_tick(0);
     exp.emu_app_switch(APP_FOUR);
     exp.emu_tick(10);
+
+    // Pick "vs human" (see the choice-screen note in main()) before handing
+    // the device back - every caller of loadRawDevice() assumes ordinary
+    // two-player play starts immediately.
+    let setupT = 10;
+    const press = (lx: number, ly: number, down: boolean) => {
+        setupT += 15;
+        exp.emu_touch(down ? 1 : 0, PANEL_W - 1 - Math.round(ly), Math.round(lx));
+        exp.emu_tick(setupT);
+    };
+    for (let e = 0; e < 350; e += 15) press(LAND_W * 0.25, 200, true);
+    for (let e = 0; e < RELEASE_GRACE_MS + 350; e += 15) press(0, 0, false);
+    for (let e = 0; e < HANDOFF_MS + 200; e += 15) press(0, 0, false);
     fwLog.length = 0;
     return {
+        startMs: setupT,
         touchLand(down: boolean, lx: number, ly: number, nowMs: number) {
             exp.emu_touch(down ? 1 : 0, PANEL_W - 1 - Math.round(ly), Math.round(lx));
             exp.emu_tick(nowMs);
@@ -673,7 +687,26 @@ async function main() {
         console.log(`    four_state_t = ${measuredBytes} bytes of ${APP_ARENA_BYTES} (${((measuredBytes / APP_ARENA_BYTES) * 100).toFixed(2)}%)`);
     }
 
+    // ---- 0. the choice screen: pick "vs human" ---------------------------
+    // The app now opens on a choice screen (vs human / vs cpu - four.c's
+    // header, section 8) rather than dealing a board directly. This whole
+    // file exercises two-player play, so pick "vs human" here, with clean
+    // input, before any of the checks below assume a board is on screen.
+    // The choice screen itself, and the cpu opponent, get their own
+    // dedicated files: feature-four-choice.ts, repro-touch-dropout-four-
+    // choice.ts and feature-four-cpu.ts.
     let t = 1000;
+    console.log('-- picking "vs human" from the opening choice screen --');
+    // Long enough to arm (ARM_SAMPLES/ARM_MS) AND THEN hold the confirmed
+    // side for CHOOSE_CONFIRM_MS (150ms) before releasing - the confirm
+    // window starts counting only once armed, not from first contact.
+    t = holdLand(dev, LAND_W * 0.25, 200, t, 350);
+    t = settle(dev, t, RELEASE_GRACE_MS + 350);
+    check('picking "vs human" deals a fresh two-player board',
+        dev.fwLogLines().some((l) => l.includes("four: choice vsCpu=0")) &&
+        dev.fwLogLines().some((l) => l.includes("four: new game")),
+        dev.fwLogLines().filter((l) => l.includes("four:")).join(" | "));
+
     t = settle(dev, t, HANDOFF_MS + 200); // the opening hand-off, announcing red
     let fb = dev.fbSnapshot();
 
@@ -1008,12 +1041,18 @@ async function main() {
     check("no waiting piece is shown while the game is over - the screen says a touch means something else now",
         !anyWaiting, waitingWhere.join(", "));
 
-    // ---- a touch moves it along, the board drains, a new game begins ----
+    // ---- a touch moves it along, the board drains, back to the choice ----
     console.log("\n-- a touch during the celebration, then the board drains --");
     t = settle(dev, t, CELEBRATE_SKIP_MS + 100);
     dev.drainLog();
     t = holdLand(dev, colX(3), THUMB_LY, t, 60);
-    t = settle(dev, t, 1400);
+    t = settle(dev, t, 1400); // the drain finishes; the app is back at the
+                                // choice screen (section 8), not dealing a
+                                // fresh board by itself any more
+    // "It deals again" now means picking "vs human" again - see this file's
+    // opening "picking vs human" block, same shape.
+    t = holdLand(dev, LAND_W * 0.25, 200, t, 350);
+    t = settle(dev, t, RELEASE_GRACE_MS + 350);
     const newGame = dev.fwLogLines().findLast((l) => l.includes("four: new game"));
     check("the board empties itself and a fresh game starts, with no menu and no text", !!newGame, newGame ?? "(no new game line)");
 
@@ -1039,12 +1078,22 @@ async function main() {
     console.log("\n-- a board that fills up with nobody winning --");
     const raw = await loadRawDevice();
     const mirror2 = newMirror();
-    let rawT = 1000;
+    let rawT = raw.startMs;
     let turn2 = P_RED;
     let sawDraw = false, resetAfterDraw = false, sawWin = false;
     for (let move = 0; move < 60 && !resetAfterDraw; move++) {
-        const col = chooseStalemateMove(mirror2, turn2);
-        if (col >= 0) for (let i = 0; i < 9; i++) { rawT += 15; raw.touchLand(true, colX(col), THUMB_LY, rawT); }
+        if (sawDraw) {
+            // The drain has finished (the 120-tick settle below already
+            // waits through it); the app is back at the choice screen
+            // (section 8), not dealing a fresh board by itself any more.
+            // "It deals again" now means picking "vs human" again, so do
+            // that here rather than touching a board that is not there.
+            for (let i = 0; i < 24; i++) { rawT += 15; raw.touchLand(true, LAND_W * 0.25, 200, rawT); }
+            for (let i = 0; i < 44; i++) { rawT += 15; raw.touchLand(false, 0, 0, rawT); }
+        } else {
+            const col = chooseStalemateMove(mirror2, turn2);
+            if (col >= 0) for (let i = 0; i < 9; i++) { rawT += 15; raw.touchLand(true, colX(col), THUMB_LY, rawT); }
+        }
         for (let i = 0; i < 120; i++) { rawT += 15; raw.touchLand(false, 0, 0, rawT); }
         for (const line of raw.drainLog()) {
             const m = line.match(/four: drop col=(\d+) row=(\d+) player=(\d+)/);

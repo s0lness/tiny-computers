@@ -14,16 +14,42 @@
  * under a second. Three things are tuned away from Chrome's own feel on
  * purpose:
  *
- *   1. START_SPEED_PXMS/MAX_SPEED_PXMS are both far below Chrome's, and
- *      MAX_SPEED_PXMS is a real ceiling, not an asymptote climbing forever.
+ *   1. MAX_SPEED_PXMS is a real ceiling, not an asymptote climbing forever
+ *      - unlike Chrome, a run cannot outrun what she can follow just by
+ *      going on long enough.
  *   2. The obstacle gap is a TIME budget (MIN_GAP_MS/MAX_GAP_MS), not a
- *      pixel one, so a faster run does not also mean less REACTION time per
- *      obstacle - only one obstacle is ever on screen at once (see "ONE
+ *      pixel one, so a faster run does not also mean the obstacles queue up
+ *      MORE OFTEN - only one obstacle is ever on screen at once (see "ONE
  *      OBSTACLE AT A TIME" below), so what "gets faster" buys is a livelier
  *      scene, not a harder puzzle.
  *   3. Hitboxes are smaller than the silhouettes they sit inside (see
  *      "COLLISION" below) - a near-miss LOOKS like a hit and isn't one,
  *      which is the direction a game for small hands should err in.
+ *
+ * A FOURTH THING WAS TRIED AND WAS WRONG, AND THE CORRECTION IS RECORDED
+ * HERE RATHER THAN LEFT AS A COMMENT THAT NO LONGER MATCHES THE CODE. The
+ * first version of this file also started START_SPEED_PXMS/MAX_SPEED_PXMS
+ * far below Chrome's own (0.07-0.16 px/ms against Chrome's own roughly
+ * 0.36-0.6+), reasoning that a slower world gives a small hand more time to
+ * react. Played by hand, this was rejected outright: "dino is absolutely
+ * horrendous, it's too slow and so slow i can't even properly jump above
+ * the obstacles." The second half of that complaint is not a difficulty
+ * opinion, it is a correctness bug, and the arithmetic in "JUMP CLEARANCE,
+ * VERIFIED" below proves it: at those speeds, EVERY obstacle kind was
+ * geometrically impossible to clear at EVERY speed on the ramp, including
+ * MAX_SPEED_PXMS - no tap timing existed that avoided a hit, ever, because
+ * the obstacle's hitbox spent longer inside the dino's own hitbox zone than
+ * the jump's fixed airtime could ever hold her above it (the slower the
+ * world scrolls, the LONGER an obstacle dwells there - a game tuned slower
+ * "for safety" made the jump strictly less capable, not more). "Far below
+ * Chrome's own curve" was the wrong design target: what a jump needs is
+ * enough obstacle-relative speed for its own fixed airtime to outlast the
+ * time an obstacle spends underfoot, which turns out to land close to
+ * Chrome's own real pace, not far below it. The current START_SPEED_PXMS/
+ * MAX_SPEED_PXMS were derived FROM that requirement (see "JUMP CLEARANCE,
+ * VERIFIED"), not picked and then hoped to be fast enough - and it is that
+ * derivation, not a slower ceiling, that is what "the direction a game for
+ * small hands should err in" (point 3 above) actually has to rest on.
  *
  * TAP TO JUMP, EVERYWHERE ON THE GLASS. No button to find, no target to
  * aim at - the device's own "the target the whole panel is legible from"
@@ -96,9 +122,14 @@
  * exactly that rectangle, redraws everything that belongs in it, and
  * pushes it once. The cost of the simplification is a bigger single push
  * while an obstacle is far from the dino (up to most of the play width);
- * tools/gate/run.ts's own measured budget (three full panels per tick) has
- * three-and-a-half times that to spare - see this file's own --measure
- * numbers in the shipping report. Skipped entirely once the scene is
+ * tools/gate/run.ts's own measured budget (three full panels per tick,
+ * 494592px) has better than four times dino's own measured peak to spare
+ * (112992px, 0.69 panels, re-measured after the speed/jump retune below via
+ * `bun run tools/gate/run.ts`, stimulus "dino/tap top-right") - the exact
+ * peak is a function of where that stimulus happens to catch an obstacle on
+ * screen, not a designed target, so treat the ratio ("comfortably inside
+ * the budget") as the load-bearing fact, not the specific digits. Skipped
+ * entirely once the scene is
  * static (the DEAD_WAIT idle screen), via g_dirty below, the same "only
  * push what changed" discipline chrono.c's per-digit cells and four.c's
  * per-column repaint both already use, just at the grain of "the whole
@@ -145,26 +176,37 @@
  * algebra for a jump that lands back at the height it left from:
  *   apex h = v0^2/(2g), airtime T = 2 v0/g  =>  g = 8h/T^2,  v0 = gT/2.
  */
-#define JUMP_APEX_PX     95.0f
+#define JUMP_APEX_PX     115.0f
 #define JUMP_AIRTIME_MS  600.0f
 #define GRAVITY_PXMS2    (8.0f * JUMP_APEX_PX / (JUMP_AIRTIME_MS * JUMP_AIRTIME_MS))
 #define JUMP_V0_PXMS     (GRAVITY_PXMS2 * JUMP_AIRTIME_MS * 0.5f)
 
 /* ---- the difficulty curve -------------------------------------------------
- * See this file's header for why these are far below Chrome's own and why
- * MAX_SPEED_PXMS is a real ceiling. SPEED_RAMP_MS is how long a single run
- * takes to go from START to MAX at constant play - about two minutes,
- * which is a long run for this audience already.
+ * See this file's header for the corrected reasoning behind these numbers
+ * and the "JUMP CLEARANCE" arithmetic a few lines below that PROVES (not
+ * hopes) every obstacle is clearable at both ends of this ramp.
+ * SPEED_RAMP_MS is how long a single run takes to go from START to MAX at
+ * constant play - about two minutes, which is a long run for this audience
+ * already, and is unchanged from the first version: nothing about the
+ * "too slow" complaint was about how fast the ramp climbs, only about
+ * where it starts and tops out.
  */
-#define START_SPEED_PXMS 0.070f
-#define MAX_SPEED_PXMS   0.160f
+#define START_SPEED_PXMS 0.30f
+#define MAX_SPEED_PXMS   0.55f
 #define SPEED_RAMP_MS    120000.0f
 #define ACCEL_PXMS2      ((MAX_SPEED_PXMS - START_SPEED_PXMS) / SPEED_RAMP_MS)
 
-// A TIME budget, not a pixel one - see this file's header, point 2. Chosen
-// so that even at MAX_SPEED_PXMS an obstacle spawned just off the right
-// edge gives at least (LAND_W-DINO_X)/MAX_SPEED_PXMS =~ 2.2s before it
-// reaches her, comfortably inside the smaller of these two.
+// A TIME budget, not a pixel one - see this file's header, point 2. This
+// bounds the SPACING between successive obstacles (a faster run does not
+// also mean they queue up more often), which is a separate question from
+// how much warning any ONE obstacle gives before it must be jumped - that
+// warning is spawn-to-hitbox distance over speed, and it necessarily
+// SHRINKS as speed rises (217px of runway / 0.30px/ms =~ 723ms at the ramp's
+// start, / 0.55px/ms =~ 395ms at its end - see "JUMP CLEARANCE, VERIFIED"
+// below for the arithmetic that keeps a jump able to clear an obstacle in
+// that shrinking window regardless). Both numbers stay comfortably under
+// MIN_GAP_MS, so an obstacle is always fully dealt with (jumped or hit)
+// before the next one's own countdown could have produced it anyway.
 #define MIN_GAP_MS 1600u
 #define MAX_GAP_MS 2400u
 
@@ -338,6 +380,67 @@ static const obstacle_kind_t OBSTACLE_KINDS[2] = {
     // tall: two arms, opposite sides, different heights.
     { 16.0f, 10.0f, 96.0f, 2, { -40.0f, -66.0f }, { 1.0f, -1.0f }, 22.0f, 16.0f, 14.0f },
 };
+
+/* =========================================================================
+ * JUMP CLEARANCE, VERIFIED - the arithmetic behind "can the jump actually
+ * clear this obstacle", worked out here rather than trusted by eye, because
+ * the shipped version of this file was NOT geometrically capable of
+ * clearing either obstacle kind at ANY speed on its ramp (see this file's
+ * header, point 3 of the corrected reasoning) and nothing short of doing the
+ * sum would have caught that.
+ *
+ * THE HITBOX, smaller than the silhouette on purpose (this file's header,
+ * point 3 in its own numbered list) - a fraction of the obstacle's trunk
+ * height, not the full drawn trunk:
+ * ------------------------------------------------------------------- */
+#define OBSTACLE_HIT_FRAC     0.60f // of k->trunkH - see draw_obstacle_kind
+#define OBSTACLE_HIT_HALF_W   7.0f
+#define DINO_HIT_LEFT_OFFSET  2.0f  // from DINO_X - just the torso (this
+#define DINO_HIT_RIGHT_OFFSET 58.0f // file's header, point 3), narrower
+                                     // than the first version (-4/+64) -
+                                     // see the arithmetic below for why
+
+/* THE TWO DURATIONS THAT DECIDE WHETHER A JUMP CAN EVER CLEAR AN OBSTACLE.
+ *
+ * An obstacle's hitbox and the dino's own hitbox horizontally overlap for a
+ * span of Do = HORIZ_OVERLAP_PX / speed milliseconds, where HORIZ_OVERLAP_PX
+ * = (DINO_HIT_RIGHT_OFFSET - DINO_HIT_LEFT_OFFSET) + 2*OBSTACLE_HIT_HALF_W =
+ * 56 + 14 = 70px - THIS DURATION GROWS AS SPEED FALLS, not shrinks: a
+ * slower-moving obstacle spends LONGER inside the hitbox zone, which is the
+ * opposite of what "slow = easy" would suggest and is exactly the trap the
+ * shipped version fell into.
+ *
+ * A jump is above a given required height H for a duration Dc(H) =
+ * JUMP_AIRTIME_MS * sqrt((JUMP_APEX_PX - H) / JUMP_APEX_PX) (solved from the
+ * parabola liftPx(t) = apex - 0.5*g*(t - airtime/2)^2, symmetric about the
+ * apex) - THIS DURATION DOES NOT DEPEND ON SPEED AT ALL, only on the jump's
+ * own physics and how tall the obstacle's hitbox is.
+ *
+ * A jump can clear an obstacle at some speed IF AND ONLY IF Dc(H) >= Do(speed)
+ * - if the obstacle is in the hitbox zone LONGER than the jump can stay above
+ * its own required height, no tap timing exists that clears it, full stop,
+ * regardless of skill. When Dc >= Do, the width of the FORGIVING TAP WINDOW
+ * (how early or late the tap can land and still clear) is exactly
+ * Dc(H) - Do(speed) milliseconds - this is the number this file's header
+ * reports "measured" at both ends of the speed ramp, and it is a real
+ * geometric quantity, not a feel-based guess.
+ *
+ * WORKED, for the TALL obstacle (the harder of the two: taller trunk means
+ * a taller required hitbox H, hence a smaller Dc):
+ *   H = 96 * 0.60 + 2 = 59.6px (the "+2" is obTop's own -2px pad below)
+ *   g = 8*115/600^2 = 0.002556 px/ms^2, so with apex=115, airtime=600:
+ *   Dc(59.6) = 600 * sqrt((115-59.6)/115) = 600 * sqrt(0.4817) = 416ms
+ *   Do(0.30) = 70/0.30 = 233ms  -> tap window = 416-233 = 183ms  (START_SPEED)
+ *   Do(0.55) = 70/0.55 = 127ms  -> tap window = 416-127 = 289ms  (MAX_SPEED)
+ * Both positive with real margin, and margin only GROWS as speed rises
+ * through the ramp (Do falls monotonically with speed while Dc is fixed), so
+ * every intermediate speed on the ramp is easier than the START_SPEED case
+ * checked here, not harder - START_SPEED is the true worst case, not a
+ * spot-check. The small obstacle's own H = 64*0.60+2 = 40.4px gives an even
+ * larger Dc (483ms) and therefore a wider tap window at both ends (250ms /
+ * 356ms) - the tall obstacle is the binding constraint, which is why only it
+ * is walked through here.
+ * ======================================================================= */
 
 static void draw_obstacle_kind(float ox, int kindIndex) {
     const obstacle_kind_t *k = &OBSTACLE_KINDS[kindIndex];
@@ -677,17 +780,19 @@ static void dino_tick(const app_frame_t *f) {
 
         // COLLISION. The hitbox is smaller than the drawn silhouette in
         // every direction - see this file's header, point 3: a near-miss
-        // by eye is a genuine miss by the rules, never the reverse.
+        // by eye is a genuine miss by the rules, never the reverse. Sized
+        // and placed exactly per "JUMP CLEARANCE, VERIFIED" above, not by
+        // eye: this is the geometry that arithmetic was checked against.
         if (s->obstacleActive) {
             float obstacleScreenX = world_to_screen_x(s, s->obstacleWorldX);
             const obstacle_kind_t *k = &OBSTACLE_KINDS[s->obstacleKind];
-            float hitHalfW = 9.0f;
-            float hitH = k->trunkH * 0.78f;
+            float hitHalfW = OBSTACLE_HIT_HALF_W;
+            float hitH = k->trunkH * OBSTACLE_HIT_FRAC;
             // Deliberately just the torso, not the head/snout that reach
             // further forward and up - see this file's header, point 3: a
             // near-miss by eye (an obstacle grazing under her chin) is a
             // genuine miss by the rules.
-            float dinoLeft = (float)DINO_X - 4.0f, dinoRight = (float)DINO_X + 64.0f;
+            float dinoLeft = (float)DINO_X + DINO_HIT_LEFT_OFFSET, dinoRight = (float)DINO_X + DINO_HIT_RIGHT_OFFSET;
             float dinoTop = GROUND_Y - s->liftPx - 110.0f, dinoBottom = GROUND_Y - s->liftPx + 2.0f;
             float obLeft = obstacleScreenX - hitHalfW, obRight = obstacleScreenX + hitHalfW;
             float obTop = GROUND_Y - hitH, obBottom = GROUND_Y + 2.0f;
