@@ -110,6 +110,16 @@ typedef struct {
     // an invalid reading draws a confident lie; check this before trusting
     // the rest of the struct.
     bool valid;
+
+    // True while gravity, gx/gy/gz above, is holding its last belief rather
+    // than tracking the sensor: tilt.h's filter gates on |a| staying near
+    // 1g, and while the device is being carried (or dropped, or shaken)
+    // that gate fully distrusts the raw reading. Not the same as `valid` -
+    // a coasting reading is still safe to draw, it just is not currently
+    // moving. No shipped app reads this yet (see tilt.h's "FILTERING"
+    // section for the gate that computes it); published so one that wants
+    // to has somewhere to read it from.
+    bool coasting;
 } app_tilt_t;
 
 /* ---- input the runtime hands to the app --------------------------------

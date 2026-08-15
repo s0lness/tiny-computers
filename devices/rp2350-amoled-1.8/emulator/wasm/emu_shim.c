@@ -438,7 +438,30 @@ void sensors_inject_erase(void) {
  * the identity for this target BY CONSTRUCTION rather than by luck, which
  * is worth being explicit about: the emulator CANNOT be used to check the
  * board's real device-to-panel mapping. Only tilt.h's on-board ritual can.
+ *
+ * QUANTISED AND CLAMPED ON THE WAY IN, which is emu_abi.h's honesty rule
+ * doing real work rather than being cited. The board's QMI8658 is left at
+ * +-8 g by QMI8658_init(), giving acc_lsb_div = 4096 counts per g, i.e.
+ * 0.244 mg (0.000244 g) per count (firmware/runtime/sensors.c's own
+ * QMI8658_ACC_LSB_DIV comment derives exactly this). A host handing over
+ * 1.00037 g is handing over a reading no register on this part can hold,
+ * and an app tuned against it would be tuned against fiction. So the value
+ * goes through the same round trip the hardware imposes: clamp to the
+ * range, quantise to the LSB, convert back - before it ever reaches
+ * tilt.c's filter, the same way a real out-of-range or off-grid sample
+ * never reaches it on the board either.
  */
+#define QMI8658_RANGE_G   8.0f
+#define QMI8658_G_PER_LSB (1.0f / 4096.0f)
+
+static float accel_as_hardware_would(float g) {
+    if (g > QMI8658_RANGE_G) g = QMI8658_RANGE_G;
+    if (g < -QMI8658_RANGE_G) g = -QMI8658_RANGE_G;
+    float counts = g / QMI8658_G_PER_LSB;
+    counts = (float)(int)(counts >= 0.0f ? counts + 0.5f : counts - 0.5f);
+    return counts * QMI8658_G_PER_LSB;
+}
+
 static float g_gravX = 0.0f, g_gravY = 0.0f, g_gravZ = 1.0f;
 
 void emu_sensor_vector(int index, float x, float y, float z) {
@@ -446,9 +469,9 @@ void emu_sensor_vector(int index, float x, float y, float z) {
                  // ("gravity"); a host passing another index is a host bug,
                  // ignored rather than trapped, same policy emu_button()
                  // uses for a bad button index.
-    g_gravX = x;
-    g_gravY = y;
-    g_gravZ = z;
+    g_gravX = accel_as_hardware_would(x);
+    g_gravY = accel_as_hardware_would(y);
+    g_gravZ = accel_as_hardware_would(z);
 }
 
 float emu_tilt(int field) {
@@ -461,6 +484,7 @@ float emu_tilt(int field) {
         case 3: return t.tiltDeg;
         case 4: return (float)t.up;
         case 5: return t.valid ? 1.0f : 0.0f;
+        case 6: return t.coasting ? 1.0f : 0.0f;
         default: return 0.0f;
     }
 }
@@ -602,9 +626,16 @@ void emu_button_verdict(int index, int isLong) {
     }
 }
 
+/* ---- the declared sensors, by index into emu_device()'s "sensors" array.
+ * There are two now ("shake" at 0, "gravity" at 1 - emu_shim's emu_device()
+ * below), so emu_sensor_event() can no longer ignore its argument: a host
+ * that fires sensor 1 must not bump the shake counter. emu_sensor_vector()
+ * above does not need to switch on the index at all, since it declares only
+ * one continuous sensor. */
+#define SENSOR_SHAKE 0
+
 void emu_sensor_event(int index) {
-    (void)index; // emu_device() declares exactly one sensor ("shake"), so
-                 // there is nothing to switch on yet; see sensors_inject_erase().
+    if (index != SENSOR_SHAKE) return; // "gravity" is continuous, not an event
     if (!g_fingerDown) g_eraseSeq++;
 }
 
@@ -722,7 +753,9 @@ int emu_device(void) {
     // unit tilt.h publishes: g, panel axes, +z into the glass, so flat on a
     // table is (0,0,1). No magnetometer is declared because this board has
     // none - the QMI8658 is a six-axis part, and no heading exists here to
-    // hand a host or an app (see firmware/runtime/tilt.h).
+    // hand a host or an app (see firmware/runtime/tilt.h). The bubble level
+    // (firmware/apps/level.c) reads app_frame_t.tilt like every other app
+    // and draws from this same sensor, not a private one.
     p = json_append(p, "\"sensors\":[");
     p = json_append(p, "{\"id\":\"shake\",\"kind\":\"event\"},");
     p = json_append(p, "{\"id\":\"gravity\",\"kind\":\"gravity\",\"label\":\"tilt\",\"unit\":\"g\"}");

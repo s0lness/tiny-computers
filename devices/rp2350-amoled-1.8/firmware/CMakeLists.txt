@@ -87,6 +87,9 @@ target_sources(main PRIVATE
     apps/chrono.c
     apps/timer.c
     apps/four.c
+    # The bubble level. Reads no hardware directly: like every other app it
+    # takes orientation through app_frame_t.tilt (runtime/tilt.c).
+    apps/level.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into

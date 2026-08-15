@@ -34,21 +34,22 @@ extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 extern const app_t g_fourApp;
+extern const app_t g_levelApp;
 extern const app_t g_menuApp;
 extern void menu_set_return_app(int index);
 
 /* SCREENSHOT FIXTURE, compiled out by default. See apps/stubapps.c for the
  * whole argument; in one line: the menu's layout has to be judged at six and
- * twelve apps and this firmware declares four, so the emulator build can be
+ * twelve apps and this firmware declares five, so the emulator build can be
  * told to append do-nothing apps and the capture then comes out of the real
  * menu_enter() instead of a script re-implementing it. Declared with a bare
  * extern, the same way g_menuApp above is, because runtime_core.h's contract
  * is that this file includes nothing from apps/.
  *
- * MENU_STUB_APPS is the TOTAL app count wanted (4 real + the rest stubs), so
- * MENU_STUB_APPS=12 appends eight. Spelled out one #if per entry rather than
+ * MENU_STUB_APPS is the TOTAL app count wanted (5 real + the rest stubs), so
+ * MENU_STUB_APPS=12 appends seven. Spelled out one #if per entry rather than
  * generated with a macro: a static initialiser list is exactly the place
- * where clever expansion stops being readable, and eight lines that say what
+ * where clever expansion stops being readable, and seven lines that say what
  * they do cost nothing. */
 #if MENU_STUB_APPS
 extern const app_t g_stubApps[];
@@ -56,32 +57,33 @@ extern const app_t g_stubApps[];
 
 // Appended, not inserted: index 0 is what boots (app.h) and every emulator
 // test in emulator/wasm/tests/ addresses apps by their index in this array
-// (APP_DRAW = 1 and so on), so a new app goes on the end.
+// (APP_DRAW = 1 and so on), so a new app goes on the end. The bubble level
+// (firmware/apps/level.c) reads app_frame_t.tilt like every other app, so
+// there is no longer a reason for it to sit outside this table behind a
+// flag - see AGENTS.md's "The bubble level" section for the two blockers
+// that used to justify APPS_INCLUDE_LEVEL and why both are gone.
 const app_t *const g_apps[] = {
-    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp,
-#if MENU_STUB_APPS > 4
+    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp, &g_levelApp,
+#if MENU_STUB_APPS > 5
     &g_stubApps[0],
 #endif
-#if MENU_STUB_APPS > 5
+#if MENU_STUB_APPS > 6
     &g_stubApps[1],
 #endif
-#if MENU_STUB_APPS > 6
+#if MENU_STUB_APPS > 7
     &g_stubApps[2],
 #endif
-#if MENU_STUB_APPS > 7
+#if MENU_STUB_APPS > 8
     &g_stubApps[3],
 #endif
-#if MENU_STUB_APPS > 8
+#if MENU_STUB_APPS > 9
     &g_stubApps[4],
 #endif
-#if MENU_STUB_APPS > 9
+#if MENU_STUB_APPS > 10
     &g_stubApps[5],
 #endif
-#if MENU_STUB_APPS > 10
-    &g_stubApps[6],
-#endif
 #if MENU_STUB_APPS > 11
-    &g_stubApps[7],
+    &g_stubApps[6],
 #endif
 };
 const int g_appCount = sizeof(g_apps) / sizeof(g_apps[0]);
@@ -664,6 +666,7 @@ static app_tilt_t tilt_for_app(const tilt_reading_t *r, bool landscape) {
     app_tilt_t t;
     t.tiltDeg = r->tiltDeg;
     t.valid = r->valid;
+    t.coasting = r->coasting; // not affected by a rotation about the panel normal
     t.gz = r->gz;
     if (landscape) {
         t.gx = r->gy;

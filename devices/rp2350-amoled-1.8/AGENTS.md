@@ -3,13 +3,14 @@
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED in a
 small plastic puck.
 
-**One binary, three apps, a menu.** This is a single-binary runtime
+**One binary, five apps, a menu.** This is a single-binary runtime
 (`firmware/runtime/`) holding an app table (`firmware/apps/`): a stopwatch
-(`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw") and a
-countdown timer (`timer.c`). Switching apps is a function call, not a reboot:
-holding BOOT and PWR together until PWR's long-press verdict fires opens a
-picture menu (`menu.c`) to pick another app; the same chord closes it again.
-See `docs/decisions/0002-runtime-architecture.md` for why this replaced an
+(`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw"), a
+countdown timer (`timer.c`), Connect Four (`four.c`) and a bubble level
+(`level.c`). Switching apps is a function call, not a reboot: holding BOOT
+and PWR together until PWR's long-press verdict fires opens a picture menu
+(`menu.c`) to pick another app; the same chord closes it again. See
+`docs/decisions/0002-runtime-architecture.md` for why this replaced an
 earlier two-flash-slot, reboot-to-switch design (`store/`, now a crash-recovery
 fallback rather than how apps change).
 
@@ -171,9 +172,12 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
                       four.c (Connect Four for two people passing the puck,
                       slide a thumb and release to drop; nothing plays by
-                      itself), menu.c (the app picker: a grid of 112px
-                      cells filling the glass, all apps visible at once,
-                      press-drag-release to launch - decision 0013),
+                      itself), level.c (a bubble level: tip the puck, a dot
+                      slides downhill, hold it flat and a ring closes round
+                      it - reads app_frame_t.tilt like any other app, see
+                      "Which way is down" below), menu.c (the app picker: a
+                      grid of 112px cells filling the glass, all apps visible
+                      at once, press-drag-release to launch - decision 0013),
                       stubapps.c (empty unless the menu-stub define is
                       set; how that layout gets captured at six and twelve
                       apps, see its own header), digits.c
@@ -504,6 +508,26 @@ four here and reported a 28% rendering divergence that was a stale flash.
   cannot do anything about a lock held by a process that never exits.
 
 
+- **The QMI8658's low-pass filter is OFF, even though the driver looks like
+  it enables it.** `QMI8658_config_acc()` (`firmware/lib/QMI8658/QMI8658.c`,
+  around line 156) is called with `QMI8658Lpf_Enable`, builds the correct
+  `CTRL5` value from `A_LSP_MODE_3 | 0x01`, and then does `ctl_dada = 0x00;`
+  on line 196, the line before the write, so `CTRL5` is written 0.
+  `QMI8658_config_gyro()` has the identical shape (`ctl_dada = 0x00;` on line
+  258, right before its own `CTRL5` write). Found 2026-08-15 while writing
+  the bubble level; deliberately NOT fixed, because it is vendor code, the
+  shake detector's `JOLT_DEV_MG` was tuned against the signal as it actually
+  is, and changing it cannot be tested without a board. Consequence for
+  anything that reads the accelerometer: the part runs at a 1000 Hz ODR with
+  no filter and core1 samples it at 50 Hz, so the full 500 Hz noise
+  bandwidth folds into every sample. That is still only about 2.7 mg RMS
+  (0.15 degrees of apparent tilt) - a hand's own tremor is ten times that, so
+  the filtering that matters is in software either way (see "Which way is
+  down" below for what that software filter now is). Also worth knowing: the
+  gyroscope is configured and enabled by `QMI8658_init()` right alongside the
+  accelerometer, and this firmware never reads it - only
+  `QMI8658Register_Ax_L`'s six accelerometer bytes are ever pulled off the
+  part.
 - **We carry a patch to `AMOLED_1IN8_DisplayWindows`.** Upstream's DMA loop is
   `for (i = Ystart; i < Yend - 1; i++)`, which sends one row fewer than the
   window `SetWindows` just declared to the panel (it programs `Yend-1` as the
@@ -657,11 +681,20 @@ The five things worth knowing before you build on it:
 - **It is already in YOUR coordinates.** The runtime rotates it for
   landscape apps, exactly as `gfx_land_rect()` rotates their rectangles. Do
   not rotate it yourself.
-- **It is filtered, once, for everyone** (150ms time constant), so the
-  device feels the same in every app. Do not add your own smoothing; if the
-  feel is wrong, change the one constant in `tilt.h` and say why.
+- **It is filtered, once, for everyone** (an adaptive one-euro filter plus a
+  magnitude trust gate - `tilt.c`'s own header comment has the full
+  argument and every constant), so the device feels the same in every app.
+  Do not add your own smoothing; if the feel is wrong, change the constants
+  in `tilt.c` and say why. Ported here from the bubble level's own original
+  filter (it was the first app that needed real orientation and measured
+  the trade before there was a shared signal to hand it to); `level.c`
+  carries none of it any more.
 - **Check `valid`.** It is false before the first reading and if the IMU
   goes quiet, and a level drawn from an invalid reading is a confident lie.
+  `coasting` is a separate, narrower flag: true while the trust gate has
+  fully given up on the current sample (the device is being carried) and
+  gravity is holding its last belief rather than tracking - still safe to
+  draw, just not currently moving. No shipped app reads it yet.
 - **There is no magnetometer on this board.** The QMI8658 is a six-axis
   part, so this can tell you which way is DOWN and can never tell you which
   way is NORTH. A compass cannot be built here; see
@@ -750,6 +783,36 @@ Shake detection requires several jolts inside a rolling window rather than one
 big reading, because a single spike is indistinguishable from a firm tap. It is
 suppressed while a finger is down, and has a cooldown so one shake cannot erase
 twice. Erase is an animated wipe in 16 bands, not an instant blank.
+
+## The bubble level (`firmware/apps/level.c`)
+
+Tip the puck and a dot slides downhill; hold it flat and a grey target ring
+turns black and closes around it. No text, no numbers, no degrees: the whole
+verdict is one shape closing. It is in `g_apps[]` like every other app,
+reading `app_frame_t.tilt` the same way any orientation-aware app does (see
+"Which way is down" above) - it carries no accelerometer code of its own.
+
+It was built and tested behind `APPS_INCLUDE_LEVEL` before the shared
+orientation signal (`firmware/runtime/tilt.h`) and the grid menu (decision
+0013) both landed; both blockers it was written against are gone now, so the
+flag was removed and the app joined the table unconditionally.
+
+Level is 3 degrees from flat, with 0.6 degrees of hysteresis and a 250ms
+dwell, because a two-year-old holding a puck cannot hold half a degree and a
+band she can never reach reads as broken rather than as strict. Drawing
+recomputes every pixel of a repainted rectangle from the model rather than
+erasing and redrawing, so residue is impossible by construction rather than
+by bookkeeping (`emulator/wasm/tests/repro-level-bubble-residue.ts` asserts
+an incrementally updated screen is bit-identical to a freshly entered one
+after motion). Measured cost: 3.3% of the panel on an average drawing frame,
+12.2% on the one frame the verdict changes, nothing at all when still.
+
+```powershell
+bun run emulator/wasm/build.ts
+bun run emulator/wasm/tests/feature-level.ts
+bun run emulator/wasm/tests/repro-level-bubble-residue.ts
+bun tools/preview-level.ts     # preview/level-*.png
+```
 
 ## Capturing real handwriting
 

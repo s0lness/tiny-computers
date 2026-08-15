@@ -71,24 +71,82 @@
  * app-facing side: offering both is offering the divergence back, and the
  * app that picked "raw, for responsiveness" would be shipping the jitter.
  *
- * One-pole exponential filter, time constant TILT_TAU_MS = 150ms:
+ * WHAT THIS DEVICE'S OWN SENSOR ACTUALLY GIVES, measured while building the
+ * bubble level (firmware/apps/level.c) rather than assumed: the QMI8658's
+ * own low-pass filter is left OFF by a vendor driver bug (AGENTS.md's
+ * "Gotchas that bite"), so the part's 1000Hz output data rate folds its
+ * full noise bandwidth into every one of core1's 50Hz samples. That
+ * measures out to about 2.7mg RMS, 0.15 degrees of apparent tilt - not the
+ * problem, even aliased and unfiltered. The problem is that a hand is not a
+ * tripod: physiological tremor and wrist wobble put TENS of milli-g of real
+ * acceleration into the reading at 1-10Hz, which is one to five degrees of
+ * apparent tilt an accelerometer cannot tell apart from a genuine tip. A
+ * child's hand is worse than an adult's, not better.
  *
- *   filtered += (1 - exp(-dt / TAU)) * (sample - filtered)
+ * A FIXED ONE-POLE LOW PASS CANNOT SEPARATE THOSE TWO. A corner slow enough
+ * to hide hand tremor (around 1Hz) lags a deliberate tip by 150ms or more,
+ * which reads as the signal being stuck to the hand by a rubber band; a
+ * corner fast enough to feel immediate lets the tremor straight through,
+ * and a reading that shivers reads as broken rather than as sensitive.
+ * Neither end of that trade is acceptable, so this does not pick a point on
+ * it - it uses an ADAPTIVE corner (the "one euro" filter, Casiez et al.):
+ * smooth hard when the signal is barely moving, barely at all when it is
+ * moving fast. On top of that, a magnitude TRUST GATE, because a low pass
+ * cannot fix a different problem: an accelerometer measures gravity plus
+ * whatever else you are doing to it, and while the device is being carried
+ * the vector is not gravity and no amount of smoothing makes it gravity.
  *
- *   - at the board's 20ms IMU cadence (sensors.c's IMU_POLL_MS) that is a
- *     step of exactly 0.125, one eighth of the way to each new sample;
- *   - corner frequency 1/(2*pi*TAU) = 1.06Hz. Deliberate tilting is under
- *     1Hz and hand tremor is 5Hz and up, so tremor comes through about 5x
- *     smaller and broadband sensor noise about 4x smaller
- *     (sqrt(a/(2-a)) = 0.26 for a = 0.125);
- *   - the cost, stated rather than hidden: the signal LAGS THE HAND. A step
- *     reaches 63 percent in 150ms and 95 percent in 450ms. Too little
- *     filtering and a level's bubble buzzes; too much and it swims behind
- *     the hand. 150ms was chosen as the point where a bubble reads as
- *     liquid rather than as lag, and it has NOT been judged on the real
- *     device by a real hand yet. It is one constant, in one place, and the
- *     first person to hold a spirit level on the board should change it if
- *     it feels wrong.
+ *   TILT_FC_MIN_HZ = 0.9Hz    the corner at rest, tau ~= 177ms. At the
+ *                             board's 20ms cadence that is alpha ~= 0.083.
+ *                             A 4Hz tremor comes through at about a third
+ *                             of its amplitude - 30mg of wobble lands as
+ *                             roughly 9mg, half a degree.
+ *   TILT_BETA_HZ_PER_G_MS     Hz of extra corner per (g/ms) of measured
+ *   = 3000.0                  speed. A deliberate 15-degree tip over 400ms
+ *                             moves the reading at about 0.00065 g/ms,
+ *                             which lifts the corner to roughly 2.6Hz: tau
+ *                             61ms, four frames of lag, invisible to a
+ *                             hand. Deliberately not larger - beta is what
+ *                             lets a fast tremor argue its own way through
+ *                             the filter, and the correct guard against
+ *                             that is a small beta plus the low-passed
+ *                             derivative below, not a big beta with a
+ *                             deadband bolted on afterwards.
+ *   TILT_TAU_D_MS = 200ms     the corner used to smooth the derivative
+ *                             itself, which is what stops a 4Hz tremor from
+ *                             reading as "moving fast" and unlocking the
+ *                             filter it is supposed to be hidden by.
+ *   TILT_TRUST_FULL_G = 0.15  trust is 1.0 while |a| is within this of 1g -
+ *                             genuinely gravity, as far as this is
+ *                             concerned.
+ *   TILT_TRUST_NONE_G = 0.4   trust falls to 0.0 by the time |a| is this far
+ *                             from 1g - the device is being carried, and
+ *                             the estimate COASTS on what it last believed
+ *                             rather than following a lie. tilt_reading_t's
+ *                             `coasting` flag is exactly this: true while
+ *                             trust is fully zero.
+ *
+ * These are milli-g quantities restated in g because this file's gravity IS
+ * in g (see "WHAT IS PUBLISHED" above): TILT_BETA_HZ_PER_G_MS is 1000x the
+ * number that same trade would want in Hz-per-(milli-g/ms), because it
+ * multiplies a speed a thousand times smaller now that its units changed
+ * from milli-g to g, and TILT_TRUST_FULL_G/TILT_TRUST_NONE_G are 150mg and
+ * 400mg written as 0.15g and 0.4g. The corner-frequency and time constants
+ * (TILT_FC_MIN_HZ, TILT_TAU_D_MS) are Hz and ms, unaffected by that choice.
+ *
+ * This filter and every constant above were ported verbatim, in behaviour,
+ * from firmware/apps/level.c's own provisional filter (as of commit
+ * c00db2f) - the bubble level was the first app that needed real
+ * orientation and, lacking a published signal, measured this trade and
+ * built the filter this file now owns instead. The level itself carries
+ * none of this any more: it reads app_tilt_t like every other app.
+ *
+ * THE COST, STATED RATHER THAN HIDDEN: the signal still lags a deliberate
+ * tip near the resting corner (roughly TILT_FC_MIN_HZ's 177ms time
+ * constant) before BETA's adaptive term catches up with the hand's own
+ * speed. It has NOT been judged on the real device by a real hand yet. It
+ * is a handful of constants, in one place, and the first person to hold a
+ * spirit level on the board should change them if they feel wrong.
  *
  * The filter is stepped from dt, not from a fixed per-sample constant, on
  * purpose: the board samples every 20ms on core1, the emulator submits once
@@ -132,8 +190,8 @@
  * WHAT NO INSTRUMENT HERE CAN SEE (docs/decisions/0010's discipline: say
  * what is blind before writing the code, not after the bug):
  *   - the axis mapping, per the ritual above;
- *   - whether the filter's 150ms feels right in a hand, which is a
- *     judgement no emulator can make (emu_abi.h already says timing is not
+ *   - whether the adaptive filter's constants feel right in a hand, which is
+ *     a judgement no emulator can make (emu_abi.h already says timing is not
  *     real there, and the emulator's gravity is a perfectly still,
  *     perfectly unit vector with no tremor and no shake artifacts at all);
  *   - whether the part is level with the case. The IMU is soldered to the
@@ -179,6 +237,19 @@ typedef struct {
     // 0010 describes for a clock with an unset RTC. Check it.
     bool valid;
 
+    // True while the magnitude trust gate has fully given up on the current
+    // raw sample (the device is being carried, dropped, or shaken rather
+    // than held still) and the filtered vector is holding its last belief
+    // instead of tracking. See "FILTERING" above for the gate itself
+    // (TILT_TRUST_FULL_G / TILT_TRUST_NONE_G in tilt.c). Not the same
+    // condition as `valid`: a coasting reading is still the best guess this
+    // file has and is still safe to draw, it is just not currently being
+    // updated by the sensor. No app reads this yet; it is published because
+    // an app that wants to say so (dim a level, freeze a verdict) needs
+    // somewhere to read it from, and that has to be here, next to the gate
+    // that computes it, not re-derived downstream.
+    bool coasting;
+
     // RAW, unfiltered, in the QMI8658's OWN axes, for the axis ritual and
     // for devlink's TILT line. Deliberately not carried into app_frame_t:
     // an app that reads device axes is an app that has to know how the
@@ -187,13 +258,15 @@ typedef struct {
     float rawX, rawY, rawZ;
 } tilt_reading_t;
 
-// The filter's time constant, and how long a published reading stays
-// trustworthy without a fresh sample. TILT_STALE_MS is 25 missed samples at
-// the board's 20ms cadence: long enough that a couple of i2c timeouts
-// (sensors_stats_t.imuTimeouts) do not blink an app's display, short enough
-// that a genuinely dead part is visible rather than frozen at its last
-// pose.
-#define TILT_TAU_MS   150.0f
+// How long a published reading stays trustworthy without a fresh sample.
+// 25 missed samples at the board's 20ms cadence: long enough that a couple
+// of i2c timeouts (sensors_stats_t.imuTimeouts) do not blink an app's
+// display, short enough that a genuinely dead part is visible rather than
+// frozen at its last pose. The filter's own constants
+// (TILT_FC_MIN_HZ, TILT_BETA_HZ_PER_G_MS, TILT_TAU_D_MS,
+// TILT_TRUST_FULL_G, TILT_TRUST_NONE_G) live in tilt.c, next to the filter
+// that uses them, and are documented in full in the "FILTERING" section
+// above.
 #define TILT_STALE_MS 500u
 
 /* ---- the producer side --------------------------------------------------

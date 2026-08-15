@@ -113,6 +113,7 @@ const SOURCES = [
   join(FIRMWARE, "apps", "menu.c"),
   join(FIRMWARE, "apps", "timer.c"),
   join(FIRMWARE, "apps", "four.c"),
+  join(FIRMWARE, "apps", "level.c"),
   join(FIRMWARE, "apps", "shapes.c"),
   // An empty translation unit unless the menu-stub define is set, and
   // deliberately absent from firmware/CMakeLists.txt so a stub app cannot

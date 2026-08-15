@@ -7,7 +7,7 @@
  * (docs/decisions/0003): it is compiled into the board's image
  * (firmware/CMakeLists.txt) and into emu.wasm (emulator/wasm/build.ts) from
  * this one source, so the emulator's tilt is the board's tilt - the same
- * filter with the same time constant, the same hysteresis, the same
+ * filter with the same constants, the same hysteresis, the same
  * device-to-panel mapping - rather than a browser-side reimplementation
  * that agrees on the day it is written and drifts from the next commit.
  * That means: no pico-sdk, nothing under hardware/ or pico/, nothing but
@@ -18,6 +18,10 @@
 #include <math.h>
 
 #define TILT_RAD_TO_DEG 57.29577951308232f
+
+// M_PI is not guaranteed under -std=c11, same reason level.c, menu.c and
+// timer.c each carry their own.
+#define TILT_PI 3.14159265358979323846f
 
 /* ---- device axes to panel axes -------------------------------------------
  *
@@ -71,6 +75,30 @@ static void device_to_panel(float dx, float dy, float dz,
 #define TILT_UP_MIN_G     0.35f
 #define TILT_UP_DOMINANCE 1.3f
 
+/* ---- the filter's constants -----------------------------------------------
+ *
+ * One euro (Casiez et al.) plus a magnitude trust gate. See tilt.h's
+ * "FILTERING" section for the full argument and the measurement it is
+ * built on; the short version is in each constant's own line below. Ported
+ * verbatim, in behaviour, from firmware/apps/level.c's own provisional
+ * filter (commit c00db2f) - the level measured this trade before there was
+ * a shared signal to hand it to, and this file is that hand-off.
+ */
+#define TILT_FC_MIN_HZ        0.9f    // corner at rest
+#define TILT_BETA_HZ_PER_G_MS 3000.0f // extra corner per unit of measured speed
+#define TILT_TAU_D_MS       200.0f    // corner for smoothing the derivative itself
+#define TILT_TRUST_FULL_G     0.15f   // |a-1g| below this: fully trusted
+#define TILT_TRUST_NONE_G     0.4f    // |a-1g| at or above this: fully coasting
+
+// alpha for a one-pole low pass with corner fc (Hz) at a dt (ms) step.
+// tau = 1/(2*pi*fc); alpha = dt/(tau+dt). No expf: exact enough (under a
+// percent off the exponential form at these rates - measured when this
+// lived in level.c).
+static float lp_alpha(float fcHz, float dtMs) {
+    float tauMs = 1000.0f / (2.0f * TILT_PI * fcHz);
+    return dtMs / (tauMs + dtMs);
+}
+
 /* ---- state owned by the submitting core ----------------------------------
  *
  * On the board every one of these is touched only by core1, inside
@@ -80,6 +108,8 @@ static void device_to_panel(float dx, float dy, float dz,
 static bool  s_haveSample = false;
 static uint32_t s_lastMs = 0;
 static float s_fx = 0.0f, s_fy = 0.0f, s_fz = 1.0f; // filtered, panel axes
+static float s_rawPrevX = 0.0f, s_rawPrevY = 0.0f, s_rawPrevZ = 1.0f; // raw, for the derivative
+static float s_dgx = 0.0f, s_dgy = 0.0f, s_dgz = 0.0f; // low-passed derivative, g/ms (one euro)
 static uint8_t s_up = TILT_UP_TOP;
 
 /* ---- publication: one snapshot, one writer, one reader --------------------
@@ -122,14 +152,17 @@ typedef struct {
     uint32_t stampMs;
     uint8_t up;
     bool haveSample;
+    bool coasting;
 } tilt_pub_t;
 
 static volatile uint32_t s_pubSeq = 0;
-static tilt_pub_t s_pub = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false };
+static tilt_pub_t s_pub = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false, false };
 
 void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs) {
     float px, py, pz;
     device_to_panel(dx, dy, dz, &px, &py, &pz);
+
+    bool coasting = false;
 
     if (!s_haveSample) {
         // First sample lands whole rather than fading in from the (0,0,1)
@@ -138,16 +171,58 @@ void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs) {
         s_fx = px;
         s_fy = py;
         s_fz = pz;
+        s_rawPrevX = px;
+        s_rawPrevY = py;
+        s_rawPrevZ = pz;
+        s_dgx = s_dgy = s_dgz = 0.0f;
         s_haveSample = true;
     } else {
         uint32_t dtMs = nowMs - s_lastMs;
         if (dtMs > 1000u) dtMs = 1000u; // a gap this long (a paused emulator
                                          // tab, a stalled bus) means the old
                                          // value is meaningless anyway, and
-                                         // the clamp keeps alpha at 1
-                                         // rather than letting expf see a
-                                         // wild argument.
-        float alpha = 1.0f - expf(-(float)dtMs / TILT_TAU_MS);
+                                         // the clamp keeps every alpha below
+                                         // sane bounds rather than letting a
+                                         // huge dt dominate the filter.
+        if (dtMs < 1u) dtMs = 1u;       // floor for the derivative's divide
+        float dtF = (float)dtMs;
+
+        // Low-passed derivative of the RAW signal (one euro), so a fast
+        // tremor cannot masquerade as a fast intentional move and unlock
+        // the filter that is meant to be hiding it. TILT_TAU_D_MS is the
+        // corner for this smoothing step specifically, separate from the
+        // main filter's own adaptive corner below.
+        float aD = dtF / (TILT_TAU_D_MS + dtF);
+        float ddx = (px - s_rawPrevX) / dtF;
+        float ddy = (py - s_rawPrevY) / dtF;
+        float ddz = (pz - s_rawPrevZ) / dtF;
+        s_rawPrevX = px;
+        s_rawPrevY = py;
+        s_rawPrevZ = pz;
+        s_dgx += aD * (ddx - s_dgx);
+        s_dgy += aD * (ddy - s_dgy);
+        s_dgz += aD * (ddz - s_dgz);
+
+        // The corner widens with measured speed: barely moving, smooth
+        // hard (TILT_FC_MIN_HZ); moving fast, barely at all.
+        float speed = sqrtf(s_dgx * s_dgx + s_dgy * s_dgy + s_dgz * s_dgz);
+        float alpha = lp_alpha(TILT_FC_MIN_HZ + TILT_BETA_HZ_PER_G_MS * speed, dtF);
+
+        // Magnitude trust gate: 1.0 while |a| is near one g (this is
+        // genuinely gravity), falling to 0.0 as the device is picked up,
+        // dropped or shaken - a low pass alone cannot fix this, because the
+        // reading itself has stopped being gravity.
+        float mag = sqrtf(px * px + py * py + pz * pz);
+        float off = fabsf(mag - 1.0f);
+        float trust = 1.0f;
+        if (off >= TILT_TRUST_NONE_G) {
+            trust = 0.0f;
+        } else if (off > TILT_TRUST_FULL_G) {
+            trust = 1.0f - (off - TILT_TRUST_FULL_G) / (TILT_TRUST_NONE_G - TILT_TRUST_FULL_G);
+        }
+        alpha *= trust;
+        coasting = (trust <= 0.0f);
+
         s_fx += alpha * (px - s_fx);
         s_fy += alpha * (py - s_fy);
         s_fz += alpha * (pz - s_fz);
@@ -185,6 +260,7 @@ void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs) {
     next.stampMs = nowMs;
     next.up = s_up;
     next.haveSample = true;
+    next.coasting = coasting;
 
     s_pubSeq++;            // odd: a write is in progress
     TILT_BARRIER();
@@ -196,7 +272,7 @@ void tilt_submit_device_g(float dx, float dy, float dz, uint32_t nowMs) {
 void tilt_read(uint32_t nowMs, tilt_reading_t *out) {
     // Reader-owned, so a retry exhaustion (see the seqlock comment) has
     // something consistent to fall back on rather than a torn read.
-    static tilt_pub_t lastGood = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false };
+    static tilt_pub_t lastGood = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0u, TILT_UP_TOP, false, false };
 
     for (int attempt = 0; attempt < 4; attempt++) {
         uint32_t before = s_pubSeq;
@@ -218,6 +294,7 @@ void tilt_read(uint32_t nowMs, tilt_reading_t *out) {
     out->rawX = lastGood.rawX;
     out->rawY = lastGood.rawY;
     out->rawZ = lastGood.rawZ;
+    out->coasting = lastGood.coasting;
     // Unsigned wrap is fine and intended: nowMs and stampMs come from the
     // same clock, so the difference is small and correct across the 32-bit
     // rollover the same way every other elapsed-time comparison in this

@@ -100,8 +100,10 @@
  *       "longPressMs": 1500 }
  *   ],
  *   "touch":   { "points": 1 },
- *   "sensors": [ { "id": "shake", "kind": "event" } ],
- *   "apps":    [ "chrono", "draw", "timer" ],
+ *   "sensors": [ { "id": "shake", "kind": "event" },
+ *                { "id": "gravity", "kind": "gravity", "label": "tilt",
+ *                  "unit": "g" } ],
+ *   "apps":    [ "chrono", "draw", "timer", "four", "level" ],
  *   "gestures": [
  *     { "id": "menu", "label": "menu",
  *       "how": "Hold BOOT, then also hold PWR. Keep both held until PWR "
@@ -268,6 +270,13 @@ void emu_sensor_event(int index);
  * app that looks smooth in this page can still jitter on the board, and
  * tilt.h's filter constant can only be judged with a real hand on real
  * hardware. Same category as the timing and input-defect caveats above.
+ *
+ * KEEPING THE EMULATOR HONEST, a second way: a float coming from JavaScript
+ * can trivially be a value no accelerometer could produce. The
+ * implementation clamps and quantises to what the real part actually
+ * delivers - for this device's QMI8658 that is +-8 g of range and 0.244 mg
+ * per count - so a test cannot pass on a reading the hardware is physically
+ * incapable of reporting. See emu_shim.c.
  */
 void emu_sensor_vector(int index, float x, float y, float z);
 
@@ -284,7 +293,9 @@ void emu_sensor_vector(int index, float x, float y, float z);
  * instrument validates only what is upstream of where it reads).
  *
  * field: 0 gx, 1 gy, 2 gz, 3 tiltDeg, 4 up (0 top, 1 right, 2 bottom,
- * 3 left), 5 valid (0 or 1). Returns 0 for an unknown field.
+ * 3 left), 5 valid (0 or 1), 6 coasting (0 or 1 - tilt.h's magnitude trust
+ * gate has fully given up on the current raw sample and gx/gy/gz are
+ * holding their last belief). Returns 0 for an unknown field.
  *
  * What it still cannot see, said here rather than discovered later: whether
  * the axis mapping matches the physical case. No software oracle knows

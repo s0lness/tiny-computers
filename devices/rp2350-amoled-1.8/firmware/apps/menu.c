@@ -1486,15 +1486,23 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     } else if (app == &g_fourApp) {
         draw_icon_four(ox, oy, color);
     }
+    // g_levelApp (index 4, always in the table - see runtime_core.c) has no
+    // case above and none is added here: it falls through to the "draws
+    // nothing" comment below, same as any other app without a matching
+    // icon. That is a real, silent gap in the menu today, not a fixture
+    // artifact; recorded rather than papered over with a borrowed icon.
 #if MENU_STUB_APPS
-    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the fourth in
-    // a stub build borrows one of the four real icons, cycling, so a capture
-    // at six or twelve apps shows the LAYOUT under real ink rather than a
-    // grid of holes - a layout is judged against what will actually sit in
-    // it. Recursion is one level deep by construction: g_apps[k & 3] is
-    // always one of the four real apps, which take the branches above.
+    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the fifth in
+    // a stub build borrows one of the four icon-bearing real apps, cycling,
+    // so a capture at six or twelve apps shows the LAYOUT under real ink
+    // rather than a grid of holes - a layout is judged against what will
+    // actually sit in it. Starts at k=5, not 4: index 4 is the level, which
+    // has no icon either and must fall through to the same silent gap a
+    // real build gives it, not borrow one. Recursion is one level deep by
+    // construction: g_apps[k & 3] is always one of chrono/sketch/timer/four,
+    // which take the branches above.
     else {
-        for (int k = 4; k < g_appCount; k++) {
+        for (int k = 5; k < g_appCount; k++) {
             if (app == g_apps[k]) { draw_icon_for(g_apps[k & 3], ox, oy, color); return; }
         }
     }

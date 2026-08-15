@@ -130,10 +130,11 @@ function buildGravityControl(
     emu.emu_sensor_vector!(index, x, y, z);
     onVector?.(sensor, index, x, y, z);
     // The COMMANDED pose, which is not the same thing as what the app is
-    // seeing: the firmware filters it (tilt.h, 150ms), so the app's own
-    // value lags this by design. Anything that has to assert on what the
-    // app actually received reads emu_tilt() instead, and the headless test
-    // (emulator/wasm/tests/feature-tilt.ts) is where that lives.
+    // seeing: the firmware filters it (tilt.h's adaptive filter), so the
+    // app's own value lags this by design. Anything that has to assert on
+    // what the app actually received reads emu_tilt() instead, and the
+    // headless test (emulator/wasm/tests/feature-tilt.ts) is where that
+    // lives.
     readout.textContent = `tip ${tipDeg}° roll ${rollDeg}°`;
   };
 

@@ -20,9 +20,10 @@
 //   - whether the device-to-panel mapping matches the physical case. No
 //     software oracle knows which way is up. tilt.h's on-board ritual is
 //     the only thing that can settle it, and it needs a hand.
-//   - whether 150ms of filtering FEELS right. The emulator's gravity is
-//     perfectly still and exactly unit length; a real accelerometer in a
-//     child's hand is neither (emu_abi.h's honesty section).
+//   - whether the adaptive filter's constants FEEL right. The emulator's
+//     gravity is perfectly still and exactly unit length; a real
+//     accelerometer in a child's hand is neither (emu_abi.h's honesty
+//     section).
 //   - the staleness path (tilt.h's TILT_STALE_MS). emu_tick() submits a
 //     sample every frame by construction, so "the IMU went quiet" cannot be
 //     reproduced here at all; on the board it is what makes an app show a
@@ -43,10 +44,12 @@ const UP_BOTTOM = 2;
 const UP_LEFT = 3;
 const UP_NAME = ["TOP", "RIGHT", "BOTTOM", "LEFT"];
 
-// tilt.h's own constant. Asserted against, not just quoted: if the filter's
-// time constant is ever changed, this file should fail and be updated with
-// a reason, rather than quietly measuring whatever the new value is.
-const TAU_MS = 150;
+// How long a step is held before this file calls the filter "settled" -
+// not one of tilt.h's own constants any more (the adaptive filter has
+// several, not one time constant), just a duration comfortably past all of
+// them for a step this hard (see section 3 below for what "this hard"
+// means for an adaptive corner).
+const STEP_MS = 150;
 
 let passCount = 0;
 let failCount = 0;
@@ -166,39 +169,57 @@ advance(1000);
 }
 
 // ---------------------------------------------------------------------------
-// 3. The filter: one time constant of a step is 63 percent of it, and the
-//    answer does not depend on how many ticks that 150ms was cut into.
-//
-//    That second half is the point. The board samples at a fixed 20ms on
-//    core1; the browser ticks at whatever the tab manages; a game's frame
-//    costs anywhere from 27us to 12ms of push time. A filter stepped by a
-//    fixed per-sample constant would settle at a different speed on each,
-//    which is the "speed must not depend on push cost" trap decision 0010
-//    names for the game loop, hiding inside a sensor.
+// 3. The filter. tilt.h's adaptive corner (one euro, ported here from the
+//    bubble level's own original filter) is not a fixed one-pole any more,
+//    so there is no single "one time constant is 63 percent" answer to
+//    assert - the corner WIDENS as the derivative sees real motion, by
+//    design (tilt.h's "FILTERING" section), so a step tracks faster than a
+//    fixed pole ever would. What still has to hold, and does, is that the
+//    answer does not depend on how many ticks the same elapsed time was cut
+//    into: the board samples at a fixed 20ms on core1; the browser ticks at
+//    whatever the tab manages; a game's frame costs anywhere from 27us to
+//    12ms of push time. A filter stepped by a fixed per-sample constant
+//    would settle at a different speed on each, which is the "speed must
+//    not depend on push cost" trap decision 0010 names for the game loop,
+//    hiding inside a sensor.
 // ---------------------------------------------------------------------------
 {
   dev.switchTo(APP_DRAW); // portrait: no rotation between panel and app space
   advance(600); // let the switch and the flat pose settle
 
   dev.gravity(0, 1, 0); // stand it upright, portrait, top edge up
-  advance(TAU_MS, 10); // one time constant, in 15 ticks
-  const coarseSteps = dev.tilt();
+  advance(16, 16); // one board-cadence tick
+  const oneTick = dev.tilt();
   check(
-    "one time constant of a step lands at 63 percent of it",
-    near(coarseSteps.gy, 0.632, 0.02),
-    `gy=${coarseSteps.gy.toFixed(3)} after ${TAU_MS}ms (expected 0.632)`
+    "a hard step already moves most of the way within one board-cadence tick",
+    oneTick.gy > 0.5,
+    `gy=${oneTick.gy.toFixed(3)} after ~16ms (a fixed 150ms one-pole would read about 0.10 here)`
   );
 
-  // Same physical 150ms, cut into 3 ticks instead of 15.
   dev.gravity(0, 0, 1);
   advance(2000); // back to flat, fully settled
   dev.gravity(0, 1, 0);
-  advance(TAU_MS, 50);
-  const fewSteps = dev.tilt();
+  advance(STEP_MS, 10); // 150ms, in 15 fine ticks
+  const fineSteps = dev.tilt();
   check(
-    "the same 150ms in 3 ticks lands in the same place as in 15",
-    near(fewSteps.gy, coarseSteps.gy, 0.005),
-    `${fewSteps.gy.toFixed(4)} vs ${coarseSteps.gy.toFixed(4)}`
+    `within ${STEP_MS}ms, fine ticks, the step is essentially settled`,
+    near(fineSteps.gy, 1.0, 0.001),
+    `gy=${fineSteps.gy.toFixed(5)}`
+  );
+
+  // Same physical 150ms, cut into 3 ticks instead of 15: a coarser sample
+  // rate gives the derivative a cruder finite difference to work from, so
+  // the two answers are not asserted BIT-identical - only close, and closer
+  // than the gap between "barely moved" and "settled" by a wide margin.
+  dev.gravity(0, 0, 1);
+  advance(2000);
+  dev.gravity(0, 1, 0);
+  advance(STEP_MS, 50);
+  const coarseSteps = dev.tilt();
+  check(
+    "the same 150ms cut into 3 ticks lands within 1% of the same 150ms cut into 15",
+    near(coarseSteps.gy, fineSteps.gy, 0.01),
+    `${coarseSteps.gy.toFixed(4)} vs ${fineSteps.gy.toFixed(4)}`
   );
 
   advance(2000);
