@@ -15,10 +15,14 @@
  *
  * So the firmware itself is built with more apps in it, and the capture
  * comes out of the real menu_enter(). The firmware has since grown to
- * eleven real apps (chrono, sketch, timer, four, level, clock, morpion,
- * dino, bowling, tiltball, breakout - the last four merged together
- * 2026-08-15), which is one short of decision 0013's twelve-app ceiling -
- * this file shrank to match, one stub instead of seven.
+ * twelve real apps (chrono, sketch, timer, four, level, clock, morpion,
+ * dino, bowling, tiltball, breakout, tables), which IS decision 0013's
+ * twelve-app ceiling - reached exactly by tables.c
+ * (docs/decisions/0013's own "twelve is the owner's whole list"), so a
+ * twelve-app capture no longer needs a stub at all. What is left for this
+ * file to be useful for is a THIRTEENTH app, past the ceiling, which
+ * decision 0013 says needs a second design - this stays wired for that,
+ * shrunk to nothing else.
  *
  * COMPILED OUT BY DEFAULT AND ABSENT FROM THE BOARD BUILD. Everything below
  * is inside `#if MENU_STUB_APPS`, so with the define unset this is an empty
@@ -26,13 +30,13 @@
  * so a stub app cannot reach a uf2 even by accident. The emulator build
  * lists it unconditionally and it costs nothing there either. To use it:
  *
- *   EMU_EXTRA_DEFINES=-DMENU_STUB_APPS=12 bun run emulator/wasm/build.ts
+ *   EMU_EXTRA_DEFINES=-DMENU_STUB_APPS=13 bun run emulator/wasm/build.ts
  *
  * MENU_STUB_APPS is the TOTAL app count wanted, not the number of stubs:
- * runtime_core.c appends (MENU_STUB_APPS - 11) of these to the eleven real
+ * runtime_core.c appends (MENU_STUB_APPS - 12) of these to the twelve real
  * apps. That spelling was chosen because the number the reader cares about
- * is "twelve apps", and a build flag that says 1 while the screenshot is
- * called twelve is one subtraction away from a mislabelled capture, which
+ * is "thirteen apps", and a build flag that says 1 while the screenshot is
+ * called thirteen is one subtraction away from a mislabelled capture, which
  * is a mistake tools/preview-menu-icons.ts has already made once (see its
  * comment on the file called "menu-icon-timer" that was a picture of
  * Connect Four).

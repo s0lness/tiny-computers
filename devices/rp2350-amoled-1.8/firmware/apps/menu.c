@@ -64,6 +64,7 @@ extern const app_t g_dinoApp;
 extern const app_t g_bowlingApp;
 extern const app_t g_tiltballApp;
 extern const app_t g_breakoutApp;
+extern const app_t g_tablesApp;
 
 /* =====================================================================
  * THE LAYOUT. Landscape coordinates, LAND_W x LAND_H = 448 x 368.
@@ -1574,6 +1575,40 @@ static void draw_icon_level(int ox, int oy, uint16_t color) {
 }
 
 /* ---------------------------------------------------------------------
+ * The TABLES icon: a bowed multiply mark, "x" - the one glyph that reads
+ * as multiplication without a word, at any age, and the app itself IS a
+ * multiplication drill, so this is the rare icon that gets to be a literal
+ * thumbnail rather than a generic pictogram (chrono's dial and clock's
+ * clock-face are both deliberately generic instead - see those icons' own
+ * comments for why).
+ *
+ * NOT Lucide, for the same reason as level/clock/four/morpion beside it:
+ * Lucide's own "x" glyph is a UI close/dismiss mark, the wrong semantic to
+ * borrow just because the silhouette happens to match - decision 0009's
+ * exception covers converting a Lucide source that means the same thing,
+ * not reusing a shape that means something else. Back to that document's
+ * original rule, the float brush, same footing as the other float-brush
+ * icons in this row: two capsule-tapered strokes, each bowed slightly
+ * rather than left dead straight, so it reads as ink drawn by hand rather
+ * than a computed X - the SAME mark tables.c itself draws between its two
+ * factors is deliberately left straight there (see that file's own
+ * draw_icon_multiply comment: small, utilitarian, read up close while
+ * she is already looking right at it), but an ICON is judged at a glance
+ * from across a room, decision 0009's own standard for everything in this
+ * file, so it gets the bow.
+ * ------------------------------------------------------------------- */
+static void draw_icon_tables(int ox, int oy, uint16_t color) {
+    float cx = (float)ox + 48.0f, cy = (float)oy + 48.0f;
+    float reach = 30.0f, bow = 4.0f;
+    shapes_fill_tapered_quad_aa_land(cx - reach, cy - reach, LUCIDE_STROKE_HALF,
+                                      cx + bow, cy - bow,
+                                      cx + reach, cy + reach, LUCIDE_STROKE_HALF, color);
+    shapes_fill_tapered_quad_aa_land(cx - reach, cy + reach, LUCIDE_STROKE_HALF,
+                                      cx + bow, cy + bow,
+                                      cx + reach, cy - reach, LUCIDE_STROKE_HALF, color);
+}
+
+/* ---------------------------------------------------------------------
  * The CLOCK icon: a ring, and two hands meeting at its centre.
  *
  * The universal clock-face pictogram - the same silhouette Lucide's own
@@ -1841,22 +1876,25 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
         draw_icon_tiltball(ox, oy, color);
     } else if (app == &g_breakoutApp) {
         draw_icon_breakout(ox, oy, color);
+    } else if (app == &g_tablesApp) {
+        draw_icon_tables(ox, oy, color);
     }
     // Every real app (chrono, sketch, timer, four, level, clock, morpion,
-    // dino, bowling, tiltball, breakout - eleven, the same eleven
-    // runtime_core.c's g_apps[] declares) now has a branch above; there is
-    // no silent icon gap left for a real build.
+    // dino, bowling, tiltball, breakout, tables - twelve, the same twelve
+    // runtime_core.c's g_apps[] declares, decision 0013's own ceiling) now
+    // has a branch above; there is no silent icon gap left for a real
+    // build.
 #if MENU_STUB_APPS
-    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the eleventh
-    // in a stub build borrows one of the eleven real, icon-bearing apps,
-    // cycling, so a capture at twelve apps shows the LAYOUT under real ink
-    // rather than a grid of holes - a layout is judged against what will
-    // actually sit in it. Recursion is one level deep by construction:
-    // g_apps[k % 11] is always one of the eleven real apps, which take the
-    // branches above.
+    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the twelfth
+    // in a stub build borrows one of the twelve real, icon-bearing apps,
+    // cycling, so a capture past the ceiling shows the LAYOUT under real
+    // ink rather than a grid of holes - a layout is judged against what
+    // will actually sit in it. Recursion is one level deep by
+    // construction: g_apps[k % 12] is always one of the twelve real apps,
+    // which take the branches above.
     else {
-        for (int k = 11; k < g_appCount; k++) {
-            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 11], ox, oy, color); return; }
+        for (int k = 12; k < g_appCount; k++) {
+            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 12], ox, oy, color); return; }
         }
     }
 #endif

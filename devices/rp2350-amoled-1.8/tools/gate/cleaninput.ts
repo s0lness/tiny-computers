@@ -53,6 +53,8 @@ export const CLEAN_INPUT_BASELINE: Record<string, string> = {
     "statement of what the bowling app is; the dropout half is repro-touch-dropout-bowling-throw.ts",
   "feature-sketch-palette.ts":
     "statement of what the palette is; the dropout half is repro-touch-dropout-palette-open.ts",
+  "feature-tables.ts":
+    "statement of what multiplication-tables practice is; the dropout/jitter half is repro-touch-dropout-tables.ts",
   "repro-arena-not-zeroed.ts":
     "about the arena on app switch, not about a gesture: the touch here is a way to dirty state, and controller noise would only make the dirtying less certain",
   "repro-switch-input.ts":

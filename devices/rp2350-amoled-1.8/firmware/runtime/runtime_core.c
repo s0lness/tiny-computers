@@ -41,19 +41,27 @@ extern const app_t g_dinoApp;
 extern const app_t g_bowlingApp;
 extern const app_t g_tiltballApp;
 extern const app_t g_breakoutApp;
+// tables: multiplication-tables practice (firmware/apps/tables.c), the
+// twelfth app - decision 0013's own ceiling, reached exactly rather than
+// approached (see that file's own header for the numpad/loupe design this
+// app needed to fit inside the remaining budget).
+extern const app_t g_tablesApp;
 extern const app_t g_menuApp;
 extern void menu_set_return_app(int index);
 
 /* SCREENSHOT FIXTURE, compiled out by default. See apps/stubapps.c for the
  * whole argument; in one line: the menu's layout has to be judged at six and
- * twelve apps and this firmware declares eleven, so the emulator build can
- * be told to append do-nothing apps and the capture then comes out of the
- * real menu_enter() instead of a script re-implementing it. Declared with a
- * bare extern, the same way g_menuApp above is, because runtime_core.h's
- * contract is that this file includes nothing from apps/.
+ * twelve apps, and this firmware now declares twelve real ones outright -
+ * decision 0013's own ceiling - so a twelve-app capture no longer needs a
+ * stub at all (see tools/preview-menu-grid.ts). The fixture stays wired for
+ * whatever comes AFTER twelve (decision 0013's "past that something has to
+ * be hidden"), which is why the guard below still exists rather than being
+ * deleted outright. Declared with a bare extern, the same way g_menuApp
+ * above is, because runtime_core.h's contract is that this file includes
+ * nothing from apps/.
  *
- * MENU_STUB_APPS is the TOTAL app count wanted (11 real + the rest stubs),
- * so MENU_STUB_APPS=12 appends one. Spelled out one #if per entry rather
+ * MENU_STUB_APPS is the TOTAL app count wanted (12 real + the rest stubs),
+ * so MENU_STUB_APPS=13 appends one. Spelled out one #if per entry rather
  * than generated with a macro: a static initialiser list is exactly the
  * place where clever expansion stops being readable, and a few lines that
  * say what they do cost nothing. */
@@ -73,14 +81,15 @@ extern const app_t g_stubApps[];
 // APPS_INCLUDE_LEVEL, and runtime_core.h's git history for APP_INDEX_CLOCK,
 // the clock's own now-removed equivalent (it existed only because appending
 // to this table used to move every menu column; decision 0013's grid
-// replaced that layout, so the reason is gone). Eleven real apps is still
-// one short of decision 0013's twelve-app ceiling, so the grid absorbs
-// this without narrowing any target - see tools/gate/run.ts's
-// app-count-ceiling rule, which would have failed loudly if it did not.
+// replaced that layout, so the reason is gone). Twelve real apps, with
+// tables.c appended here, IS decision 0013's own ceiling - the grid absorbs
+// it at 112x112 cells, the smallest the grid ever gets, without narrowing
+// any target further - see tools/gate/run.ts's app-count-ceiling rule,
+// which would fail loudly on a thirteenth.
 const app_t *const g_apps[] = {
     &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp, &g_levelApp, &g_clockApp, &g_morpionApp,
-    &g_dinoApp, &g_bowlingApp, &g_tiltballApp, &g_breakoutApp,
-#if MENU_STUB_APPS > 11
+    &g_dinoApp, &g_bowlingApp, &g_tiltballApp, &g_breakoutApp, &g_tablesApp,
+#if MENU_STUB_APPS > 12
     &g_stubApps[0],
 #endif
 };

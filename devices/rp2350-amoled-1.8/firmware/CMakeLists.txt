@@ -145,6 +145,11 @@ target_sources(main PRIVATE
     apps/bowling.c
     apps/tiltball.c
     apps/breakout.c
+    # Multiplication-tables practice (6/7/8 tables), the twelfth app -
+    # decision 0013's own ceiling. Owns no hardware; reads plain touch
+    # (an iOS-keyboard-style numpad with a loupe, see the file's own
+    # header) like four.c/morpion.c do.
+    apps/tables.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into
