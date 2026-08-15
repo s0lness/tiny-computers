@@ -3,11 +3,12 @@
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED in a
 small plastic puck.
 
-**One binary, five apps, a menu.** This is a single-binary runtime
+**One binary, seven apps, a menu.** This is a single-binary runtime
 (`firmware/runtime/`) holding an app table (`firmware/apps/`): a stopwatch
 (`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw"), a
-countdown timer (`timer.c`), Connect Four (`four.c`) and a bubble level
-(`level.c`). Switching apps is a function call, not a reboot: holding BOOT
+countdown timer (`timer.c`), Connect Four (`four.c`), a bubble level
+(`level.c`), a clock (`clock.c`) and morpion (`morpion.c`, noughts and
+crosses). Switching apps is a function call, not a reboot: holding BOOT
 and PWR together until PWR's long-press verdict fires opens a picture menu
 (`menu.c`) to pick another app; the same chord closes it again. See
 `docs/decisions/0002-runtime-architecture.md` for why this replaced an
@@ -151,6 +152,23 @@ Consequences worth having in mind before laying anything out:
   contact patch 15 times wider, because the controller reports a centroid. It
   reports one for a child's finger too, so drawing works; tapping a small
   target is what does not.
+- **A finger also HIDES what it is choosing, and that is a separate problem
+  from hitting it.** Connect Four answered it with a full-height chute washing
+  the whole column, well outside the ~75px a thumb covers; morpion generalises
+  that to two axes, lighting the candidate's whole column AND its whole row so
+  the two arms cross on the cell. That reads under a thumb for an arithmetic
+  reason worth reusing: a fingertip is one blob, so it can eat 75px out of the
+  middle of one band and 75px out of the middle of the other and still leave
+  four arms reaching to four edges. Anything that shows a selection UNDER the
+  hand is not showing it.
+
+**The menu row is full at five apps.** `ICON_W` is 96 and a column is
+`LAND_W/g_appCount`: 149 at three, 112 at four, **89 at five**, where the icon
+box is wider than the column it belongs to. `menu.c` handles that correctly
+(it redraws the neighbouring icons a column's repaint erases, and pushes the
+union of the column and its own icon box - see `icon_x_land()`), so nothing is
+broken, but the icons now overlap each other's boxes by 7px. A sixth app needs
+the row itself redesigned, not another entry in `g_apps[]`.
 
 Verify the diagonal against the product page before treating the exact figures
 as gospel; the ratio is what matters and it is not close to the edge.
@@ -176,9 +194,16 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       itself), level.c (a bubble level: tip the puck, a dot
                       slides downhill, hold it flat and a ring closes round
                       it - reads app_frame_t.tilt like any other app, see
-                      "Which way is down" below), menu.c (the app picker: a
-                      grid of 112px cells filling the glass, all apps visible
-                      at once, press-drag-release to launch - decision 0013),
+                      "Which way is down" below), clock.c (two faces, set by
+                      holding BOOT and sliding a finger over the pair being
+                      set; blank rather than wrong when the RTC's OS flag
+                      says the battery emptied), morpion.c (noughts and
+                      crosses, same two people and the same press-drag-
+                      release; the candidate cell is named by a CROSS of two
+                      lit bands, because a thumb hides the cell it is
+                      choosing), menu.c (the app picker: a grid of 112px
+                      cells filling the glass, all apps visible at once,
+                      press-drag-release to launch - decision 0013),
                       stubapps.c (empty unless the menu-stub define is
                       set; how that layout gets captured at six and twelve
                       apps, see its own header), digits.c
@@ -426,7 +451,22 @@ class of bug that has already shipped once here - the sketchpad's palette
 passed all 22 of its clean-input checks and did not work in the owner's hands.
 Connect Four's own pair is `feature-four.ts` and
 `repro-touch-dropout-four-drop.ts`; the clock's is `feature-clock.ts` and
-`repro-touch-dropout-clock-set.ts`.
+`repro-touch-dropout-clock-set.ts`; morpion's is `feature-morpion.ts` and
+`repro-touch-dropout-morpion.ts`.
+
+**Dropouts are not the only thing the controller does wrong, and the second
+one bites two-axis apps hardest.** `touchsim.ts` also models the reported
+position of a STILL finger wandering 80-250px for up to three reports
+(measured: ten confirmed jumps in forty seconds). Connect Four reads one axis
+over full-height columns and barely notices; morpion reads two over a 110px
+grid, and before it grew a defence, measuring found roughly ONE RELEASE IN TEN
+placing a mark in a cell the finger was never on. If a new app hit-tests both
+axes, drive `repro-touch-dropout-*`'s jitter profile at it before believing
+it works, and note that `TOUCHSIM_DEFAULTS` has `positionJitterPerSec` at
+**zero** - turning only `positionJitterEnabled` on gives a profile that never
+fires and a test that passes by doing nothing. Copy the calibrated four-line
+profile from `repro-touch-dropout-palette-open.ts` and assert the episode
+count is non-zero.
 
 The build retries `zig cc`, because this toolchain's linker crashes at random
 (no diagnostics, exit code 5, links fine moments later - see

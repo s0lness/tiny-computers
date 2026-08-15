@@ -57,6 +57,7 @@ extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 extern const app_t g_fourApp;
+extern const app_t g_morpionApp;
 
 /* =====================================================================
  * THE LAYOUT. Landscape coordinates, LAND_W x LAND_H = 448 x 368.
@@ -1458,6 +1459,72 @@ static void draw_icon_four(int ox, int oy, uint16_t color) {
     }
 }
 
+/* ---------------------------------------------------------------------
+ * The MORPION icon: one O and one X, on the diagonal.
+ *
+ * The game's two sides ARE its picture, which is the whole reason noughts
+ * and crosses is drawable as a glyph at all. Nine cells is not: a 3x3 of
+ * anything inside a 96px box gives each cell 32px, and the icon that
+ * argument already killed once for Connect Four (see draw_icon_four's own
+ * header: 42 circles became four, because the measurement said 12px cells
+ * and the render agreed) kills it here for the same reason. So this icon
+ * says WHAT IS DRAWN ON THE BOARD, not how many places there are to draw
+ * it, exactly as the four-counters icon next to it does.
+ *
+ * NOT Lucide, and that is decision 0009's own instruction rather than an
+ * inconsistency - its exception for this file covers "the case where a
+ * matching Lucide source exists to convert", and Lucide has none for this:
+ * grid-3x3 is a ruled grid of straight lines, which is precisely the board
+ * morpion.c refuses to draw, and circle/x on their own say nothing about
+ * a game. Back to that document's original rule then: the float brush,
+ * shapes.h's anti-aliased annulus and polyline stroke, no ruler.
+ *
+ * WHAT IS BORROWED ANYWAY IS THE WEIGHT. The owner's correction to the
+ * Connect Four icon was about exactly this - "l'epaisseur du trait de
+ * l'icone du puissance 4 est pas la meme que les autres icones" - so this
+ * one is drawn at LUCIDE_STROKE_HALF from the start rather than at whatever
+ * weight its own geometry happened to land on. Its neighbours' voice, its
+ * own shape.
+ *
+ * The two glyphs are placed on the diagonal and sized so their outer edges
+ * clear each other: centres 44px apart on each axis is 62.2px between them,
+ * against 26+26 = 52px of outer radius, leaving a 10px gap. They fill the
+ * box corner to corner (0..96 on each axis) without touching, which is what
+ * makes them read as two marks on a board rather than as one compound
+ * symbol.
+ *
+ * The X here is drawn with STRAIGHT arms, unlike the bowed ones morpion.c
+ * inks on the board, and that is deliberate rather than an inconsistency
+ * with the app: at 52px across, a 4px bow is two pixels of deviation that
+ * reads as a wobble in a glyph rather than as a hand in a letter - which is
+ * this document's own "not wobble for its own sake" warning about applying
+ * hand-drawing at icon scale. The rounded caps carry the softness at this
+ * size, the same way they do in the three Lucide conversions beside it.
+ * ------------------------------------------------------------------- */
+#define MORPION_ICON_A   26.0f   // the O's centre, in icon-box coords
+#define MORPION_ICON_B   70.0f   // the X's centre: 44 apart on each axis
+#define MORPION_ICON_R   21.0f   // centreline; outer edge is +LUCIDE_STROKE_HALF
+
+static void draw_icon_morpion(int ox, int oy, uint16_t color) {
+    // The O, top-left.
+    shapes_fill_annulus_aa_land((float)ox + MORPION_ICON_A, (float)oy + MORPION_ICON_A,
+                                 MORPION_ICON_R + LUCIDE_STROKE_HALF,
+                                 MORPION_ICON_R - LUCIDE_STROKE_HALF, color);
+
+    // The X, bottom-right: two crossing strokes whose ends sit ON the same
+    // circle the O is drawn round, so the two marks read as the same size
+    // even though the X's bounding box is smaller. arm = R/sqrt(2).
+    const float cx = (float)ox + MORPION_ICON_B, cy = (float)oy + MORPION_ICON_B;
+    const float arm = MORPION_ICON_R * 0.70710678f;
+    float ax[2], ay[2];
+    ax[0] = cx - arm; ay[0] = cy - arm;
+    ax[1] = cx + arm; ay[1] = cy + arm;
+    shapes_stroke_polyline_aa_land(ax, ay, 2, LUCIDE_STROKE_HALF, color);
+    ax[0] = cx + arm; ay[0] = cy - arm;
+    ax[1] = cx - arm; ay[1] = cy + arm;
+    shapes_stroke_polyline_aa_land(ax, ay, 2, LUCIDE_STROKE_HALF, color);
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE
@@ -1485,6 +1552,8 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
 #endif
     } else if (app == &g_fourApp) {
         draw_icon_four(ox, oy, color);
+    } else if (app == &g_morpionApp) {
+        draw_icon_morpion(ox, oy, color);
     }
     // g_levelApp (index 4, always in the table - see runtime_core.c) has no
     // case above and none is added here: it falls through to the "draws

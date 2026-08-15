@@ -93,6 +93,8 @@ target_sources(main PRIVATE
     # The clock. In g_apps[] like every other app; it too reads orientation
     # through app_frame_t.tilt rather than owning any hardware.
     apps/clock.c
+    # Morpion (noughts and crosses). Owns no hardware either.
+    apps/morpion.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into

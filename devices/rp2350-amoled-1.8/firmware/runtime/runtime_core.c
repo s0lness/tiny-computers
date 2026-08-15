@@ -36,6 +36,7 @@ extern const app_t g_timerApp;
 extern const app_t g_fourApp;
 extern const app_t g_levelApp;
 extern const app_t g_clockApp;
+extern const app_t g_morpionApp;
 extern const app_t g_menuApp;
 extern void menu_set_return_app(int index);
 
@@ -59,33 +60,34 @@ extern const app_t g_stubApps[];
 // Appended, not inserted: index 0 is what boots (app.h) and every emulator
 // test in emulator/wasm/tests/ addresses apps by their index in this array
 // (APP_DRAW = 1 and so on), so a new app goes on the end. The bubble level
-// (firmware/apps/level.c) and the clock (firmware/apps/clock.c) read
-// app_frame_t.tilt like every other orientation-aware app, so there is no
-// reason for either to sit outside this table behind a flag or a private
-// index - see AGENTS.md's "The bubble level" section for the two blockers
-// that used to justify APPS_INCLUDE_LEVEL, and runtime_core.h's git history
-// for APP_INDEX_CLOCK, the clock's own now-removed equivalent (it existed
-// only because appending to this table used to move every menu column;
-// decision 0013's grid replaced that layout, so the reason is gone).
+// (firmware/apps/level.c), the clock (firmware/apps/clock.c) and morpion
+// (firmware/apps/morpion.c) all read app_frame_t.tilt or plain touch like
+// every other app, so there is no reason for any of them to sit outside
+// this table behind a flag or a private index - see AGENTS.md's "The
+// bubble level" section for the two blockers that used to justify
+// APPS_INCLUDE_LEVEL, and runtime_core.h's git history for APP_INDEX_CLOCK,
+// the clock's own now-removed equivalent (it existed only because appending
+// to this table used to move every menu column; decision 0013's grid
+// replaced that layout, so the reason is gone). Seven real apps is still
+// five short of decision 0013's twelve-app ceiling, so the grid absorbs
+// this without narrowing any target - see tools/gate/run.ts's
+// app-count-ceiling rule, which would have failed loudly if it did not.
 const app_t *const g_apps[] = {
-    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp, &g_levelApp, &g_clockApp,
-#if MENU_STUB_APPS > 6
+    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp, &g_levelApp, &g_clockApp, &g_morpionApp,
+#if MENU_STUB_APPS > 7
     &g_stubApps[0],
 #endif
-#if MENU_STUB_APPS > 7
+#if MENU_STUB_APPS > 8
     &g_stubApps[1],
 #endif
-#if MENU_STUB_APPS > 8
+#if MENU_STUB_APPS > 9
     &g_stubApps[2],
 #endif
-#if MENU_STUB_APPS > 9
+#if MENU_STUB_APPS > 10
     &g_stubApps[3],
 #endif
-#if MENU_STUB_APPS > 10
-    &g_stubApps[4],
-#endif
 #if MENU_STUB_APPS > 11
-    &g_stubApps[5],
+    &g_stubApps[4],
 #endif
 };
 const int g_appCount = sizeof(g_apps) / sizeof(g_apps[0]);
