@@ -1,5 +1,29 @@
 
 set(PICO_BOARD pico2 CACHE STRING "Board type")
+
+# This board is not a Pico 2. It carries a W25Q128JVSIQ, 16MB, which
+# `picotool info` reports and the schematic confirms; pico2.h defaults
+# PICO_FLASH_SIZE_BYTES to 4MB because that is what a real Pico 2 has, and
+# nothing here used to correct it.
+#
+# That mattered the moment firmware/runtime/storage.c started keeping the
+# dino's high score in the LAST sector, at 16MB - 4KB. This number is not
+# just a capacity: the SDK uses it to size the flash region in the linker
+# script and to set up the QMI's address window, so an access four times
+# past it is outside what the hardware was told to serve. storage.c knew
+# the board had 16MB and hardcoded the offset anyway rather than fixing the
+# declaration, which left the read legal in intent and undefined in fact.
+#
+# Found after the first firmware that actually contained storage_init()
+# froze on a white screen at boot: gfx_init() had filled the framebuffer
+# white and pushed it, so the hang was after that and before the watchdog
+# was armed (a hang after arming would reboot-loop, not sit still), which
+# leaves storage_init() and the core1 launch, and storage_init() had never
+# once executed on silicon.
+# A plain integer, not an expression: this reaches the compiler as -D, and
+# `(16 * 1024 * 1024)` there is "macro names must be identifiers".
+set(PICO_FLASH_SIZE_BYTES 16777216 CACHE STRING "This board's real flash size, 16MB")
+
 cmake_minimum_required(VERSION 3.27)
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
