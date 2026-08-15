@@ -44,6 +44,7 @@
 #include "sensors.h"
 #include "sound.h"
 #include "sound_synth.h"
+#include "storage.h"
 
 /* ===========================================================================
  * What the module imports from the host (env.*). Exactly emu_abi.h's list:
@@ -550,6 +551,53 @@ void sensors_stats(sensors_stats_t *out) {
 // there is no i2c1 to bring up in a browser regardless.
 
 /* ===========================================================================
+ * storage.h, as an in-RAM stand-in. See that header's own "HONESTY
+ * REQUIREMENT" comment before trusting anything about this. It exists so
+ * that firmware/apps/dino.c (the only caller today) compiles and behaves
+ * sensibly here - a fresh high score every time the page (re)loads, an
+ * instant "save" - without pretending to exercise flash_safe_execute(), a
+ * sector erase, or core1's lockout. Only the board answers those
+ * questions; see docs/decisions/0011 and firmware/runtime/storage.c.
+ * ======================================================================= */
+#define EMU_STORAGE_MAX_KINDS 4
+static uint8_t  s_storageKind[EMU_STORAGE_MAX_KINDS];
+static uint32_t s_storageValue[EMU_STORAGE_MAX_KINDS];
+static bool     s_storageHave[EMU_STORAGE_MAX_KINDS];
+static int      s_storageCount = 0;
+
+// Called from emu_init() (below), the emulator's one "boot" moment - see
+// that function's own call to this.
+void storage_init(void) {
+    s_storageCount = 0;
+}
+
+bool storage_get_u32(uint8_t kind, uint32_t *outValue) {
+    for (int i = 0; i < s_storageCount; i++) {
+        if (s_storageKind[i] == kind) {
+            if (!s_storageHave[i]) return false;
+            *outValue = s_storageValue[i];
+            return true;
+        }
+    }
+    return false;
+}
+
+void storage_save_u32(uint8_t kind, uint32_t value) {
+    for (int i = 0; i < s_storageCount; i++) {
+        if (s_storageKind[i] == kind) {
+            s_storageValue[i] = value;
+            s_storageHave[i] = true;
+            return;
+        }
+    }
+    if (s_storageCount >= EMU_STORAGE_MAX_KINDS) return;
+    int i = s_storageCount++;
+    s_storageKind[i] = kind;
+    s_storageValue[i] = value;
+    s_storageHave[i] = true;
+}
+
+/* ===========================================================================
  * sound.h, in full. See this file's header comment, job (4), and
  * emu_abi.h's "sound" section for the ABI this feeds.
  *
@@ -607,6 +655,10 @@ int emu_init(void) {
         rt_log("FATAL: emu_init: gfx_init() failed");
         return 0;
     }
+    storage_init(); // the emulator's one "boot" moment - see storage.h's
+                     // stand-in above; board order is storage_init() before
+                     // sensors_start(), which has no equivalent here, so this
+                     // just resets the in-RAM stand-in fresh every load.
     rtcore_init();
     return 1;
 }

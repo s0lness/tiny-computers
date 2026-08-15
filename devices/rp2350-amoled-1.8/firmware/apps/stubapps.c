@@ -1,5 +1,5 @@
 /*
- * stubapps: up to five do-nothing apps, so the menu's geometry can be SEEN
+ * stubapps: up to one do-nothing app, so the menu's geometry can be SEEN
  * at app counts this device does not have yet.
  *
  * WHY THIS EXISTS. The menu was rewritten from a row of columns to a grid
@@ -15,9 +15,10 @@
  *
  * So the firmware itself is built with more apps in it, and the capture
  * comes out of the real menu_enter(). The firmware has since grown to
- * seven real apps (chrono, sketch, timer, four, level, clock, morpion),
- * which is five short of decision 0013's twelve-app ceiling - this file
- * shrank to match, five stubs instead of seven.
+ * eleven real apps (chrono, sketch, timer, four, level, clock, morpion,
+ * dino, bowling, tiltball, breakout - the last four merged together
+ * 2026-08-15), which is one short of decision 0013's twelve-app ceiling -
+ * this file shrank to match, one stub instead of seven.
  *
  * COMPILED OUT BY DEFAULT AND ABSENT FROM THE BOARD BUILD. Everything below
  * is inside `#if MENU_STUB_APPS`, so with the define unset this is an empty
@@ -28,9 +29,9 @@
  *   EMU_EXTRA_DEFINES=-DMENU_STUB_APPS=12 bun run emulator/wasm/build.ts
  *
  * MENU_STUB_APPS is the TOTAL app count wanted, not the number of stubs:
- * runtime_core.c appends (MENU_STUB_APPS - 7) of these to the seven real
+ * runtime_core.c appends (MENU_STUB_APPS - 11) of these to the eleven real
  * apps. That spelling was chosen because the number the reader cares about
- * is "twelve apps", and a build flag that says 5 while the screenshot is
+ * is "twelve apps", and a build flag that says 1 while the screenshot is
  * called twelve is one subtraction away from a mislabelled capture, which
  * is a mistake tools/preview-menu-icons.ts has already made once (see its
  * comment on the file called "menu-icon-timer" that was a picture of
@@ -40,10 +41,10 @@
  * pushes the whole panel on switch-in (app.h's enter() contract), so a stub
  * that never draws leaves a blank white screen, which is the honest picture
  * of an app that does not exist. Its ICON is not blank though: menu.c
- * (under the same #if) lends any app past the seventh one of the seven real
- * apps' own icons, cycling, so a twelve-app capture shows the layout under
- * real ink instead of a grid of holes. Ink is what the layout has to be
- * judged against.
+ * (under the same #if) lends any app past the eleventh one of the eleven
+ * real apps' own icons, cycling, so a twelve-app capture shows the layout
+ * under real ink instead of a grid of holes. Ink is what the layout has to
+ * be judged against.
  */
 #if MENU_STUB_APPS
 
@@ -54,10 +55,10 @@
 static void stub_enter(void) {}
 static void stub_tick(const app_frame_t *f) { (void)f; }
 
-// Named "stub N" rather than borrowed from the apps that are coming
-// (tic-tac-toe, breakout, ...): a capture that says "breakout" would be a
-// picture of an app nobody has written, and this project has already paid
-// for one instrument that labelled something it had not measured.
+// Named "stub N" rather than borrowed from any real app: a capture that
+// says the name of an app already in g_apps[] would be a picture of the
+// wrong thing, and this project has already paid for one instrument that
+// labelled something it had not measured.
 #define STUB_APP(label)                 \
     { .name = label,                    \
       .enter = stub_enter,              \
@@ -66,9 +67,8 @@ static void stub_tick(const app_frame_t *f) { (void)f; }
       .landscape = true,                \
       .wantsShake = false }
 
-const app_t g_stubApps[5] = {
-    STUB_APP("stub1"), STUB_APP("stub2"), STUB_APP("stub3"), STUB_APP("stub4"),
-    STUB_APP("stub5"),
+const app_t g_stubApps[1] = {
+    STUB_APP("stub1"),
 };
 
 #endif // MENU_STUB_APPS

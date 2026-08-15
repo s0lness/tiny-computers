@@ -60,6 +60,10 @@ extern const app_t g_fourApp;
 extern const app_t g_levelApp;
 extern const app_t g_clockApp;
 extern const app_t g_morpionApp;
+extern const app_t g_dinoApp;
+extern const app_t g_bowlingApp;
+extern const app_t g_tiltballApp;
+extern const app_t g_breakoutApp;
 
 /* =====================================================================
  * THE LAYOUT. Landscape coordinates, LAND_W x LAND_H = 448 x 368.
@@ -1636,6 +1640,38 @@ static void draw_icon_clock(int ox, int oy, uint16_t color) {
     shapes_stroke_polyline_aa_land(hx, hy, 3, LUCIDE_STROKE_HALF, color);
 }
 
+/* ---------------------------------------------------------------------
+ * DINO. Not Lucide (no dinosaur silhouette exists in that set), so this
+ * goes back to decision 0009's original rule rather than its menu-icon
+ * exception: the float brush, the same capsule vocabulary
+ * firmware/apps/dino.c's own draw_dino() uses for the game itself, just
+ * hand-placed at icon scale rather than derived by a scale factor - a
+ * shape this small reads better drawn fresh than shrunk.
+ * ------------------------------------------------------------------- */
+static void draw_icon_dino(int ox, int oy, uint16_t color) {
+    // Same construction as firmware/apps/dino.c's own draw_dino() at icon
+    // scale, second pass: a round head plus a separate round snout bump
+    // (not one tapered capsule, which reads as a beak at any scale), a
+    // thin neck distinctly narrower than both chest and head, legs
+    // attached below the torso's own silhouette so they read as visible
+    // limbs rather than vanishing into the belly, a tail sweeping back
+    // and UP past hip height - see draw_dino()'s own header for the full
+    // argument each of these choices answers.
+    float gy = (float)oy + 76.0f; // icon-local ground line
+    float hipX = (float)ox + 16.0f, hipY = gy - 15.0f;
+    float chX  = (float)ox + 24.0f, chY  = gy - 36.0f;
+    shapes_fill_capsule_aa_land(hipX, hipY, 8.0f, chX, chY, 12.0f, color);
+    float headX = (float)ox + 40.0f, headY = gy - 48.0f;
+    shapes_fill_capsule_aa_land(chX, chY, 6.0f, headX, headY, 5.0f, color);
+    shapes_fill_disc_aa_land(headX, headY, 9.0f, color);
+    shapes_fill_disc_aa_land((float)ox + 58.0f, gy - 44.0f, 5.0f, color);
+    shapes_fill_tapered_quad_aa_land(hipX, hipY, 7.0f, (float)ox + 2.0f, gy - 22.0f,
+                                      (float)ox - 8.0f, gy - 28.0f, 2.0f, color);
+    float legHipX = (float)ox + 12.0f, legHipY = gy - 9.0f;
+    shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 28.0f, gy, 4.0f, color);
+    shapes_fill_capsule_aa_land(legHipX, legHipY, 6.0f, (float)ox + 16.0f, gy, 4.0f, color);
+}
+
 static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     if (app == &g_chronoApp) {
 #if CHRONO_ICON_LUCIDE
@@ -1669,21 +1705,30 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
         draw_icon_clock(ox, oy, color);
     } else if (app == &g_morpionApp) {
         draw_icon_morpion(ox, oy, color);
+    } else if (app == &g_dinoApp) {
+        draw_icon_dino(ox, oy, color);
+    } else if (app == &g_bowlingApp) {
+        draw_icon_bowling(ox, oy, color);
+    } else if (app == &g_tiltballApp) {
+        draw_icon_tiltball(ox, oy, color);
+    } else if (app == &g_breakoutApp) {
+        draw_icon_breakout(ox, oy, color);
     }
-    // Every real app (chrono, sketch, timer, four, level, clock, morpion -
-    // seven, the same seven runtime_core.c's g_apps[] declares) now has a
-    // branch above; there is no silent icon gap left for a real build.
+    // Every real app (chrono, sketch, timer, four, level, clock, morpion,
+    // dino, bowling, tiltball, breakout - eleven, the same eleven
+    // runtime_core.c's g_apps[] declares) now has a branch above; there is
+    // no silent icon gap left for a real build.
 #if MENU_STUB_APPS
-    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the seventh in
-    // a stub build borrows one of the seven real, icon-bearing apps,
+    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the eleventh
+    // in a stub build borrows one of the eleven real, icon-bearing apps,
     // cycling, so a capture at twelve apps shows the LAYOUT under real ink
     // rather than a grid of holes - a layout is judged against what will
     // actually sit in it. Recursion is one level deep by construction:
-    // g_apps[k % 7] is always one of the seven real apps, which take the
+    // g_apps[k % 11] is always one of the eleven real apps, which take the
     // branches above.
     else {
-        for (int k = 7; k < g_appCount; k++) {
-            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 7], ox, oy, color); return; }
+        for (int k = 11; k < g_appCount; k++) {
+            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 11], ox, oy, color); return; }
         }
     }
 #endif

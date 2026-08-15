@@ -43,6 +43,10 @@ export const CLEAN_INPUT_BASELINE: Record<string, string> = {
     "statement of what the clock is; the dropout half is repro-touch-dropout-clock-set.ts",
   "feature-morpion.ts":
     "statement of what morpion is; the dropout half is repro-touch-dropout-morpion.ts",
+  "feature-dino.ts":
+    "statement of what dino's jump/restart state machine does; the dropout half is repro-touch-dropout-dino-jump.ts",
+  "feature-bowling.ts":
+    "statement of what the bowling app is; the dropout half is repro-touch-dropout-bowling-throw.ts",
   "feature-sketch-palette.ts":
     "statement of what the palette is; the dropout half is repro-touch-dropout-palette-open.ts",
   "repro-arena-not-zeroed.ts":

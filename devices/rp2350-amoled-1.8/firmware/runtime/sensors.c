@@ -15,6 +15,7 @@
 
 #include "pico/time.h"
 #include "pico/multicore.h"
+#include "pico/flash.h"
 #include "hardware/sync.h"
 #include "hardware/exception.h"
 
@@ -1433,6 +1434,19 @@ static void core1_entry(void) {
     // genuine safety net, and required by the invariant checker's
     // reachability root set - not something this loop can skip.
     core1_install_fault_handlers();
+
+    // Registers this core as flash_safe_execute()'s lockout victim - see
+    // docs/decisions/0011's storage section and firmware/runtime/storage.c's
+    // header comment. Without this, storage_save_u32() (core0) cannot ever
+    // legally park this core for an erase or a program: flash_safe_execute()
+    // returns PICO_ERROR_NOT_PERMITTED (or asserts - PICO_FLASH_ASSERT_ON_
+    // UNSAFE defaults to 1) unless the OTHER core has called
+    // flash_safe_execute_core_init() first. This runs on every (re)entry to
+    // core1_entry(), so a core restarted by sensors_restart_core1() below
+    // re-registers automatically - there is no second call site to remember.
+    // Costs nothing while no save is in flight: it only installs the lockout
+    // IRQ handler pico_multicore already ships, it does not poll or block.
+    flash_safe_execute_core_init();
 
     uint32_t lastFingerMs = to_ms_since_boot(get_absolute_time());
     uint32_t lastIdleHeartbeatMs = 0;

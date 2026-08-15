@@ -80,6 +80,11 @@ target_sources(main PRIVATE
     # board half: the ES8311 bring-up and the PIO+DMA I2S path.
     runtime/sound_synth.c
     runtime/sound.c
+    # storage: the one place this firmware ever calls flash_range_erase or
+    # flash_range_program - docs/decisions/0011. Board-only (real flash);
+    # the emulator's stand-in lives in emulator/wasm/emu_shim.c instead, so
+    # this file is NOT in emulator/wasm/build.ts's source list.
+    runtime/storage.c
 
     # The apps. None of them owns any hardware.
     apps/menu.c
@@ -95,6 +100,11 @@ target_sources(main PRIVATE
     apps/clock.c
     # Morpion (noughts and crosses). Owns no hardware either.
     apps/morpion.c
+    # Four games merged 2026-08-15, each appended in the order it arrived.
+    # None owns any hardware: dino reads plain touch (tap to jump) plus the
+    # storage service above for its high score; the rest read touch or
+    # app_frame_t.tilt like every other app.
+    apps/dino.c
     apps/digits.c
     # Round-silhouette helpers (ring/wedge row math), used by menu.c's
     # stopwatch icon. See shapes.h for why it is not also wired into
@@ -173,6 +183,14 @@ target_link_libraries(main PRIVATE
     # invariant checker's reachability graph hardcodes core1_fault_handler
     # as a root - see tools/invariants/rules/rp2350-amoled-1.8.ts).
     hardware_exception
+    # storage.c's flash_range_erase()/flash_range_program() (the dino high
+    # score - docs/decisions/0011).
+    hardware_flash
+    # flash_safe_execute()/flash_safe_execute_core_init() - the multicore
+    # lockout storage.c parks core1 with for the duration of a save. Not
+    # linked before dino.c; decision 0011 called this out explicitly as
+    # something a future flash-writing app would have to add.
+    pico_flash
 )
 
 pico_enable_stdio_usb(main 1)

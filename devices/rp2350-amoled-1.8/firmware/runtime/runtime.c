@@ -37,6 +37,7 @@
 #include "gfx.h"
 #include "sensors.h"
 #include "sound.h"
+#include "storage.h"
 #include "runtime_core.h"
 
 // Cross-directory headers, included by relative path on purpose rather than
@@ -390,6 +391,12 @@ int main(void) {
         .tune_set = sketch_tune_set,
     };
     devlink_init(&devlinkHooks);
+
+    // Once, on core0, before core1 exists - per docs/decisions/0011 and
+    // storage.c's own header comment. Reads the last-sector flash scan
+    // into RAM; nothing below this line touches flash again except through
+    // storage_save_u32()'s own flash_safe_execute()-guarded path.
+    storage_init();
 
     sensors_start();
     // ---- core0 must never touch i2c1 past this point. ----
