@@ -269,6 +269,33 @@ preview/              host-rendered PNGs, for judging the handwriting look
 backup/                factory firmware pulled off the board before first flash
 ```
 
+## Never kill a process by image name
+
+**No `taskkill /IM <name>`, no `Stop-Process -Name`, ever.** This machine is
+the owner's daily driver, not a build box: his browser, his editors and
+several other agents' sessions are running alongside whatever you started.
+A kill by name takes all of them.
+
+This has now happened twice. The first time closed the owner's browser
+session outright. The second time, 2026-08-15, an agent debugging a
+puppeteer flake ran `taskkill /IM chrome.exe`, then reported that the
+long-running real windows had survived; checked afterwards, **no Chrome
+process predated the kill**, so that reassurance was simply false. Whatever
+was open is gone, and the agent could not tell.
+
+Kill by **PID**, and only after re-reading that PID and matching something
+that proves it is yours: a script path under this repo, a port you opened, a
+command line you recognise. Two traps, both hit here already:
+
+- A filter like `CommandLine -like '*my-script*'` **matches the querying
+  command's own command line**, so you will "find" a phantom duplicate of
+  yourself. Build the pattern at runtime and exclude `$PID`.
+- Re-check the process inside the same command that kills it. A PID recycled
+  between your query and your kill sends you at something unrelated.
+
+If you cannot prove a process is yours, leave it and say so in your report.
+A stale process costs a note; the owner's open tabs do not come back.
+
 ## Running it
 
 Build (nothing is on PATH by default, so the env has to be set):
