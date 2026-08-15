@@ -71,4 +71,10 @@ export interface Invariant {
   // that this resolves to an existing file.
   see: string;
   check(fw: Firmware): Violation[];
+  // Optional lines printed after the PASS/FAIL line, on every run,
+  // regardless of outcome - for a number that must stay visible on every
+  // green build instead of surfacing only once it turns red (decision
+  // 0006's sixth invariant: a 180-byte margin that "happened to work" and
+  // said nothing about it until the day it did not).
+  note?(fw: Firmware): string[];
 }

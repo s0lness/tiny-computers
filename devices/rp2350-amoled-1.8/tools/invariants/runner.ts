@@ -50,8 +50,10 @@ export function runInvariants(fw: Firmware, invariants: Invariant[]): boolean {
   let ok = true;
   for (const inv of invariants) {
     const violations = inv.check(fw);
+    const notes = inv.note?.(fw) ?? [];
     if (violations.length === 0) {
       console.log(`PASS  ${inv.name}`);
+      for (const n of notes) console.log(`  ${n}`);
       continue;
     }
     ok = false;
@@ -62,6 +64,7 @@ export function runInvariants(fw: Firmware, invariants: Invariant[]): boolean {
       console.log(`  ${v.message}`);
       for (const s of v.symbols) console.log(`    - ${s}`);
     }
+    for (const n of notes) console.log(`  ${n}`);
   }
   return ok;
 }

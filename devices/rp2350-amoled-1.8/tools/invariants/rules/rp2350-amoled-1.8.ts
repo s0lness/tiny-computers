@@ -3,8 +3,19 @@
 // knows nothing about this board; everything here does, so moving the
 // machinery to `puck` later only means importing it from a new path.
 
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { reachableFrom, reachedNamesMatching, stripCloneSuffix } from "../graph";
-import type { Firmware, Invariant, Violation } from "../types";
+import type { Firmware, Invariant, Region, Section, Violation } from "../types";
+
+// rules/rp2350-amoled-1.8.ts -> tools/invariants/rules -> tools/invariants
+// -> tools -> the device root. Only rule 5 below needs this: it is the one
+// invariant that reads firmware *source* (gfx.h, AMOLED_1in8.h) rather than
+// only the built .elf/.map, because the number it guards (the framebuffer's
+// byte count) is a runtime malloc, not a linker allocation - nothing in the
+// artifact names it (see rule 5's own header comment).
+const DEVICE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
 // core1_trampoline is pico-sdk's own multicore.c launch stub; core1_entry
 // and core1_fault_handler are ours (sensors.c). All three are seeded
@@ -304,10 +315,257 @@ export const rule4Core1StackRegion: Invariant = {
   },
 };
 
+// --- rule 5: the framebuffer must fit in whatever SRAM the linked image leaves
+//
+// Measured 2026-08-15: an 11-app build linked cleanly, passed rules 0-4, and
+// bricked the board. `gfx_init()` (firmware/runtime/gfx.c) does
+// `gfx_fb = malloc(PANEL_W * PANEL_H * 2)` and `runtime.c` hangs forever if
+// that malloc returns NULL - deliberately, because a NULL framebuffer is
+// worse than a dead board. Nothing above sees this: the framebuffer is a
+// runtime allocation, not a linker one, so no section, symbol or region
+// names it. This rule is the whole-image arithmetic that stands in for the
+// allocator: how much SRAM does the linked image leave, and does that cover
+// the one allocation this firmware cannot survive failing.
+//
+// Where every number in it comes from, so a failure explains its own
+// arithmetic instead of asserting a number nobody can check:
+//
+// - "how much SRAM is left" is answered from the same three pieces rule 1
+//   and rule 4 already parse from the map and the section table - no new
+//   input.
+// - "how big is the framebuffer" is answered by reading
+//   firmware/runtime/gfx.h and firmware/lib/AMOLED/AMOLED_1in8.h as text,
+//   the same discipline model.ts applies to binutils output ("a line the
+//   parser does not understand fails the run"), just aimed at two headers
+//   instead of objdump. This is new: every other invariant here reads only
+//   the built artifact. It has to, because the artifact has nothing to read
+//   - the same fact that let the bug through in the first place. Precedent:
+//   tools/gate's arena-headroom rule already reads its capacity from the
+//   firmware (emu_arena_capacity()) rather than restating APP_ARENA_BYTES in
+//   TypeScript, for the identical reason - a hardcoded 329728 is a check
+//   that lies the day PANEL_W, PANEL_H or the pixel format changes.
+
+const GFX_H = "firmware/runtime/gfx.h";
+const AMOLED_1IN8_H = "firmware/lib/AMOLED/AMOLED_1in8.h";
+
+function readDeviceSource(relPath: string): string {
+  const abs = join(DEVICE_ROOT, relPath);
+  if (!existsSync(abs)) {
+    throw new Error(`invariant checker: no such firmware source file: ${relPath} (looked for ${abs})`);
+  }
+  return readFileSync(abs, "utf8");
+}
+
+// Not a preprocessor: it resolves exactly the two shapes rule 5 needs
+// (`#define NAME VALUE` and `#define NAME OTHER_NAME`) and throws on
+// anything else, same as every parser in this tool.
+function findDefine(text: string, name: string, path: string): string {
+  const re = new RegExp(`^\\s*#define\\s+${name}\\s+(\\S+)`, "m");
+  const m = re.exec(text);
+  if (!m) throw new Error(`invariant checker: no "#define ${name}" found in ${path}`);
+  return m[1]!;
+}
+
+// gfx_fb's element type decides bytes-per-pixel; read from its own extern
+// declaration rather than assumed, so a future switch away from RGB565
+// (a wider pixel format, say) fails loudly here instead of quietly
+// undercounting the allocation.
+const BYTES_PER_PIXEL_BY_TYPE: Record<string, number> = { uint16_t: 2 };
+const GFX_FB_DECL = /extern\s+(\w+)\s*\*\s*gfx_fb\s*;/;
+
+interface FramebufferRequirement {
+  width: number;
+  height: number;
+  bytesPerPixel: number;
+  bytes: number;
+}
+
+function framebufferBytesFromSource(): FramebufferRequirement {
+  const gfxH = readDeviceSource(GFX_H);
+  const panelH = readDeviceSource(AMOLED_1IN8_H);
+
+  // PANEL_W/PANEL_H are themselves aliases (gfx.h: "#define PANEL_W
+  // AMOLED_1IN8_WIDTH"), one indirection resolved against the panel driver's
+  // own header rather than assumed to be numeric in gfx.h.
+  const widthAlias = findDefine(gfxH, "PANEL_W", GFX_H);
+  const heightAlias = findDefine(gfxH, "PANEL_H", GFX_H);
+  const widthTok = findDefine(panelH, widthAlias, AMOLED_1IN8_H);
+  const heightTok = findDefine(panelH, heightAlias, AMOLED_1IN8_H);
+  const width = Number(widthTok);
+  const height = Number(heightTok);
+  if (!Number.isInteger(width) || width <= 0) {
+    throw new Error(
+      `invariant checker: ${AMOLED_1IN8_H}'s "${widthAlias}" did not parse to a positive integer: ${JSON.stringify(widthTok)}`
+    );
+  }
+  if (!Number.isInteger(height) || height <= 0) {
+    throw new Error(
+      `invariant checker: ${AMOLED_1IN8_H}'s "${heightAlias}" did not parse to a positive integer: ${JSON.stringify(heightTok)}`
+    );
+  }
+
+  const declMatch = GFX_FB_DECL.exec(gfxH);
+  if (!declMatch) {
+    throw new Error(`invariant checker: ${GFX_H}: no "extern TYPE *gfx_fb;" declaration found`);
+  }
+  const fbType = declMatch[1]!;
+  const bytesPerPixel = BYTES_PER_PIXEL_BY_TYPE[fbType];
+  if (bytesPerPixel === undefined) {
+    throw new Error(
+      `invariant checker: ${GFX_H}: gfx_fb's element type "${fbType}" has no known byte width - ` +
+        `update BYTES_PER_PIXEL_BY_TYPE`
+    );
+  }
+
+  return { width, height, bytesPerPixel, bytes: width * height * bytesPerPixel };
+}
+
+function regionOrThrow(fw: Firmware, name: string): Region {
+  const r = fw.regions.find((x) => x.name === name);
+  if (!r) throw new Error(`invariant checker: no "${name}" region in the linker map`);
+  return r;
+}
+
+function withinRegion(s: Section, r: Region): boolean {
+  return s.vma >= r.origin && s.vma < r.origin + r.length;
+}
+
+// malloc's actual ceiling. Confirmed, not assumed, from two independent
+// sources: the map defines both `__HeapLimit` and `__StackLimit` as
+// `ORIGIN(RAM) + LENGTH(RAM)` (pico-sdk's section_heap.incl /
+// section_end.incl), and pico-sdk's own `_sbrk()`
+// (src/rp2_common/pico_clib_interface/newlib_interface.c) refuses to grow
+// the heap past `&__StackLimit`, returning `(void*)-1` (malloc's NULL)
+// rather than overrunning it. So "how much SRAM is left for the
+// framebuffer" is answered entirely inside the RAM region; nothing outside
+// it can extend that ceiling.
+const HEAP_BOUND_REGION = "RAM";
+
+// pico-sdk's crt0 heap spacer (script_include/section_heap.incl): the
+// linker sets `__end__` (the symbol `_sbrk()` starts allocating from) to
+// THIS SECTION'S OWN START ADDRESS, before its declared bytes are placed.
+// So `.heap`'s size is the first slice of the free heap, not bytes taken
+// away from it - counting it as "used" would double-subtract space `_sbrk`
+// actually hands out. Verified against the .map on this tree: `__end__`
+// lands exactly at `.heap`'s start address, matching its own comment
+// ("historically sbrk was growing past __HeapLimit... we now set
+// __HeapLimit explicitly to where the end of the heap is").
+const HEAP_PLACEHOLDER_SECTION = ".heap";
+
+// The two stacks that share this chip's SRAM with everything else: core1's
+// (rule 4's own CORE1_STACK_SECTION, reused rather than redeclared) and
+// core0's, pico-sdk's ordinary crt0 stack. Found, not assumed: both are
+// named, sized (0x800 each) sections in the map, exactly like every other
+// section this rule sums.
+const CORE0_STACK_SECTION = ".stack_dummy";
+
+// Below this many free bytes, the build is treated the way decision 0006
+// treats an unannotated escape site: not a failure, but not silent either.
+// Chosen from measurement, not a round guess: the six-game merge
+// (758e739 -> 4132437) added about 53KB of linked .text+.bss across seven
+// new apps, ~7.6KB/app average. 16384 (16KB) is a little over twice that
+// average - enough that a single ordinarily-sized new app cannot flip a
+// WARN straight to a brick without a build ever printing the word "WARN"
+// first.
+const MARGIN_WARN_BYTES = 16384;
+
+interface HeapArithmetic {
+  ramRegion: Region;
+  usedBytes: number;
+  countedSections: string[];
+  freeBytes: number;
+  fb: FramebufferRequirement;
+  marginBytes: number; // freeBytes - fb.bytes; negative means it does not fit
+  core1Stack: Section;
+  core0Stack: Section;
+}
+
+function computeHeapArithmetic(fw: Firmware): HeapArithmetic {
+  const ramRegion = regionOrThrow(fw, HEAP_BOUND_REGION);
+
+  const countedSections: string[] = [];
+  let usedBytes = 0;
+  for (const s of fw.sections) {
+    if (s.size <= 0) continue;
+    if (!s.flags.has("ALLOC")) continue;
+    if (s.name === HEAP_PLACEHOLDER_SECTION) continue;
+    if (!withinRegion(s, ramRegion)) continue;
+    usedBytes += s.size;
+    countedSections.push(`${s.name} (${s.size}B @ 0x${s.vma.toString(16)})`);
+  }
+  const freeBytes = ramRegion.length - usedBytes;
+
+  const core1Stack = fw.sections.find((s) => s.name === CORE1_STACK_SECTION && s.size > 0);
+  if (!core1Stack) throw new Error(`invariant checker: no "${CORE1_STACK_SECTION}" section in the image`);
+  const core0Stack = fw.sections.find((s) => s.name === CORE0_STACK_SECTION && s.size > 0);
+  if (!core0Stack) throw new Error(`invariant checker: no "${CORE0_STACK_SECTION}" section in the image`);
+  // Either stack landing inside the heap-bound RAM region is not a
+  // hypothetical this rule silently trusts away: withinRegion() above
+  // already sums every ALLOC section it finds there, by address, not by an
+  // allowlist of names - so a future layout that puts a stack back inside
+  // RAM is counted as "used" automatically, the same run it happens, with
+  // no edit to this file required.
+
+  const fb = framebufferBytesFromSource();
+  const marginBytes = freeBytes - fb.bytes;
+
+  return { ramRegion, usedBytes, countedSections, freeBytes, fb, marginBytes, core1Stack, core0Stack };
+}
+
+function stackLocationNote(s: Section, ramRegion: Region): string {
+  const where = withinRegion(s, ramRegion)
+    ? "inside the heap-bound RAM region - its bytes are already included above"
+    : "outside the heap-bound RAM region - cannot compete with the framebuffer's malloc " +
+      "(pico-sdk's _sbrk refuses to grow the heap past the RAM region's own end)";
+  return `${s.name}: ${s.size}B at 0x${s.vma.toString(16)}, ${where}`;
+}
+
+export const rule5FramebufferFitsInHeap: Invariant = {
+  name: "the panel framebuffer's malloc fits in the SRAM the linked image leaves",
+  why:
+    "gfx_init() (firmware/runtime/gfx.c) mallocs PANEL_W*PANEL_H*2 bytes for " +
+    "the framebuffer, and runtime.c hangs forever on purpose if that malloc " +
+    "returns NULL rather than run with a NULL framebuffer. An 11-app build " +
+    "measured 2026-08-15 linked cleanly, passed every invariant above, and " +
+    "bricked the board: the allocation is a runtime malloc, not a linker " +
+    "allocation, so nothing in the artifact names it and no toolchain " +
+    "instrument sees it coming. This rule is the arithmetic that stands in " +
+    "for the allocator at build time.",
+  see: "docs/decisions/0006-invariant-checker.md",
+  check(fw) {
+    const a = computeHeapArithmetic(fw);
+    if (a.marginBytes >= 0) return [];
+    return [
+      {
+        message:
+          `framebuffer does not fit: used ${a.usedBytes}B of ${a.ramRegion.length}B RAM, ` +
+          `leaving ${a.freeBytes}B free; the framebuffer needs ${a.fb.width}x${a.fb.height}x` +
+          `${a.fb.bytesPerPixel} = ${a.fb.bytes}B; short by ${-a.marginBytes}B`,
+        symbols: [...a.countedSections, stackLocationNote(a.core1Stack, a.ramRegion), stackLocationNote(a.core0Stack, a.ramRegion)],
+      },
+    ];
+  },
+  note(fw) {
+    const a = computeHeapArithmetic(fw);
+    const lines = [
+      `margin: ${a.marginBytes}B free after the ${a.fb.bytes}B framebuffer ` +
+        `(used ${a.usedBytes}B of ${a.ramRegion.length}B RAM, framebuffer ${a.fb.width}x${a.fb.height}x${a.fb.bytesPerPixel})`,
+    ];
+    if (a.marginBytes >= 0 && a.marginBytes < MARGIN_WARN_BYTES) {
+      lines.push(
+        `WARN margin is only ${a.marginBytes}B, under the ${MARGIN_WARN_BYTES}B warn line - ` +
+          `this build happened to work, it did not pass with room to spare`
+      );
+    }
+    return lines;
+  },
+};
+
 export const ALL_INVARIANTS: Invariant[] = [
   rule0EscapesAnnotated,
   rule1NoCodeInFlash,
   rule2NoStdioOnCore1,
   rule3NoSdkI2cOnCore1,
   rule4Core1StackRegion,
+  rule5FramebufferFitsInHeap,
 ];

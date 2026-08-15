@@ -91,5 +91,18 @@ parsers.
   this in after rule 0 is trusted, and it is not implemented here.
 - **The checker prevents regressions of known hazards. It does not discover
   new ones.** Every rule here encodes a hazard this project has already
-  paid for once (decisions 0004 and 0005). It will disappoint anyone hoping
-  it finds a *new* class of bug; it is not that kind of tool.
+  paid for once (decisions 0004, 0005, and 0010's sixth). It will
+  disappoint anyone hoping it finds a *new* class of bug; it is not that
+  kind of tool.
+- **Rule 5 reads firmware source text, not just the built artifact** -
+  `firmware/runtime/gfx.h` and `firmware/lib/AMOLED/AMOLED_1in8.h`, to
+  derive the framebuffer's byte count. This is a deliberate, disclosed
+  exception to "machinery knows nothing about this board, and only the
+  artifact is read": the framebuffer is a runtime `malloc`, not a linker
+  allocation, so nothing in the ELF or map names it, and the only place the
+  number exists is the source that computes it. See decision
+  [0010](../../docs/decisions/0010-every-instrument-read-upstream-of-its-bug.md)'s
+  own record of this - every other instrument in this project reads inside
+  the toolchain or inside the emulator; this failure lived downstream of
+  both, in a runtime allocation, which is exactly why this one rule reaches
+  one step further back, to the source that decides the allocation's size.
