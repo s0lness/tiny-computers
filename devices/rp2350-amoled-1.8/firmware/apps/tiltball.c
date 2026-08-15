@@ -253,6 +253,28 @@
                        // is not touched by a finger, but "forgiving" is the
                        // house style regardless of which input drives it.
 
+// The hole is drawn as an OPENING, not as a disc. It was a solid black disc
+// first, which made it and the ball two black circles of nearly the same
+// size sitting side by side on an empty dish: nothing in the picture said
+// which one the child was moving and which one she was aiming at. Every
+// test passed, because a test counts pixels and cannot read a picture.
+//
+// A hole is an absence, so it is drawn as one: a rim with a pale recess
+// inside it, leaving the ball as the only solid black thing on the dish.
+// That also makes the capture animation read correctly for free - the
+// shrinking ball stays visible against the pale recess as it goes down,
+// instead of one black shape dissolving into another.
+//
+// Sized off HOLE_R inward so the physics above is untouched: the capture
+// radius, the ripple's start radius and every rectangle this app pushes
+// still key off the same HOLE_R they always did.
+#define HOLE_RIM_HALF 4.5f                          // 9px rim, the house weight
+#define HOLE_RIM_R (HOLE_R - HOLE_RIM_HALF)         // 25.5: rim spans 21..30
+#define HOLE_IN_R (HOLE_R - 2.0f * HOLE_RIM_HALF)   // 21: the recess
+#define HOLE_FILL_GRAY 214.0f                       // clearly not paper, and
+                                                     // just as clearly not the
+                                                     // ball's ink
+
 // How close the ball's CENTRE must come to the hole's centre to fall in.
 // Well inside HOLE_R (30): by the time this fires the ball is already deep
 // inside the hole's own disc, so the trigger reads as "it went in", not
@@ -432,7 +454,13 @@ static void paint_rect(const tiltball_state_t *s, rect_t r) {
 
             float rh2 = dxh * dxh + dyh * dyh;
             if (rh2 <= holeOut2) {
-                float d = sqrtf(rh2) - HOLE_R;
+                float rh = sqrtf(rh2);
+                // The recess first, then the rim over it: MIN composition
+                // means the darker rim wins wherever the two overlap, so
+                // the order here is for reading, not for correctness.
+                uint8_t w = shade(0.5f - (rh - HOLE_IN_R), HOLE_FILL_GRAY);
+                if (w < ink) ink = w;
+                float d = fabsf(rh - HOLE_RIM_R) - HOLE_RIM_HALF;
                 uint8_t v = shade(0.5f - d, 0.0f);
                 if (v < ink) ink = v;
             }

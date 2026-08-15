@@ -258,9 +258,16 @@
 #define PIN_APEX_X    (PIN_BACK_X - 2.0f * PIN_ROW_GAP)
 
 #define PIN_HEIGHT    44.0f   // standing, base to tip
+// A bowling pin's silhouette is base, WAIST, then a head that bulges back
+// out - the head is what makes it a pin rather than a cone. PIN_R_TOP was
+// 3.0, i.e. narrower than the waist above it, so the shape tapered to a
+// point all the way up and read as a spike or an upside-down teardrop.
+// draw_pin's own comment already said "then a small round head"; the code
+// did not draw one. Every test passed either way, because none of them can
+// read a picture.
 #define PIN_R_BASE    8.5f
-#define PIN_R_NECK    4.5f
-#define PIN_R_TOP     3.0f
+#define PIN_R_NECK    4.2f   // the waist, and it must be the NARROWEST point
+#define PIN_R_TOP     6.2f   // the head, ~1.5x the waist, round-capped
 
 // Domino radius: a standing pin within this of one that just toppled goes
 // down too, one hop only (section on "domino chain" - simple and bounded
@@ -770,7 +777,11 @@ static void draw_pin(float bx, float by, float dirX, float dirY, float u, uint16
     // that lying flat - long enough to still read as a pin, short enough
     // to look like it is now lying rather than still standing.
     float h = PIN_HEIGHT * (1.0f - 0.38f * u);
-    float neckT = 0.55f;
+    // The waist sits high (0.64, was 0.55): a pin's body is most of its
+    // height and its neck-and-head are the short bit on top. At 0.55 the
+    // head section was nearly half the pin, which reads as a cone with a
+    // knob rather than as a pin.
+    float neckT = 0.64f;
     float midX = bx + tx * h * neckT, midY = by + ty * h * neckT;
     float tipX = bx + tx * h,          tipY = by + ty * h;
     float rBase = PIN_R_BASE, rNeck = PIN_R_NECK * (1.0f - 0.25f * u), rTip = PIN_R_TOP;

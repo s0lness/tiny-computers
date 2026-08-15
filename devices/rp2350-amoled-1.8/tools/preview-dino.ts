@@ -31,7 +31,12 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-const APP_DINO = 4; // g_apps[] = { chrono, sketch("draw"), timer, four, dino }
+// Resolved from the module's OWN app table at load time, never hardcoded.
+// It was `= 4` until the eleven-app merge moved dino to 7, and this tool
+// then cheerfully rendered the spirit level into every dino-*.png without a
+// word of complaint. An index is not a name, and only the module knows the
+// mapping between them.
+let APP_DINO = -1;
 const APP_INDEX_MENU = -1;
 
 async function loadDevice() {
@@ -55,9 +60,32 @@ async function loadDevice() {
     memory = inst.exports.memory as WebAssembly.Memory;
     const e = inst.exports as any;
     if (e.emu_init() !== 1) throw new Error("emu_init() failed");
+
+    const jsonBytes = new Uint8Array(memory.buffer, e.emu_device());
+    let end = 0; while (jsonBytes[end] !== 0) end++;
+    const apps: string[] = JSON.parse(dec.decode(jsonBytes.subarray(0, end))).apps || [];
+    APP_DINO = apps.indexOf("dino");
+    if (APP_DINO < 0) {
+        throw new Error(
+            "this emu.wasm has no dino app in its table - rebuild it: " +
+            "bun run emulator/wasm/build.ts",
+        );
+    }
+
     e.emu_tick(0);
     return {
-        switchTo(index: number) { e.emu_app_switch(index); e.emu_tick(10); },
+        // Asserts against the app the module says it is IN, which is a
+        // different fact from the index this tool asked for. Comparing the
+        // requested index to itself passes even when the wrong app renders.
+        switchTo(index: number) {
+            e.emu_app_switch(index);
+            e.emu_tick(10);
+            const landed = e.emu_app_current();
+            // The menu lives in a negative private slot, outside apps[].
+            const want = index === APP_INDEX_MENU ? "the menu" : "dino";
+            const got = landed === APP_INDEX_MENU ? "the menu" : (apps[landed] ?? `index ${landed}`);
+            if (got !== want) throw new Error(`asked for index ${index} and landed in ${got}, not ${want}`);
+        },
         touch(down: boolean, nowMs: number) { e.emu_touch(down ? 1 : 0, 184, 224); e.emu_tick(nowMs); },
         tick(nowMs: number) { e.emu_touch(0, 0, 0); e.emu_tick(nowMs); },
         fb(): Uint8Array { return new Uint8Array(memory.buffer, e.emu_fb(), PANEL_W * PANEL_H * 2).slice(); },

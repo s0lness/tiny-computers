@@ -25,7 +25,6 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-const APP_BOWLING = 4; // g_apps[] = { chrono, sketch("draw"), timer, four, bowling }
 
 // Mirrors of bowling.c's own constants - see feature-bowling.ts's comment
 // on why these are derived the same way rather than hand-copied.
@@ -61,10 +60,26 @@ async function loadDevice() {
     memory = inst.exports.memory as WebAssembly.Memory;
     const e = inst.exports as any;
     if (e.emu_init() !== 1) throw new Error("emu_init() failed");
+
+    const jsonBytes = new Uint8Array(memory.buffer, e.emu_device());
+    let end = 0; while (jsonBytes[end] !== 0) end++;
+    const apps: string[] = JSON.parse(dec.decode(jsonBytes.subarray(0, end))).apps || [];
+    const APP_BOWLING = apps.indexOf("bowling");
+    if (APP_BOWLING < 0) {
+        throw new Error(
+            "this emu.wasm has no bowling app in its table - rebuild it: " +
+            "bun run emulator/wasm/build.ts",
+        );
+    }
+
     e.emu_tick(0);
     e.emu_app_switch(APP_BOWLING);
     e.emu_tick(10);
-    if (e.emu_app_current() !== APP_BOWLING) throw new Error("did not land in bowling");
+    // Against the NAME, not against the index this tool just passed in. The
+    // old assertion compared APP_BOWLING to itself, so it stayed green while
+    // the eleven-app merge silently made index 4 the spirit level.
+    const landed = apps[e.emu_app_current()];
+    if (landed !== "bowling") throw new Error(`asked for index ${APP_BOWLING} and landed in "${landed}"`);
     return {
         touch(down: boolean, lx: number, ly: number, nowMs: number) {
             e.emu_touch(down ? 1 : 0, PANEL_W - 1 - Math.round(ly), Math.round(lx));

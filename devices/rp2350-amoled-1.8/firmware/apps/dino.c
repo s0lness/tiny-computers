@@ -212,9 +212,17 @@
  * above this rectangle on a full-height jump (tools/gate/run.ts, "dino/tap
  * top-right"), because DINO_RECT_Y0 was built from the raw endpoint alone.
  */
-#define DINO_RECT_X0 -78
-#define DINO_RECT_X1  86
-#define DINO_RECT_Y0 (-(JUMP_APEX_PX) - 188.0f) // head top (-158) - its own radius (26) - pad (4)
+// Re-derived for the third-pass silhouette (see draw_dino), which is wider
+// and much shorter than the one these numbers were first written for. Each
+// bound is the extreme point of a real shape plus 4px of pad, not a guess:
+//   X0  tail tip (-88) - its own radius (5) - pad
+//   X1  snout centre (+80) + its own radius (14) + pad
+//   Y0  head centre (-106) - its own radius (22) - pad, above the apex
+// X0 stops 23px clear of the bezel band at DINO_X=120, which is the reason
+// the tail was sized to 88 rather than pushed further back.
+#define DINO_RECT_X0 -102
+#define DINO_RECT_X1  98
+#define DINO_RECT_Y0 (-(JUMP_APEX_PX) - 132.0f)
 #define DINO_RECT_Y1  12
 
 // Obstacles and the flag are both round-cornered posts on the ground; one
@@ -385,40 +393,61 @@ static void draw_flag(float ox) {
 static void draw_dino(float ox, float liftPx, bool running, float traveledPx) {
     float oy = GROUND_Y - liftPx; // the risen body's own local origin
 
-    // Torso: hip to chest, tapered, upright rather than a diagonal lean -
-    // Chrome's own dino stands fairly vertical even mid-stride. Ends well
-    // clear of the ground (hip's own round cap bottoms out ~26px above
-    // it) so the legs below have real daylight to be visible IN, rather
-    // than being swallowed by the torso's own silhouette - the second
-    // pass's fix for the first pass's "legs invisible, reads as a blob
-    // standing on a shadow" problem (see this function's own header).
-    float hipX = ox + 0.0f,   hipY = oy - 50.0f;
-    float chX  = ox + 14.0f,  chY  = oy - 90.0f;
-    shapes_fill_capsule_aa_land(hipX, hipY, 26.0f, chX, chY, 28.0f, PX_BLACK);
+    // THIRD PASS, and the reason for it: the first two both built a tall
+    // vertical stack (hip 50 up, chest 90, head 158), which is the shape of
+    // a hunched bird, not of a dinosaur. Every test passed both times,
+    // because a test counts pixels and cannot read a picture.
+    //
+    // What actually makes Chrome's dino legible in one glance is not its
+    // detail, it is its PROPORTION: the mass is horizontal, the head is
+    // carried forward rather than stacked on top, and a long tail behind
+    // balances it. Wider than tall is the whole trick. This silhouette is
+    // ~187px across against ~132 tall; the previous one was 164 across
+    // against 184 tall, i.e. portrait, which is why it read as a bird.
+    //
+    // Everything below is sized inward from DINO_RECT_X0/X1 rather than the
+    // rectangle being widened to fit it: the box already reaches within
+    // 23px of the bezel band on the left, and a silhouette that outgrows
+    // its own pushed rectangle is decision 0001's exact failure.
 
-    // Neck: a LONG capsule (68px, chest to head) tapering from the
-    // chest's own radius (28) down to 14 - thin enough, over enough
-    // length, that the mid-span silhouette is genuinely narrower than
-    // either end, rather than being swallowed by the chest's or head's
-    // own round cap the way a short neck was in the previous pass (this
-    // function's own header names that failure). The head disc below is
-    // drawn centred exactly at the neck's own thin endpoint, so the two
-    // meet cleanly rather than leaving a step.
-    float headX = ox + 36.0f, headY = oy - 158.0f;
-    shapes_fill_capsule_aa_land(chX, chY, 28.0f, headX, headY, 14.0f, PX_BLACK);
+    // Body: a long, near-horizontal barrel from hip (back, low) to chest
+    // (front, slightly higher). This is the mass the eye reads first.
+    float hipX = ox - 6.0f,   hipY = oy - 62.0f;
+    float chX  = ox + 36.0f,  chY  = oy - 72.0f;
+    shapes_fill_capsule_aa_land(hipX, hipY, 30.0f, chX, chY, 25.0f, PX_BLACK);
+
+    // Neck: SHORT and forward-leaning now (40px, was 68). A long neck is
+    // what pushed the head up into the bird silhouette; carrying it forward
+    // over the chest instead is what puts the weight in front of the legs,
+    // which is the pose a running theropod actually holds.
+    float headX = ox + 58.0f, headY = oy - 106.0f;
+    shapes_fill_capsule_aa_land(chX, chY, 25.0f, headX, headY, 15.0f, PX_BLACK);
 
     // Head (a disc, not a tapered capsule - see this function's own header)
-    // plus a smaller snout bump forward and slightly below it, the two
-    // together reading as a blunt animal profile.
-    shapes_fill_disc_aa_land(headX, headY, 26.0f, PX_BLACK);
-    shapes_fill_disc_aa_land(ox + 60.0f, oy - 148.0f, 14.0f, PX_BLACK);
+    // plus a snout bump forward and slightly below it, the two together
+    // reading as a blunt animal profile pointing the way she is running.
+    shapes_fill_disc_aa_land(headX, headY, 22.0f, PX_BLACK);
+    shapes_fill_disc_aa_land(ox + 80.0f, oy - 100.0f, 14.0f, PX_BLACK);
 
-    // Tail: sweeps back AND UP from the hip, its tip ending HIGHER than
-    // the hip it left from - the raised-tail running silhouette that
-    // reads as a dinosaur, replacing the first pass's tail (which drooped
-    // down and read as a duck's).
-    shapes_fill_tapered_quad_aa_land(hipX, hipY, 22.0f, ox - 34.0f, oy - 70.0f,
-                                      ox - 64.0f, oy - 90.0f, 6.0f, PX_BLACK);
+    // Tail: long and near-horizontal, sweeping BACK from the hip and
+    // rising only slightly, so it counterweights the forward head instead
+    // of pointing away from the body the way the previous pass's short
+    // steep spike did. It is the single biggest contributor to reading as
+    // a dinosaur, and it is 88px long against the body's own 42.
+    // It starts at the body's own BACK EDGE (hip - 30 = the belly capsule's
+    // radius), not at the hip point: a tail rooted at the hip spends its
+    // first 30px inside the belly, so only the thin outer end survives and
+    // it renders as a flat sliver rather than as a taper. Rooting it where
+    // the body actually ends is what makes the taper visible against paper.
+    shapes_fill_tapered_quad_aa_land(ox - 30.0f, oy - 64.0f, 26.0f,
+                                      ox - 62.0f, oy - 72.0f,
+                                      ox - 92.0f, oy - 86.0f, 6.0f, PX_BLACK);
+
+    // The little forearm. Too small to be a limb at this size and that is
+    // the point: a stubby arm under a big head is the one cue that says
+    // "theropod" rather than "some animal", and it costs one capsule.
+    shapes_fill_capsule_aa_land(ox + 40.0f, oy - 74.0f, 8.0f,
+                                 ox + 58.0f, oy - 62.0f, 5.0f, PX_BLACK);
 
     // Legs. Attached BELOW the torso's own visible silhouette (legHipY is
     // closer to the ground than hipY + the torso's radius), not at the
@@ -451,10 +480,14 @@ static void draw_dino(float ox, float liftPx, bool running, float traveledPx) {
     // shrinks as she rises, which is the only height cue a silhouette game
     // without a ground line has (see this file's header on why there is no
     // drawn ground line at all).
-    float halfLen = 32.0f - liftPx * 0.3f;
-    if (halfLen < 7.0f) halfLen = 7.0f;
-    shapes_fill_capsule_aa_land(ox + 18.0f - halfLen, GROUND_Y, 6.0f,
-                                 ox + 18.0f + halfLen, GROUND_Y, 6.0f, PX_BLACK);
+    // Shorter and thicker than the first version (24x9 rather than 32x6):
+    // a capsule 64px long and 12px tall is a straight line with two rounded
+    // ends, which is what decision 0009 forbids by name. At roughly 3.5:1 it
+    // reads as the soft oval a shadow should be.
+    float halfLen = 24.0f - liftPx * 0.24f;
+    if (halfLen < 6.0f) halfLen = 6.0f;
+    shapes_fill_capsule_aa_land(ox + 14.0f - halfLen, GROUND_Y, 9.0f,
+                                 ox + 14.0f + halfLen, GROUND_Y, 9.0f, PX_BLACK);
 }
 
 // The record ripple - see this file's header and RIPPLE_* above. `ageMs`
