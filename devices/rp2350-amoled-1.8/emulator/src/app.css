@@ -278,6 +278,11 @@
   box-shadow: 0 4px 14px rgba(0, 0, 0, .08);
 }
 .tilt-slider { width: 64px; }
+/* TILT (main.ts's #tilt, 0-180deg off flat): the slider plus a live text
+   readout of the same state sendGravity() just sent (main.ts's
+   updateTiltReadout()), so what is shown and what the firmware got can
+   never read as two different things. */
+.tilt-control { display: inline-flex; align-items: center; gap: 5px; }
 
 /* ---------- toolbox: the device's own buttons and sensors, next to tilt
    (owner feedback: these belong with the other physical-manipulation
@@ -313,17 +318,9 @@
 }
 #sensorToolbox .sensor-btn:hover { background: var(--row-hover); color: var(--ink-soft); }
 
-/* A "gravity" sensor's control (sensors.ts): two angle sliders and a way
-   back to flat. It sits in the same row as the cosmetic #tilt slider on
-   purpose and looks deliberately unlike it - captioned, grouped, with a
-   readout - because the two do different things and confusing them would
-   mean not knowing which one a wrong-looking app is reacting to: #tilt
-   rotates the PICTURE and sends the firmware nothing, this one tells the
-   firmware which way is down. */
-.sensor-vec { display: inline-flex; align-items: center; gap: 6px; }
-.sensor-vec-slider { display: inline-flex; align-items: center; gap: 3px; }
-.sensor-vec-slider .tilt-slider { width: 54px; }
-.sensor-vec .pill.hint { font-size: 10.5px; white-space: nowrap; }
+.tilt-control .pill.hint { font-size: 10.5px; white-space: nowrap; }
+
+#tilt[disabled] { opacity: .5; }
 
 #btnChord[disabled] { opacity: .4; cursor: default; }
 

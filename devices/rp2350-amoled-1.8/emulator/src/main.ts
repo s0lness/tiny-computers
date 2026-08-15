@@ -15,6 +15,7 @@ import { TouchOverlay, CONTACT_PRESETS, DEFAULT_PX_PER_MM } from "./touchoverlay
 import { mapClientPoint } from "./rotate";
 import { makeDraggable, wireButton, createButtonElement, applyRotation, type WiredButton, type ButtonEvents } from "./device";
 import { buildSensorControls } from "./sensors";
+import { gravityFromPose, edgeNameForTurn, tiltLabel } from "./puckpose";
 import { buildTuneControls } from "./tunables";
 import { buildAppStrip, type AppStripControl } from "./appstrip";
 import { ShortcutRegistry, assignShortcut } from "./shortcuts";
@@ -142,8 +143,63 @@ let pointerIdDown: number | null = null;
 // down and right-to-left, and only -90 reads left-to-right, right way up.
 // A symmetric screen like chrono's "00:00" would have looked identical at
 // any of these and hidden the bug.
+//
+// quickDeg now does DOUBLE DUTY, on purpose (see puckpose.ts's header
+// comment): it is still the view-rotation control above, AND it is TURN,
+// the azimuth half of the gravity vector sendGravity() below computes -
+// which of the panel's four edges is being lifted. These used to be
+// impossible to conflate because only one of them existed; now that turning
+// the puck for a landscape app and turning it to reach a different
+// TILT_UP_* edge are the same physical act, giving them two separate
+// numbers would be the exact "two controls that can disagree" bug decision
+// 0003 forbids (see this file's own header comment on tiltDeg below).
+//
+// tiltDeg used to be a small (-25..25) cosmetic slider that rotated the
+// puck's own picture for a jauntier photo and told the firmware nothing.
+// It is now TILT: degrees off flat (0 = lying flat screen up, 90 = on edge,
+// 180 = screen down flat), the exact quantity firmware/runtime/tilt.h's own
+// tiltDeg field measures - which is why the name did not need to change,
+// only its range and what moving it does. It no longer rotates the puck's
+// on-screen picture (an out-of-plane tilt has no honest 2D inverse for
+// mapClientPoint to undo - see rotate.ts), so turning is what you SEE and
+// tilting is what you READ, in tiltReadout() below; both are what the
+// firmware GETS, through sendGravity().
 let quickDeg = -90;
 let tiltDeg = 0;
+
+// ---- gravity: the one place the puck's own turn/tilt state becomes the
+// ABI call that feeds the firmware, per firmware/runtime/tilt.h and
+// puckpose.ts's header comment on why this is safe to compute here (it is
+// a "which way is down" vector, never an "up edge" or a filtered angle -
+// those stay in tilt.c, compiled into this same module, on both targets).
+//
+// Called once per actual change (a button click, a slider move, a module
+// reload), not once per animation frame: emu_shim.c's emu_tick() already
+// resubmits the last vector this function sent, every tick, on its own
+// (tilt_submit_device_g() needs a fresh timestamp every frame for its
+// filter to converge, not a fresh VALUE - see emu_shim.c's "SUBMITTED EVERY
+// TICK" comment). Calling this from frame() as well would send the
+// identical vector 60 times a second for no firmware-visible effect, and
+// would flood the recorder with a "sensorv" event every frame a replay
+// would then have to re-apply one at a time.
+function sendGravity(): void {
+  if (!emu || !emu.emu_sensor_vector || gravitySensorIndex < 0) return;
+  const [x, y, z] = gravityFromPose(quickDeg, tiltDeg);
+  emu.emu_sensor_vector(gravitySensorIndex, x, y, z);
+  // Sticky values have to be in the trace or a replay runs the whole
+  // session at the boot pose (see recorder.ts, and the "gravity" sensor's
+  // old onVector wiring this replaces).
+  recorder.record({ t: performance.now(), k: "sensorv", i: gravitySensorIndex, x, y, z });
+}
+
+// The tilt slider's own readout, and (via updateDiagStrip) the quiet
+// instrument strip: both read straight off quickDeg/tiltDeg, the same two
+// numbers sendGravity() just sent, so there is no second copy of "what pose
+// is this" anywhere on the page to drift from the first.
+function updateTiltReadout(): void {
+  const el = document.getElementById("tiltReadout");
+  if (el) el.textContent = tiltLabel(tiltDeg);
+}
 
 let wiredButtons: WiredButton[] = [];
 // Keyed by the declared button id (DeviceButton.id), not array index: this
@@ -159,6 +215,12 @@ let wiredButtonById = new Map<string, WiredButton>();
 let buttonElById = new Map<string, HTMLElement[]>();
 let appStripControl: AppStripControl | null = null;
 let lastAppIndex = 0;
+
+// The declared index of the "gravity" sensor (emu_device()'s sensors[]),
+// same convention as shakeSensorIndex above: -1 until a module that
+// declares one loads. Found once per buildChrome(), used by sendGravity()
+// below every time the puck's own turn/tilt state changes.
+let gravitySensorIndex = -1;
 
 let paused = false;
 let replayer: Replayer | null = null;
@@ -422,13 +484,6 @@ function buildChrome(d: DeviceDescriptor): void {
       // earlier, gentler kick here was visually indistinguishable from
       // noise).
       if (sensor.id.toLowerCase() === "shake") puckMotion.impulse((Math.random() - 0.5) * 500, (Math.random() - 0.5) * 380);
-    }, (_sensor, index, x, y, z) => {
-      // A vector sensor's value is STICKY (emu_abi.h), so it belongs in the
-      // trace like any other input: a replay that skipped it would run the
-      // whole recorded session at the module's boot pose, and an
-      // orientation-driven app would do something else entirely. Recorded
-      // with the current tick's timestamp, same as every other input event.
-      recorder.record({ t: performance.now(), k: "sensorv", i: index, x, y, z });
     });
     appStripControl = buildAppStrip($("#appStrip"), d.apps || [], emu);
 
@@ -444,6 +499,17 @@ function buildChrome(d: DeviceDescriptor): void {
   }
 
   shakeSensorIndex = (d.sensors || []).findIndex((s) => s.id.toLowerCase() === "shake");
+  gravitySensorIndex = (d.sensors || []).findIndex((s) => s.kind === "gravity");
+  updateTiltAvailability();
+  // Resend the page's own turn/tilt state into the freshly loaded module:
+  // emu_init() always boots the wasm side flat ((0,0,1), emu_shim.c), so
+  // without this a reload while the puck was tipped would leave the visible
+  // slider/readout and the firmware's actual gravity disagreeing until the
+  // next touch of either control - exactly the "two things that can
+  // disagree" bug this whole control exists to close (see quickDeg/tiltDeg's
+  // own header comment above).
+  sendGravity();
+  updateTiltReadout();
 
   touchEnabled = (d.touch?.points ?? 0) > 0;
   panelEl.style.cursor = touchEnabled ? "crosshair" : "default";
@@ -452,6 +518,23 @@ function buildChrome(d: DeviceDescriptor): void {
   refreshContactInfo();
   updateChordButton(d);
   positionDevice();
+}
+
+// Mirrors updateChordButton's pattern: a control this build's module does
+// not actually support (no declared "gravity" sensor, or an emu.wasm built
+// before emu_sensor_vector existed) says so and disables itself, rather
+// than silently doing nothing when moved.
+function updateTiltAvailability(): void {
+  const has = gravitySensorIndex >= 0 && !!emu?.emu_sensor_vector;
+  const input = document.getElementById("tilt") as HTMLInputElement | null;
+  if (!input) return;
+  input.disabled = !has;
+  input.title = has
+    ? "tilt: 0° flat, 90° on edge, 180° screen down - the same vector every app's f->tilt reads (firmware/runtime/tilt.h). " +
+      "Feeds emu_sensor_vector(); the firmware's own tilt.c does the filtering and decides which edge is \"up\" - this control only " +
+      "says which way gravity points. The device-to-panel axis mapping tilt.c uses is a HYPOTHESIS (identity), never measured on real " +
+      "hardware; if that is ever corrected, this control follows automatically after the next wasm rebuild - see tilt.c's own header."
+    : "this build does not declare a \"gravity\" sensor (or predates emu_sensor_vector)";
 }
 
 function sleep(ms: number): Promise<void> {
@@ -670,6 +753,10 @@ function updateDiagStrip(): void {
     parts.push(`${lastTouchMapped.panel.x},${lastTouchMapped.panel.y}`);
   }
   parts.push(`push ${pushOverlay.lastCount}×${pushOverlay.lastWidth}px`);
+  // The exact pose sendGravity() last sent, in the same words the turn/tilt
+  // controls themselves use, so nothing about "what is the puck doing right
+  // now" is guesswork from watching an app react to it.
+  if (gravitySensorIndex >= 0) parts.push(`tilt ${edgeNameForTurn(quickDeg)} ${tiltLabel(tiltDeg)}`);
   // Only for a device that declared sound at all; "suspended" is what
   // makes the autoplay-policy case say so rather than playing nothing
   // silently, per emu_abi.h.
@@ -702,7 +789,7 @@ function wirePanelInput(): void {
     if (!touchEnabled || replayer) return;
     pointerIdDown = e.pointerId;
     panelEl.setPointerCapture(e.pointerId);
-    const m = mapClientPoint(e.clientX, e.clientY, panelEl, quickDeg, tiltDeg, panelW, panelH);
+    const m = mapClientPoint(e.clientX, e.clientY, panelEl, quickDeg, panelW, panelH);
     liveTouch = { fingers: 1, x: m.panel.x, y: m.panel.y };
     touchSim?.setPointer(true, m.panel.x, m.panel.y);
     lastTouchMapped = m;
@@ -710,7 +797,7 @@ function wirePanelInput(): void {
   });
   panelEl.addEventListener("pointermove", (e) => {
     if (!touchEnabled) return;
-    const m = mapClientPoint(e.clientX, e.clientY, panelEl, quickDeg, tiltDeg, panelW, panelH);
+    const m = mapClientPoint(e.clientX, e.clientY, panelEl, quickDeg, panelW, panelH);
     if (pointerIdDown === e.pointerId) {
       liveTouch = { fingers: 1, x: m.panel.x, y: m.panel.y };
       touchSim?.setPointer(true, m.panel.x, m.panel.y);
@@ -782,7 +869,11 @@ function frame(): void {
   }
   pollWindowShake(now);
   puckMotion.tick(window.screenX, window.screenY, now);
-  applyRotation(bezelEl, quickDeg + tiltDeg, puckMotion.offsetX, puckMotion.offsetY);
+  // quickDeg only: tilt no longer rotates the puck's own picture (see its
+  // declaration's header comment and rotate.ts) - only turn does, and turn
+  // is what mapClientPoint's touch mapping stays correct under at every
+  // angle. tiltReadout() carries what tilt is doing instead.
+  applyRotation(bezelEl, quickDeg, puckMotion.offsetX, puckMotion.offsetY);
   updateDiagStrip();
   requestAnimationFrame(frame);
 }
@@ -1041,6 +1132,12 @@ function wireStaticUI(): void {
     if (!overlayEnabled) overlayCtx.clearRect(0, 0, overlayEl.width, overlayEl.height);
   });
 
+  // TURN: the four quick-rotate buttons. Doubles as the azimuth half of the
+  // gravity vector (see quickDeg's own header comment and puckpose.ts) -
+  // clicking one both rotates the puck the way it always did AND is now the
+  // easy, obvious way to reach a specific TILT_UP_* edge (tilt.h): 0=TOP,
+  // 90=RIGHT, 180=BOTTOM, -90=LEFT, verified against emulator/wasm/tests/
+  // feature-tilt.ts's own assertions (see puckpose.ts's gravityFromPose).
   $("#rotQuick")
     .querySelectorAll<HTMLButtonElement>("button")
     .forEach((b) => {
@@ -1050,18 +1147,28 @@ function wireStaticUI(): void {
           .querySelectorAll("button")
           .forEach((x) => x.classList.remove("active"));
         b.classList.add("active");
-        applyRotation(bezelEl, quickDeg + tiltDeg, puckMotion.offsetX, puckMotion.offsetY);
+        applyRotation(bezelEl, quickDeg, puckMotion.offsetX, puckMotion.offsetY);
+        sendGravity();
+        updateTiltReadout(); // the edge name in the readout depends on turn too
       });
     });
+  // TILT: degrees off flat. The other half of the same gravity vector - see
+  // quickDeg/tiltDeg's shared header comment above for why this no longer
+  // rotates the puck's own picture.
   $<HTMLInputElement>("#tilt").addEventListener("input", (e) => {
     tiltDeg = Number((e.target as HTMLInputElement).value);
-    applyRotation(bezelEl, quickDeg + tiltDeg, puckMotion.offsetX, puckMotion.offsetY);
+    sendGravity();
+    updateTiltReadout();
   });
   // The "active" class on one #rotQuick button is just markup matching
   // quickDeg's actual default above; nothing paints the rotation from CSS
   // alone, so without this call the puck would sit at visual 0deg (wrong,
-  // see quickDeg's comment) until the first frame runs.
-  applyRotation(bezelEl, quickDeg + tiltDeg);
+  // see quickDeg's comment) until the first frame runs. sendGravity() is a
+  // no-op here (no module loaded yet, see its own guard), but
+  // updateTiltReadout() still gives the slider a correct label from the
+  // very first paint.
+  applyRotation(bezelEl, quickDeg);
+  updateTiltReadout();
 
   btnPause.addEventListener("click", () => {
     paused = !paused;

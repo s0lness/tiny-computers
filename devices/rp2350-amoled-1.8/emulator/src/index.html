@@ -122,13 +122,29 @@
            but these controls stay put at the bottom centre. -->
       <div class="bottom-bar">
         <div class="stage-controls">
-          <span class="segtog seg-sm" id="rotQuick" title="view rotation">
-            <button data-deg="0">0&deg;</button>
-            <button data-deg="90">90&deg;</button>
-            <button data-deg="-90" class="active">-90&deg;</button>
-            <button data-deg="180">180&deg;</button>
+          <!-- TURN: which of the panel's four edges is being lifted, and
+               (unchanged) the view rotation for reading a landscape app
+               sideways - now the SAME control, on purpose (main.ts's
+               quickDeg header comment, docs/decisions/0003): turning the
+               puck to read chrono/timer sideways and turning it to reach a
+               different tilt.h TILT_UP_* edge had to stop being two numbers
+               that could quietly disagree. data-deg values are the ABI:
+               emulator/scripts/verify-ui-feedback.ts and puckpose.ts's
+               gravityFromPose() both key off them, so keep 0/90/-90/180. -->
+          <span class="segtog seg-sm" id="rotQuick" title="turn: which edge points up when tilted (also the view rotation for reading a landscape app sideways)">
+            <button data-deg="0" title="TOP edge up (0&deg;)">TOP</button>
+            <button data-deg="90" title="RIGHT edge up (90&deg;)">RIGHT</button>
+            <button data-deg="180" title="BOTTOM edge up (180&deg;)">BOTTOM</button>
+            <button data-deg="-90" class="active" title="LEFT edge up (-90&deg;) - the default view rotation for a landscape app read sideways">LEFT</button>
           </span>
-          <input id="tilt" type="range" min="-25" max="25" step="1" value="0" title="tilt" class="tilt-slider" />
+          <!-- TILT: degrees off flat, 0-180 (tilt.h's own tiltDeg field: 0
+               flat screen up, 90 on edge, 180 screen down). Turn and tilt
+               together are the ONLY two numbers this page sends the
+               firmware - see main.ts's sendGravity() and puckpose.ts. -->
+          <span class="tilt-control" title="tilt: 0&deg; flat, 90&deg; on edge, 180&deg; screen down">
+            <input id="tilt" type="range" min="0" max="180" step="1" value="0" class="tilt-slider" />
+            <span id="tiltReadout" class="pill hint">flat</span>
+          </span>
           <!-- Owner feedback: the device's own buttons and sensors belong
                with the other physical-manipulation controls (tilt, rotate),
                not buried in the sidebar. buttonToolbox/sensorToolbox are

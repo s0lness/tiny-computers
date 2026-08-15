@@ -1,7 +1,8 @@
 // Maps a click/touch position in viewport (client) coordinates back to the
 // panel's own, unrotated coordinate space, undoing whatever CSS rotation is
-// currently applied to the puck on screen (a quick-rotate for devices used
-// sideways, plus a cosmetic tilt slider on top of it).
+// currently applied to the puck on screen (the quick-rotate for a device
+// used sideways - main.ts's #rotQuick / quickDeg, which is now also the
+// azimuth half of the gravity vector, see puckpose.ts).
 //
 // emu_abi.h is explicit that this is the emulator's job, not the browser's:
 // "If a device is used rotated, mapping the pointer back is the emulator's
@@ -37,17 +38,18 @@ function clampRound(v: number, max: number): number {
 
 // quickDeg is the deliberate rotate control (0 / 90 / -90 / 180 only,
 // enforced by the caller): a device is used rotated, or it isn't, and it
-// stays whichever quarter-turn it is. tiltDeg is the small cosmetic slider
-// on top, for a jauntier photo of the puck, and is folded into the panel
-// mapping (so touch is still correct while tilted) but deliberately left
-// out of the "view" space, which only means something at exact quarter
-// turns.
+// stays whichever quarter-turn it is. There used to be a second, cosmetic
+// "tiltDeg" folded in on top of it (a jauntier photo of the puck); that
+// slider now drives real out-of-plane tilt instead (puckpose.ts) and is
+// deliberately NOT part of this 2D rotation any more - out-of-plane tilt
+// has no meaningful inverse in a flat click-to-panel mapping, so the puck's
+// on-screen rotation, and the touch mapping below, are governed by quickDeg
+// alone.
 export function mapClientPoint(
   clientX: number,
   clientY: number,
   canvas: HTMLElement,
   quickDeg: number,
-  tiltDeg: number,
   panelW: number,
   panelH: number
 ): MappedTouch {
@@ -61,8 +63,7 @@ export function mapClientPoint(
   const dx = clientX - cx;
   const dy = clientY - cy;
 
-  const totalDeg = quickDeg + tiltDeg;
-  const theta = (totalDeg * Math.PI) / 180;
+  const theta = (quickDeg * Math.PI) / 180;
   const cos = Math.cos(theta);
   const sin = Math.sin(theta);
   // Inverse of CSS's own rotation matrix, rotate(theta):
@@ -81,9 +82,9 @@ export function mapClientPoint(
     y: clampRound(((localDy + ch / 2) * panelH) / ch, panelH),
   };
 
-  // View space: the same click re-based into the rendered (quick-rotated
-  // only) box, using the known unrotated cw/ch rather than the tilt-padded
-  // getBoundingClientRect box, so tilt cannot corrupt this figure.
+  // View space: the same click re-based into the rendered (quick-rotated)
+  // box, using the known unrotated cw/ch rather than getBoundingClientRect
+  // directly.
   const quarterTurned = ((Math.round(quickDeg / 90) % 2) + 2) % 2 === 1;
   const viewCssW = quarterTurned ? ch : cw;
   const viewCssH = quarterTurned ? cw : ch;
