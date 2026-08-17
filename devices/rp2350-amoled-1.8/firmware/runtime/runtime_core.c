@@ -117,17 +117,29 @@ const int g_appCount = sizeof(g_apps) / sizeof(g_apps[0]);
 // compiled into a real build - CMakeLists.txt never lists stubapps.c and no
 // build here defines MENU_STUB_APPS on its own; it exists only for
 // tools/preview-menu-grid.ts's own instructions for judging decision 0013's
-// grid arithmetic at an app count this device does not have real apps for.
-// The roster tracks the WHOLE padded g_apps[] table here, real apps and the
-// stub alike, so that fixture keeps doing the one job it was built for
-// (showing the layout through the real menu_enter(), not a reimplementation)
-// rather than being capped at the fixed five-app roster below.
+// (and, since 2026-08-17, decision 0020's) grid arithmetic at an app count
+// this device does not have real apps for. The array is the WHOLE padded
+// g_apps[] table, real apps and the stub alike - unchanged shape from
+// before decision 0020.
+//
+// g_menuAppCount, below, is what actually picks how many of those entries
+// the menu shows, and it is MENU_STUB_APPS itself when that is SMALLER than
+// the array (MENU_STUB_APPS=4, 6 or 7: a hypothetical few-app menu, built
+// from the first few real apps in table order - their identity does not
+// matter for judging layout geometry, only their count does) and the whole
+// array when MENU_STUB_APPS is 11 or 12 (the padding case this fixture was
+// originally built for). One mechanism now covers every count
+// tools/preview-menu-grid.ts's own regression sweep (4, 5, 6, 7, 11, 12)
+// needs, rather than a padding-only fixture that could reach 11 or 12 and
+// nothing smaller.
 const int g_menuAppIndex[] = {
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 #if MENU_STUB_APPS > 11
     11,
 #endif
 };
+#define MENU_STUB_ARR_LEN ((int)(sizeof(g_menuAppIndex) / sizeof(g_menuAppIndex[0])))
+const int g_menuAppCount = (MENU_STUB_APPS < MENU_STUB_ARR_LEN) ? MENU_STUB_APPS : MENU_STUB_ARR_LEN;
 #else
 const int g_menuAppIndex[] = {
     0,  // chrono
@@ -136,8 +148,8 @@ const int g_menuAppIndex[] = {
     3,  // four
     10, // tables
 };
-#endif
 const int g_menuAppCount = (int)(sizeof(g_menuAppIndex) / sizeof(g_menuAppIndex[0]));
+#endif
 
 // Startup-only sentinel: "nothing has been entered yet", so do_switch()'s
 // first-ever call has no outgoing app to call leave() on. Never observed by

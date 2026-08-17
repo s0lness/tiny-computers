@@ -96,21 +96,32 @@ extern const app_t g_tablesApp;
  * scrolling, no swipe, no wheel and no momentum on this screen, and there
  * is nothing hidden from a child who cannot read a page number.
  *
- * THE CELL IS FIXED AT 112 TALL AND NEVER SHRINKS. This is the property
- * worth protecting, more than any single measurement: the cell height is a
- * constant, and the cell width bottoms out at LAND_W/MENU_COLS_MAX = 112
- * once there are four apps. So from the fourth app to the twelfth, ADDING
- * AN APP NEVER SHRINKS AN EXISTING TARGET. What the twelfth app spends is
- * cancel-band height (see THE CANCEL BAND below), not anybody's target.
- * The old design spent every target on every app.
+ * THE CELL NEVER SHRINKS BELOW 112, AND CAN GROW PAST IT (decision 0020,
+ * 2026-08-17). Until then the cell height was a fixed constant; it is now
+ * menu_cell_h(), which can only ever produce 112 or taller - never smaller
+ * - so the property this paragraph used to name ("the cell height is a
+ * constant") is still true in the direction that matters: from the fourth
+ * app up, ADDING AN APP NEVER SHRINKS AN EXISTING TARGET. A cell width
+ * still bottoms out at LAND_W/MENU_COLS_MAX = 112 once a row packs four
+ * apps, and that alone is still what pins nine-to-twelve apps at exactly
+ * 112 tall (see menu_cell_h()'s own comment: the narrowest row's width is
+ * one of the two things capping the height). What the twelfth app spends
+ * is cancel-band height (see THE CANCEL BAND below), not anybody's target.
+ * The old row-of-columns design spent every target on every app.
  *
- * The resulting sizes, which are what the design is judged on:
+ * The resulting sizes, which are what the design is judged on. Growth only
+ * shows up where a row's own narrowest width has slack past 112 AND the
+ * available height (MENU_AVAIL_H / rows) has room to spend it - five and
+ * six apps are both true at once; four, seven and up are not, and are
+ * exactly as tall as before this decision, just shifted down MENU_TOP_INSET
+ * (10px) for the bezel:
  *
  *     apps   grid   cell (w x h)   fingertips     cancel band
- *        4    4x1     112 x 112     1.5 x 1.5           256px
- *        6    3x2     149 x 112     2.0 x 1.5           144px
- *        9    3x3     149 x 112     2.0 x 1.5            32px
- *       12    4x3     112 x 112     1.5 x 1.5            32px
+ *        4    4x1     112 x 112     1.5 x 1.5           246px
+ *        5    3+2     up to 224x144 up to 3.0x1.9        70px
+ *        6    3x2     149 x 144     2.0 x 1.9            70px
+ *        9    3x3     149 x 112     2.0 x 1.5            22px
+ *       12    4x3     112 x 112     1.5 x 1.5            22px
  *
  * WHERE IT STOPS, said out loud rather than discovered. Three rows of 112
  * is 336 of the panel's 368, so twelve is the ceiling at MENU_COLS_MAX=4
@@ -145,22 +156,49 @@ extern const app_t g_tablesApp;
 #define ICON_W 96
 #define ICON_H 96
 
-// THE CELL. 112px is one and a half child fingertips, it holds the 96px
-// icon box with 8px of air all round, and it is a multiple of 8 - which is
-// not a coincidence but decision 0001: gfx maps a landscape rectangle to
-// the panel with width and height swapped, so a cell's landscape HEIGHT is
-// the pushed row length, and the row length is what has to be a multiple of
-// 8. A cell height of 110 or 120 would be just as finger-sized and would
-// break every push this file makes.
-#define MENU_CELL_H   112
+// THE FLOOR. 112px is one and a half child fingertips - decision 0013's own
+// invariant, and it still holds exactly: no cell is ever smaller than this,
+// whatever the app count. What changed 2026-08-17 (decision 0020) is that a
+// cell is no longer PINNED to this number; it is free to grow past it when
+// the roster is small enough to leave slack. menu_cell_h() below is the
+// only thing that can produce a taller cell, and it can only produce one
+// that is this or bigger - see its own comment.
+#define MENU_CELL_FLOOR 112
 
 // Four across is the widest row this panel can carry at a full fingertip
 // and a half: LAND_W / 4 = 112 exactly, with no remainder to hand anybody.
 #define MENU_COLS_MAX 4
 
-// Three rows of 112 = 336, leaving MENU_BAND_MIN below. Derived, not
-// chosen, so that changing MENU_CELL_H cannot silently overrun the panel.
-#define MENU_ROWS_MAX (LAND_H / MENU_CELL_H) // 3
+// THE TOP INSET, added 2026-08-17 (decision 0020). gfx.h's
+// PANEL_BEZEL_MARGIN_PX is the band the case hides along every edge, and
+// every other app that draws near a panel edge already keeps clear of it
+// (four.c, morpion.c, bowling.c, breakout.c and tables.c each define their
+// own SAFE_Y0 from this same constant). The menu never did: it has packed
+// icons to ly=0 since the grid was built on 2026-08-15, one day after the
+// bezel was even found, and nobody carried the rule over. With row 0's
+// icons about to get taller (closer to the true edge than a 96px icon
+// ever reached), this is the moment to stop skipping it rather than a new
+// gap to leave for later.
+#define MENU_TOP_INSET PANEL_BEZEL_MARGIN_PX
+
+// The smallest the cancel band below the grid is ever allowed to shrink to.
+// 22, not decision 0013's old 32: MENU_TOP_INSET above now spends 10 of
+// what used to be entirely unclaimed slack, so the same argument that made
+// 32 acceptable there ("still a real region for the gesture, because the
+// controller reports a centroid, not a contact patch") has to hold at 22
+// instead - see docs/decisions/0020 for why that is still a real region.
+#define MENU_CANCEL_FLOOR 22
+
+// What is left for the grid itself once the top inset and the cancel floor
+// are both paid for - 336 on today's panel, the same 368-32 decision 0013
+// built its own three-row ceiling from, just assembled from two smaller
+// pieces now instead of one leftover strip.
+#define MENU_AVAIL_H (LAND_H - MENU_TOP_INSET - MENU_CANCEL_FLOOR)
+
+// Three rows of 112 = 336 = MENU_AVAIL_H exactly, leaving nothing over -
+// the same ceiling decision 0013 always had, in the same number, now
+// derived from the floor instead of from a retired MENU_CELL_H constant.
+#define MENU_ROWS_MAX (MENU_AVAIL_H / MENU_CELL_FLOOR) // 3
 
 // How many rows the current app count needs. Clamped at MENU_ROWS_MAX so a
 // thirteenth app widens the rows instead of drawing a row off the bottom of
@@ -178,8 +216,7 @@ static int menu_rows(void) {
 // rows taking the extra: n apps over `rows` rows gives every row n/rows,
 // and the first n%rows rows one more. No row is ever two apps longer than
 // another, which matters because the LONGEST row is the one that decides
-// the narrowest cell on the screen. Five apps are 3 then 2 (149px then
-// 224px cells), never 4 then 1.
+// the narrowest cell on the screen. Five apps are 3 then 2 (never 4 then 1).
 static void menu_row_span(int r, int *first, int *cols) {
     int n = g_menuAppCount;
     int rows = menu_rows();
@@ -189,14 +226,58 @@ static void menu_row_span(int r, int *first, int *cols) {
     *cols  = base + (r < extra ? 1 : 0);
 }
 
+// The narrowest cell WIDTH any row in the current layout produces. Used
+// below to keep a grown cell from drifting far past square: a row that
+// still packs four apps across (112px, the nine-to-twelve-app case) caps
+// the WHOLE grid's height at 112 even though a shorter row elsewhere in the
+// same grid could have gone taller, because height is one number for every
+// row (see menu_cell_h()'s own comment on why that stays true).
+static int menu_min_row_width(int rows) {
+    int w = LAND_W;
+    for (int r = 0; r < rows; r++) {
+        int first, cols;
+        menu_row_span(r, &first, &cols);
+        int cw = LAND_W / cols;
+        if (cw < w) w = cw;
+    }
+    return w;
+}
+
+// THE CELL HEIGHT (decision 0020). Uniform across the whole grid, same as
+// it always was - only what it computes to is new. Grown past
+// MENU_CELL_FLOOR when there is slack, bounded by the SMALLER of two
+// things:
+//   - MENU_AVAIL_H / rows: what fits at all, so growth can never push a row
+//     into the reserved cancel band or under the top inset;
+//   - menu_min_row_width(): so a cell never grows far past square. Nine to
+//     twelve apps still pack four-wide rows (112px), so this term alone
+//     holds the three-row case at exactly 112 - unchanged from decision
+//     0013's own table.
+// Rounded DOWN to a multiple of 8 before anything else, never up: a cell's
+// landscape height is the pushed row length (decision 0001), and rounding
+// up could walk the result back past whichever bound just capped it. Never
+// below MENU_CELL_FLOOR either way, which is itself already a multiple of
+// 8, so the two rules cannot fight each other at the floor.
+static int menu_cell_h(void) {
+    int rows = menu_rows();
+    int byHeight = MENU_AVAIL_H / rows;
+    int byWidth = menu_min_row_width(rows);
+    int h = byHeight < byWidth ? byHeight : byWidth;
+    h = (h / 8) * 8;
+    if (h < MENU_CELL_FLOOR) h = MENU_CELL_FLOOR;
+    return h;
+}
+
 // Cell i's landscape rectangle. Contiguous and full-width within its row
 // (no gap, no margin either side): the LAST cell of a row absorbs whatever
 // LAND_W does not divide evenly, so every x in [0, LAND_W) belongs to
 // exactly one cell and none of it is dead space a touch can fall into and
 // hit nothing. That was the old column layout's best property and it is
-// kept exactly, now in two dimensions.
+// kept exactly, now in two dimensions. `by` carries MENU_TOP_INSET on every
+// row, not just row 0's own top edge - see that constant's comment.
 static void cell_rect_land(int i, int *bx, int *by, int *bw, int *bh) {
     int rows = menu_rows();
+    int cellH = menu_cell_h();
     int r = 0, first = 0, cols = 1;
     for (r = 0; r < rows; r++) {
         menu_row_span(r, &first, &cols);
@@ -211,8 +292,8 @@ static void cell_rect_land(int i, int *bx, int *by, int *bw, int *bh) {
     int w = LAND_W / cols;
     *bx = c * w;
     *bw = (c == cols - 1) ? (LAND_W - *bx) : w;
-    *by = r * MENU_CELL_H;
-    *bh = MENU_CELL_H;
+    *by = MENU_TOP_INSET + r * cellH;
+    *bh = cellH;
 }
 
 // The touch coordinates a tick() sees arrive in PANEL (portrait) space, not
@@ -246,22 +327,29 @@ static void panel_to_land(int px, int py, int *lx, int *ly) {
 // 112px cell you can correct beats a 149px cell that fires on contact.
 //
 // THE CANCEL BAND is everything below the grid, and it is a leftover rather
-// than a reserved strip: the grid packs to the TOP of the glass (the
-// owner's own instruction for the icons, "en haut de l'ecran"), and
-// whatever the rows do not use is where a release does nothing. That is
-// 256px at four apps, 144px at six, and 32px at nine or twelve - the
-// twelfth app is paid for out of THIS, which is the only thing left that
-// can shrink. At 32px it is still a real region for the gesture it exists
-// for, because what the controller reports is a contact CENTROID, not the
-// contact patch: a thumb slid to the bottom edge of the glass has its
-// centroid pinned there. But say the cost plainly - at twelve apps,
-// cancelling means a deliberate slide all the way to the bottom edge,
-// where at four apps most of the screen will do.
+// than a reserved strip: the grid packs to MENU_TOP_INSET from the top of
+// the glass (the owner's own instruction for the icons, "en haut de
+// l'ecran", now read alongside the bezel margin every other app already
+// keeps - see MENU_TOP_INSET's own comment), and whatever the rows do not
+// use below that is where a release does nothing. It never falls below
+// MENU_CANCEL_FLOOR (22) by construction (menu_cell_h() is bounded so rows
+// * cellH cannot exceed MENU_AVAIL_H) - at 22 it is still a real region for
+// the gesture it exists for, because what the controller reports is a
+// contact CENTROID, not the contact patch: a thumb slid to the bottom edge
+// of the glass has its centroid pinned there. See THE LAYOUT's table above
+// for what it actually comes out to at each app count today - it is
+// comfortably above the floor everywhere this device currently uses.
+//
+// ABOVE THE GRID is dead too now, for the first time: the MENU_TOP_INSET
+// strip at the very top of the glass. A release there cancels the same way
+// a release below the grid does - symmetric treatment, one `if`, not two.
 static int menu_hit(int lx, int ly) {
     int rows = menu_rows();
-    if (ly < 0) ly = 0;
-    if (ly >= rows * MENU_CELL_H) return -1; // the cancel band
-    int r = ly / MENU_CELL_H;
+    int cellH = menu_cell_h();
+    int gy = ly - MENU_TOP_INSET;
+    if (gy < 0) return -1;            // above the grid: the bezel-margin strip
+    if (gy >= rows * cellH) return -1; // below the grid: the cancel band
+    int r = gy / cellH;
     int first, cols;
     menu_row_span(r, &first, &cols);
     int w = LAND_W / cols;
@@ -1996,12 +2084,177 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
 //
 // The cap now takes the SMALLER of the cell's two dimensions, which it did
 // not have to when a cell was the full 368px height and only width could
-// bind. With MENU_CELL_H fixed at 112 the height is what binds at every app
-// count, so the halo is a 106px disc with 3px of clearance on all four
-// sides - and, usefully, it is the SAME SIZE at four apps as at twelve.
-// Under the old columns it shrank as apps were added.
-#define MENU_HALO_R_MAX 58.0f
+// bind. While the cell height was a fixed 112 (every app count before
+// decision 0020), the height is what bound at every app count, so the halo
+// was a 106px disc with 3px of clearance on all four sides at four apps AND
+// at twelve. Now that the height can grow past 112 (decision 0020), the
+// per-cell min(bw,bh) computation already keeps the halo inside whichever
+// cell it lives in without any help from this constant - it is a second,
+// looser ceiling on top of that, raised from 58 to 72 so a grown cell's
+// halo can actually reach the size the per-cell math allows (69 at today's
+// five- and six-app cells) rather than being clipped back down to the old
+// twelve-app number for no reason. Cells that stayed at 112 (four, seven
+// and up) are still bound by their own size long before this ceiling is
+// reached, so raising it changes nothing for them - see feature-menu-hover.ts's
+// own halo-containment check, which still asserts 0px outside the cell at
+// every app count.
+#define MENU_HALO_R_MAX 72.0f
 #define MENU_HALO_GAP    3.0f
+
+// THE ICON PADDING and THE GROWN ICON (decision 0020). Icons are drawn by
+// draw_icon_for() at a fixed native ICON_W x ICON_H = 96 x 96 - every icon
+// function's own geometry (chrono's ring radii, timer's bulb table, every
+// hand-tuned stroke and literal pixel offset in this file) is built against
+// that one size, not against the cell it happens to land in, and re-deriving
+// eleven icons' worth of hand-tuned vector geometry to scale honestly was
+// judged not to be this pass's job - see docs/decisions/0020's own
+// "what does and does not scale" section.
+//
+// So a grown cell does not ask any icon function to draw bigger. It draws
+// the icon once, at its normal 96px size, reads back exactly what it drew
+// (menu_icon_capture() below), and repaints that capture into the larger
+// footprint with a bilinear resample (menu_icon_blit()) - a raster
+// operation on the already-anti-aliased ink, not a redrawing of the vector
+// shapes that produced it. This is the same "read the framebuffer back,
+// widen it, recompose" move sketch.c's own anti-aliasing already makes
+// (see that file's header comment), applied at icon scale instead of at
+// stroke scale.
+//
+// MENU_ICON_PAD is the same "8px of air" decision 0013 chose once, for the
+// 96-inside-112 relationship - kept as the padding rule at every size, not
+// just at the floor, so a grown icon still has visible white around it
+// rather than touching its own cell's edge.
+#define MENU_ICON_PAD 8
+
+// The size draw_icon_scaled() below actually renders at for a cell of the
+// given dimensions: the smaller of the two, less the padding on both sides,
+// never smaller than ICON_W (an icon never shrinks below today's size,
+// matching the cell it lives in never shrinking below its own floor).
+static int menu_icon_size(int cellW, int cellH) {
+    int m = cellW < cellH ? cellW : cellH;
+    int s = m - 2 * MENU_ICON_PAD;
+    if (s < ICON_W) s = ICON_W;
+    return s;
+}
+
+// The capture buffer: one native ICON_W x ICON_H render, as gray (0 = ink,
+// 255 = paper - gfx.h's px_to_gray convention), plus a small guard margin
+// (MENU_ICON_GUARD px each side) so a stroke that overshoots its own box by
+// a pixel or two of anti-aliased fringe - nothing in this file was ever
+// checked to guarantee zero overshoot, only checked to stay clear of the
+// NEXT cell over - is still captured rather than silently cropped. File-
+// scope static, not a stack array: at ICON_CAP_W x ICON_CAP_H bytes it is a
+// few KB, and a menu redraw runs one capture at a time, never nested, so
+// there is nothing to share it badly with.
+#define MENU_ICON_GUARD 4
+#define ICON_CAP_W (ICON_W + 2 * MENU_ICON_GUARD)
+#define ICON_CAP_H (ICON_H + 2 * MENU_ICON_GUARD)
+static uint8_t s_iconCapture[ICON_CAP_W * ICON_CAP_H];
+
+// Landscape pixel read/write, addressing gfx_fb through the exact mapping
+// shapes.c's aa_composite_land() already uses (landscape (lx,ly) -> panel
+// (PANEL_W-1-ly, lx), gfx.h's own documented forward rule) - duplicated
+// here rather than exposed from shapes.c because these two are a MENU-only
+// need (reading back what was just drawn, which no other app does) and
+// shapes.h's own header comment already draws the line at "every primitive
+// below funnels through this one function" for WRITES; a read has no
+// primitive to funnel through yet, and one pair of small functions is
+// cheaper than a new shapes.h entry point for a single caller.
+static uint8_t menu_land_read_gray(int lx, int ly) {
+    if (lx < 0) lx = 0; else if (lx >= LAND_W) lx = LAND_W - 1;
+    if (ly < 0) ly = 0; else if (ly >= LAND_H) ly = LAND_H - 1;
+    int px = PANEL_W - 1 - ly;
+    int py = lx;
+    return px_to_gray(gfx_fb[py * PANEL_W + px]);
+}
+
+// MIN-composited write, same rule as every AA primitive in shapes.c: ink
+// only ever darkens, never brightens, so writing a light sample over
+// already-dark ink cannot erase it - the same property that lets the halo
+// and the icon be drawn in either order (see menu_icon_paint()'s own
+// comment for why that matters here specifically).
+static void menu_land_write_gray_min(int lx, int ly, uint8_t g) {
+    if (lx < 0 || ly < 0 || lx >= LAND_W || ly >= LAND_H) return;
+    int px = PANEL_W - 1 - ly;
+    int py = lx;
+    int idx = py * PANEL_W + px;
+    uint8_t cur = px_to_gray(gfx_fb[idx]);
+    if (g < cur) gfx_fb[idx] = gray_to_px(g);
+}
+
+// Bilinear sample of the capture buffer at fractional (sx, sy), corner-
+// aligned (sample 0 lands exactly on source pixel 0, sample size-1 lands
+// exactly on the last source pixel - see the caller's own coordinate map).
+// Ordinary 4-tap interpolation; nothing about this needs to know it is
+// upscaling an icon rather than any other small greyscale image.
+static uint8_t menu_bilinear(float sx, float sy) {
+    int x0 = (int)sx; if (x0 < 0) x0 = 0; if (x0 > ICON_CAP_W - 2) x0 = ICON_CAP_W - 2;
+    int y0 = (int)sy; if (y0 < 0) y0 = 0; if (y0 > ICON_CAP_H - 2) y0 = ICON_CAP_H - 2;
+    float fx = sx - (float)x0, fy = sy - (float)y0;
+    float a = (float)s_iconCapture[y0 * ICON_CAP_W + x0];
+    float b = (float)s_iconCapture[y0 * ICON_CAP_W + x0 + 1];
+    float c = (float)s_iconCapture[(y0 + 1) * ICON_CAP_W + x0];
+    float d = (float)s_iconCapture[(y0 + 1) * ICON_CAP_W + x0 + 1];
+    float top = a + (b - a) * fx;
+    float bot = c + (d - c) * fx;
+    float v = top + (bot - top) * fy;
+    if (v < 0.0f) v = 0.0f; else if (v > 255.0f) v = 255.0f;
+    return (uint8_t)(v + 0.5f);
+}
+
+// STEP 1 of the grown path: draw app's icon at its normal native ICON_W x
+// ICON_H size, centred at (cx, cy), then read it straight back into
+// s_iconCapture. Nothing else may touch this landscape footprint between
+// this call and menu_icon_blit() below - see that function's own comment
+// for why, and render_cell() for how the two calls are kept adjacent with
+// only the halo (which does not care about draw order) in between.
+static void menu_icon_capture(const app_t *app, int cx, int cy, uint16_t color) {
+    int nativeOx = cx - ICON_W / 2;
+    int nativeOy = cy - ICON_H / 2;
+    draw_icon_for(app, nativeOx, nativeOy, color);
+    for (int y = 0; y < ICON_CAP_H; y++) {
+        int sy = nativeOy - MENU_ICON_GUARD + y;
+        for (int x = 0; x < ICON_CAP_W; x++) {
+            int sx = nativeOx - MENU_ICON_GUARD + x;
+            s_iconCapture[y * ICON_CAP_W + x] = menu_land_read_gray(sx, sy);
+        }
+    }
+}
+
+// STEP 2: repaint the capture, bilinearly resampled, into a `size` x `size`
+// box centred at (cx, cy) - the same centre menu_icon_capture() just used,
+// so the enlarged icon replaces the native one exactly rather than sliding.
+//
+// ORDER MATTERS for one reason only: menu_icon_capture() must run before
+// anything else (in particular the halo) touches this footprint, so what
+// gets resampled here is the icon's ink ALONE. Composition itself is MIN
+// (shapes.h's whole argument, true here too), so once the capture is safely
+// taken, the FINAL picture does not depend on whether the halo was drawn
+// before or after this call - render_cell() below draws it in between,
+// which is simplest, but "after" would composite identically.
+//
+// The write is bounded to EXACTLY `size` x `size`, centred the same way the
+// native capture was - never wider, on purpose: menu_icon_size() already
+// reserves MENU_ICON_PAD clearance to the cell's own edge for this exact
+// footprint, and writing even one pixel past it is the same "halo painted
+// into the neighbour" bug this file's own halo comment already tells the
+// story of. The guard band captured above exists only so a source sample
+// exactly at the destination's own edge (needing one more neighbour than a
+// plain 96x96 capture has) has real ink to read instead of running off the
+// edge - it is never itself drawn any wider than `size`.
+static void menu_icon_blit(int cx, int cy, int size) {
+    int destOx = cx - size / 2, destOy = cy - size / 2;
+    for (int dy = 0; dy < size; dy++) {
+        float sy = (float)MENU_ICON_GUARD +
+                   (size > 1 ? (float)dy * (float)(ICON_H - 1) / (float)(size - 1) : 0.0f);
+        for (int dx = 0; dx < size; dx++) {
+            float sx = (float)MENU_ICON_GUARD +
+                       (size > 1 ? (float)dx * (float)(ICON_W - 1) / (float)(size - 1) : 0.0f);
+            uint8_t g = menu_bilinear(sx, sy);
+            menu_land_write_gray_min(destOx + dx, destOy + dy, g);
+        }
+    }
+}
 
 static uint16_t menu_halo_color(void) {
     return px_swap(0xDEFB); // #DEDEDE
@@ -2011,29 +2264,45 @@ static uint16_t menu_halo_color(void) {
  * Painting. One CELL at a time, and every push is one cell's landscape
  * rectangle - gfx maps a landscape rectangle to the panel with width and
  * height swapped, so the pushed row length is the landscape HEIGHT, which
- * is MENU_CELL_H = 112 and a multiple of 8 on every push, at rest and
- * mid-gesture alike (decision 0001). That is why MENU_CELL_H is 112 and not
- * 110: the cell size and the push rule are the same constant.
+ * is menu_cell_h() and a multiple of 8 on every push, at rest and
+ * mid-gesture alike (decision 0001) - see that function's own comment for
+ * why it rounds down to one rather than trusting gfx_push_land's own
+ * (wider, wasteful) rounding to cover for it.
  *
  * This got CHEAPER rather than more complicated when the columns became
  * cells. The old code pushed a 368-tall strip to move a halo that only ever
- * occupied 96px of it; a cell push is 112 tall, so moving the halo one step
- * costs 30% of what it did, at any app count.
+ * occupied 96px of it; a cell push is never more than MENU_ROWS_MAX rows'
+ * worth tall, so moving the halo one step costs a small fraction of what it
+ * did, at any app count.
  *
  * A cell is redrawn from white every time rather than patched, so a halo
  * that has moved away cannot leave anything behind.
  *
- * NOTHING PAINTS THE CANCEL BAND, and nothing needs to: the runtime clears
- * the framebuffer to white and pushes the whole panel on the way in
- * (app.h's enter() contract), and no mark this file draws ever lands below
- * the grid.
+ * NOTHING PAINTS THE CANCEL BAND OR THE TOP INSET, and nothing needs to:
+ * the runtime clears the framebuffer to white and pushes the whole panel on
+ * the way in (app.h's enter() contract), and no mark this file draws ever
+ * lands outside a cell.
  * ------------------------------------------------------------------- */
 static void render_cell(int i, bool hovered) {
     int bx, by, bw, bh;
     cell_rect_land(i, &bx, &by, &bw, &bh);
     gfx_fill_rect_land(bx, by, bw, bh, PX_WHITE);
-    int iconX = bx + (bw - ICON_W) / 2;
-    int iconY = by + (bh - ICON_H) / 2;
+
+    const app_t *app = g_apps[g_menuAppIndex[i]];
+    int cx = bx + bw / 2, cy = by + bh / 2;
+    int size = menu_icon_size(bw, bh);
+
+    if (size <= ICON_W) {
+        // Fast path, unchanged from before decision 0020: draw, then halo
+        // (or the other way - MIN composition does not care, see the halo
+        // block below for why this order was kept anyway).
+        draw_icon_for(app, cx - ICON_W / 2, cy - ICON_H / 2, PX_BLACK);
+    } else {
+        // Capture the icon's ink alone - see menu_icon_capture()'s own
+        // comment for why this has to happen before the halo below.
+        menu_icon_capture(app, cx, cy, PX_BLACK);
+    }
+
     if (hovered) {
         // The SMALLER of the two half-extents, so the disc is contained in
         // both directions - see MENU_HALO_R_MAX's comment.
@@ -2041,10 +2310,10 @@ static void render_cell(int i, bool hovered) {
         float rh = (float)bh / 2.0f - MENU_HALO_GAP;
         float r = rw < rh ? rw : rh;
         if (r > MENU_HALO_R_MAX) r = MENU_HALO_R_MAX;
-        shapes_fill_disc_aa_land((float)(bx + bw / 2), (float)(by + bh / 2),
-                                  r, menu_halo_color());
+        shapes_fill_disc_aa_land((float)cx, (float)cy, r, menu_halo_color());
     }
-    draw_icon_for(g_apps[g_menuAppIndex[i]], iconX, iconY, PX_BLACK);
+
+    if (size > ICON_W) menu_icon_blit(cx, cy, size);
 }
 
 static void push_cell(int i) {

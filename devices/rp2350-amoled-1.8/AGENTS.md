@@ -184,11 +184,13 @@ decision 0013's grid rewrite, not a description of the menu as it is today.
 four, **89 at five**, where the icon box is wider than the column it belongs
 to; a sixth app needed the row itself redesigned, which is exactly what
 decision 0013 did on 2026-08-15 (see `docs/decisions/0013`). The CURRENT
-five-app menu (decision 0019, 2026-08-17) is a coincidence of the same
-number, not a return to this design: it is two rows of the GRID (3 then 2,
-149x112 and 224x112 cells), not one row of five 89px columns, and every
-target is comfortably above the 112px floor - see decision 0019 for the
-actual current layout.
+five-app menu (decisions 0019 and 0020, 2026-08-17) is a coincidence of the
+same number, not a return to this design: it is two rows of the GRID (3
+then 2, 149x144 and 224x144 cells - taller than decision 0013's own 112,
+since a cell now grows when the roster leaves slack, see decision 0020),
+not one row of five 89px columns, and every target and every icon drawn in
+it is comfortably above the historical floor - see decisions 0019 and 0020
+for the actual current layout and why the icons themselves are bigger too.
 
 Verify the diagonal against the product page before treating the exact figures
 as gospel; the ratio is what matters and it is not close to the edge.
@@ -238,10 +240,14 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       bricks on an arc, no floor to lose the ball off),
                       tables.c (multiplication-tables practice, the owner's
                       own magnifying numpad),
-                      menu.c (the app picker: a grid of 112px
-                      cells filling the glass, every app ON THE MENU'S OWN
-                      ROSTER visible at once (g_menuAppCount/g_menuAppIndex,
-                      not necessarily g_appCount - decision 0019),
+                      menu.c (the app picker: a grid of cells filling the
+                      glass, never narrower than 112px and grown taller
+                      when the roster leaves slack (decision 0020), every
+                      app ON THE MENU'S OWN ROSTER visible at once
+                      (g_menuAppCount/g_menuAppIndex, not necessarily
+                      g_appCount - decision 0019), a grown cell's icon
+                      resampled larger from its own native 96px render
+                      rather than redrawn (decision 0020),
                       press-drag-release to launch - decision 0013),
                       stubapps.c (empty unless the menu-stub define is
                       set; how that layout gets captured at six and twelve

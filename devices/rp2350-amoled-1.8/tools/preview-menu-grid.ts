@@ -38,10 +38,15 @@ const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
 const APP_INDEX_MENU = -1;
 
-// menu.c's own constants. Re-derived, see the header comment.
-const MENU_CELL_H = 112;
+// menu.c's own constants. Re-derived, see the header comment - and see
+// docs/decisions/0020 for MENU_TOP_INSET/MENU_CANCEL_FLOOR/menu_cell_h(),
+// added 2026-08-17 when the cell stopped being pinned to MENU_CELL_FLOOR.
+const MENU_CELL_FLOOR = 112;
 const MENU_COLS_MAX = 4;
-const MENU_ROWS_MAX = Math.floor(LAND_H / MENU_CELL_H);
+const MENU_TOP_INSET = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
+const MENU_CANCEL_FLOOR = 22;
+const MENU_AVAIL_H = LAND_H - MENU_TOP_INSET - MENU_CANCEL_FLOOR; // 336
+const MENU_ROWS_MAX = Math.floor(MENU_AVAIL_H / MENU_CELL_FLOOR); // 3
 
 function menuRows(n: number): number {
   return Math.min(Math.max(Math.ceil(n / MENU_COLS_MAX), 1), MENU_ROWS_MAX);
@@ -52,15 +57,31 @@ function rowSpan(n: number, r: number): { first: number; cols: number } {
   const extra = n % rows;
   return { first: r * base + Math.min(r, extra), cols: base + (r < extra ? 1 : 0) };
 }
+// menu_cell_h() in menu.c: the smaller of (available height / rows) and the
+// narrowest row's own width, rounded DOWN to a multiple of 8 (decision
+// 0001's push rule), never below the floor.
+function menuCellH(n: number): number {
+  const rows = menuRows(n);
+  const byHeight = Math.floor(MENU_AVAIL_H / rows);
+  let byWidth = LAND_W;
+  for (let r = 0; r < rows; r++) {
+    const { cols } = rowSpan(n, r);
+    byWidth = Math.min(byWidth, Math.floor(LAND_W / cols));
+  }
+  let h = Math.min(byHeight, byWidth);
+  h = Math.floor(h / 8) * 8;
+  return Math.max(h, MENU_CELL_FLOOR);
+}
 function cellRect(n: number, i: number): { bx: number; by: number; bw: number; bh: number } {
   const rows = menuRows(n);
+  const cellH = menuCellH(n);
   for (let r = 0; r < rows; r++) {
     const { first, cols } = rowSpan(n, r);
     if (i < first + cols) {
       const c = i - first;
       const w = Math.floor(LAND_W / cols);
       const bx = c * w;
-      return { bx, by: r * MENU_CELL_H, bw: c === cols - 1 ? LAND_W - bx : w, bh: MENU_CELL_H };
+      return { bx, by: MENU_TOP_INSET + r * cellH, bw: c === cols - 1 ? LAND_W - bx : w, bh: cellH };
     }
   }
   throw new Error(`no cell for index ${i} at ${n} apps`);
@@ -200,14 +221,15 @@ async function main() {
   const rest = await capture(null);
   const n = rest.n;
   const rows = menuRows(n);
-  const band = LAND_H - rows * MENU_CELL_H;
+  const cellH = menuCellH(n);
+  const band = LAND_H - MENU_TOP_INSET - rows * cellH;
 
-  console.log(`${n} apps: ${rows} row(s), cancel band ${band}px`);
+  console.log(`${n} apps: ${rows} row(s), cell height ${cellH}px, top inset ${MENU_TOP_INSET}px, cancel band ${band}px`);
   for (let r = 0; r < rows; r++) {
     const { first, cols } = rowSpan(n, r);
     const { bw } = cellRect(n, first);
-    console.log(`  row ${r}: ${cols} cell(s), ${bw} x ${MENU_CELL_H} px` +
-      `  (${(bw / 75).toFixed(1)} x ${(MENU_CELL_H / 75).toFixed(1)} child fingertips)`);
+    console.log(`  row ${r}: ${cols} cell(s), ${bw} x ${cellH} px` +
+      `  (${(bw / 75).toFixed(1)} x ${(cellH / 75).toFixed(1)} child fingertips)`);
   }
 
   const restPath = join(ROOT, "preview", `menu-grid-${n}.png`);

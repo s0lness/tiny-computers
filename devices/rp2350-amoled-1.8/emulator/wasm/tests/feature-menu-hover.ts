@@ -73,11 +73,19 @@ const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
 const APP_INDEX_MENU = -1;
 
-// menu.c's own constants.
+// menu.c's own constants - see docs/decisions/0020 (2026-08-17) for
+// MENU_TOP_INSET/MENU_CANCEL_FLOOR/menuCellH(): the cell height stopped
+// being a fixed 112 and became a function of the app count, grown when the
+// roster leaves slack.
+const ICON_W = 96;
 const ICON_H = 96;
-const MENU_CELL_H = 112;
+const MENU_CELL_FLOOR = 112;
 const MENU_COLS_MAX = 4;
-const MENU_ROWS_MAX = Math.floor(LAND_H / MENU_CELL_H); // 3
+const MENU_TOP_INSET = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
+const MENU_CANCEL_FLOOR = 22;
+const MENU_AVAIL_H = LAND_H - MENU_TOP_INSET - MENU_CANCEL_FLOOR; // 336
+const MENU_ROWS_MAX = Math.floor(MENU_AVAIL_H / MENU_CELL_FLOOR); // 3
+const MENU_ICON_PAD = 8;
 const MENU_RELEASE_GRACE_MS = 300;
 const MENU_HOVER_CONFIRM_MS = 150;
 
@@ -219,16 +227,34 @@ function rowSpan(n: number, r: number): { first: number; cols: number } {
     const extra = n % rows;
     return { first: r * base + Math.min(r, extra), cols: base + (r < extra ? 1 : 0) };
 }
+// menu_cell_h() in menu.c (decision 0020): the smaller of (available height
+// / rows) and the narrowest row's own width, rounded DOWN to a multiple of
+// 8 (decision 0001), never below the floor.
+function menuCellH(n: number): number {
+    const rows = menuRows(n);
+    const byHeight = Math.floor(MENU_AVAIL_H / rows);
+    let byWidth = LAND_W;
+    for (let r = 0; r < rows; r++) byWidth = Math.min(byWidth, Math.floor(LAND_W / rowSpan(n, r).cols));
+    let h = Math.min(byHeight, byWidth);
+    h = Math.floor(h / 8) * 8;
+    return Math.max(h, MENU_CELL_FLOOR);
+}
+// menu_icon_size() in menu.c: the icon actually rendered in a cell of the
+// given size, never smaller than ICON_W.
+function menuIconSize(cellW: number, cellH: number): number {
+    return Math.max(ICON_W, Math.min(cellW, cellH) - 2 * MENU_ICON_PAD);
+}
 type Rect = { bx: number; by: number; bw: number; bh: number };
 function cellRect(n: number, i: number): Rect {
     const rows = menuRows(n);
+    const cellH = menuCellH(n);
     for (let r = 0; r < rows; r++) {
         const { first, cols } = rowSpan(n, r);
         if (i < first + cols) {
             const c = i - first;
             const w = Math.floor(LAND_W / cols);
             const bx = c * w;
-            return { bx, by: r * MENU_CELL_H, bw: c === cols - 1 ? LAND_W - bx : w, bh: MENU_CELL_H };
+            return { bx, by: MENU_TOP_INSET + r * cellH, bw: c === cols - 1 ? LAND_W - bx : w, bh: cellH };
         }
     }
     throw new Error(`no cell for index ${i} at ${n} apps`);
@@ -246,12 +272,17 @@ const isWhite = (p: [number, number]) => p[0] === 0xff && p[1] === 0xff;
 
 // A point inside a cell's halo but outside the icon's own ink, so it is
 // white when the cell is not lit and grey when it is. The halo is a disc of
-// radius min(bw,bh)/2 - 3 centred on the cell; the icon box is 96 wide, so a
-// point on the horizontal midline just past the icon's edge is inside the
-// disc and clear of the ink at every cell size this layout produces.
+// radius min(bw,bh)/2 - 3 centred on the cell; the icon itself is
+// menuIconSize(bw,bh) wide (decision 0020: not always 96 any more), so the
+// probe offset scales with it - "44 out of a 96-wide icon's own half-width"
+// was never a magic 44, it was 4px short of half the icon box, and that
+// same fraction (a bilinear resample preserves every ratio in the source
+// image) is what stays clear of the ink after the icon grows.
 function haloProbe(n: number, i: number): [number, number] {
     const { bx, by, bw, bh } = cellRect(n, i);
-    return [bx + (bw >> 1) + ICON_H / 2 - 4, by + (bh >> 1)];
+    const size = menuIconSize(bw, bh);
+    const offset = (size / 2 - 4 * (size / ICON_H));
+    return [bx + (bw >> 1) + offset, by + (bh >> 1)];
 }
 
 // WHICH cell the firmware currently has lit, read from the framebuffer -
@@ -295,8 +326,9 @@ async function main() {
 
     const n = dev.menuAppCount();
     const rows = menuRows(n);
-    const gridH = rows * MENU_CELL_H;
-    console.log(`    ${n} apps, ${rows} row(s), cancel band ${LAND_H - gridH}px`);
+    const cellH = menuCellH(n);
+    const gridH = rows * cellH;
+    console.log(`    ${n} apps, ${rows} row(s), cell ${cellH}px tall, cancel band ${LAND_H - MENU_TOP_INSET - gridH}px`);
     for (let r = 0; r < rows; r++) {
         const { first, cols } = rowSpan(n, r);
         const { bw, bh } = cellRect(n, first);
@@ -496,8 +528,10 @@ async function main() {
         const put = (lx: number, ly: number) => {
             // Where the FINGER is, not where the controller says it is.
             const rows2 = menuRows(n);
-            if (ly < rows2 * MENU_CELL_H) {
-                const r = Math.floor(ly / MENU_CELL_H);
+            const cellH2 = menuCellH(n);
+            const gy = ly - MENU_TOP_INSET;
+            if (gy >= 0 && gy < rows2 * cellH2) {
+                const r = Math.floor(gy / cellH2);
                 const { first, cols } = rowSpan(n, r);
                 visited.add(first + Math.min(cols - 1, Math.floor(lx / Math.floor(LAND_W / cols))));
             }

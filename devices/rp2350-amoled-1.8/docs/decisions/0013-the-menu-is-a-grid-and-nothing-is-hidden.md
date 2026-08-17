@@ -208,3 +208,28 @@ And the last check stays human. No tool in this tree can say whether twelve
 pictures at 112px read as twelve *different* pictures to a four-year-old
 across a room. `preview/menu-grid-{4,6,12}.png` exist so that question reaches
 an eye without a flash cycle.
+
+## Amended 2026-08-17: decisions 0019 and 0020
+
+Two things changed after this decision was written, and neither one
+overturns it.
+
+**The menu no longer always shows every app the firmware carries**
+(decision 0019: a five-app roster, separate from `g_apps[]`). "Nothing is
+hidden," this decision's own title, was always an argument about PAGING -
+that a child never has to remember an app exists behind a swipe or a page
+number. It was never a promise that every built app appears on the picker;
+taking six apps off the menu without deleting them is a product decision
+about what a child can reach, made in the open (a decision record, not a
+silent change), not a violation of the paging argument above.
+
+**The cell size stopped being pinned to exactly 112 and can now grow**
+(decision 0020) when the roster leaves slack - five and six apps, on this
+device, land on 144. The property this document actually protects -
+"from the fourth app to the twelfth, adding an app never shrinks an
+existing target" - still holds exactly: `menu_cell_h()` can only ever
+produce 112 or taller, never smaller, and the nine-to-twelve-app numbers in
+this document's own tables are unchanged. Read `docs/decisions/0020` for
+the arithmetic and for what does and does not scale alongside a grown
+cell (the icon inside it is a bilinear resample of a fixed native render,
+not a redrawn shape - most of that decision is about why).

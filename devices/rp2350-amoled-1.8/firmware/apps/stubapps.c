@@ -33,17 +33,24 @@
  *
  *   EMU_EXTRA_DEFINES=-DMENU_STUB_APPS=12 bun run emulator/wasm/build.ts
  *
- * MENU_STUB_APPS is the TOTAL app count wanted, not the number of stubs:
- * runtime_core.c appends (MENU_STUB_APPS - 11) of these to the eleven real
- * apps - and, since g_stubApps below carries exactly one entry, only
- * MENU_STUB_APPS=12 is actually satisfiable; anything higher still gets
- * just the one stub appended, short of what it asked for, which is a
- * pre-existing limit of this single-stub design, not new. That spelling
- * was chosen because the number the reader cares about is "twelve apps",
- * and a build flag that says 1 while the screenshot is called twelve is
- * one subtraction away from a mislabelled capture, which is a mistake
- * tools/preview-menu-icons.ts has already made once (see its comment on
- * the file called "menu-icon-timer" that was a picture of Connect Four).
+ * MENU_STUB_APPS is the TOTAL app count wanted, not the number of stubs.
+ * runtime_core.c reads it two ways (decision 0020, 2026-08-17): g_apps[]
+ * itself only ever appends (MENU_STUB_APPS - 11) of these, and since
+ * g_stubApps below carries exactly one entry, only MENU_STUB_APPS=12
+ * actually GROWS the table - anything higher still gets just the one stub
+ * appended, short of what it asked for, a pre-existing limit of this
+ * single-stub design. But the menu's own roster (g_menuAppIndex/
+ * g_menuAppCount, app.h) reads MENU_STUB_APPS as a CAP on how many of
+ * g_apps[]'s eleven-or-twelve entries the menu shows, not just a floor to
+ * pad up to - so MENU_STUB_APPS=4, 6 or 7 also works, showing the menu at
+ * that many apps using the first few real ones in table order (their
+ * identity does not matter for judging layout geometry, only their count
+ * does). That spelling was chosen because the number the reader cares
+ * about is "how many apps is this a picture of", and a build flag that
+ * says 1 while the screenshot is called twelve is one subtraction away
+ * from a mislabelled capture, which is a mistake tools/preview-menu-icons.ts
+ * has already made once (see its comment on the file called
+ * "menu-icon-timer" that was a picture of Connect Four).
  *
  * A stub draws NOTHING. The runtime clears the framebuffer to white and
  * pushes the whole panel on switch-in (app.h's enter() contract), so a stub

@@ -132,3 +132,20 @@ roster, so that fixture keeps doing the job described in its own header
 comment. This branch is never compiled into a real build - `CMakeLists.txt`
 never lists `stubapps.c`, and nothing here defines `MENU_STUB_APPS` on its
 own.
+
+## Amended 2026-08-17: decision 0020
+
+The numbers in "What the picture actually looks like" above (149x112/224x112
+cells, 144px cancel band) describe the grid as it looked the moment this
+roster cut shipped, before the owner asked for the cells themselves to grow.
+Decision 0020, written the same day, is that follow-up: the cell height
+stopped being pinned to 112 and now grows to 144 for this five-app roster
+(and for six), the icons drawn in a grown cell are resampled larger to
+match, and a `MENU_TOP_INSET` was added for the bezel margin this file's own
+capture had been sitting one pixel inside of. `preview/menu-grid-5.png` was
+re-rendered under 0020 and looks different from what this document
+originally described - read 0020 for the current numbers and the picture as
+it stands now. Nothing here about the ROSTER (which five apps, why
+`g_apps[]` stays whole, how the retired six stay tested) changed at all;
+only the geometry of the five slots this document is otherwise still
+accurate about did.

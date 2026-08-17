@@ -50,28 +50,59 @@ const coilLabel = args.includes("--coil");
 // produced icons sliced 16px off-centre at four apps and pictures of white
 // paper at twelve, which is the same "silently mislabelled capture" failure
 // main()'s comment already records.
+//
+// UPDATED AGAIN 2026-08-17 (decision 0020): a cell can now be taller than
+// MENU_CELL_FLOOR, and menu.c grows the icon drawn in it to match
+// (menu_icon_size(), a bilinear resample of the native 96px render - see
+// that function's own comment in menu.c). Cropping a fixed 96x96 box
+// centred in a grown cell would slice the edges off exactly the icons this
+// script exists to let someone judge, so CROP_W/CROP_H below are
+// menuIconSize()'s own re-derivation, not the ICON_W/ICON_H constant.
 const ICON_W = 96;
 const ICON_H = 96;
-const MENU_CELL_H = 112;
+const MENU_CELL_FLOOR = 112;
 const MENU_COLS_MAX = 4;
-const MENU_ROWS_MAX = Math.floor(LAND_H / MENU_CELL_H);
+const MENU_TOP_INSET = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
+const MENU_CANCEL_FLOOR = 22;
+const MENU_AVAIL_H = LAND_H - MENU_TOP_INSET - MENU_CANCEL_FLOOR;
+const MENU_ROWS_MAX = Math.floor(MENU_AVAIL_H / MENU_CELL_FLOOR);
+const MENU_ICON_PAD = 8;
 
 function menuRows(n: number): number {
   return Math.min(Math.max(Math.ceil(n / MENU_COLS_MAX), 1), MENU_ROWS_MAX);
 }
 
-function cellRectLand(i: number, n: number): { bx: number; by: number; bw: number; bh: number } {
+function menuRowSpan(n: number, r: number): { first: number; cols: number } {
   const rows = menuRows(n);
   const base = Math.floor(n / rows);
   const extra = n % rows;
+  return { first: r * base + Math.min(r, extra), cols: base + (r < extra ? 1 : 0) };
+}
+
+function menuCellH(n: number): number {
+  const rows = menuRows(n);
+  const byHeight = Math.floor(MENU_AVAIL_H / rows);
+  let byWidth = LAND_W;
+  for (let r = 0; r < rows; r++) byWidth = Math.min(byWidth, Math.floor(LAND_W / menuRowSpan(n, r).cols));
+  let h = Math.min(byHeight, byWidth);
+  h = Math.floor(h / 8) * 8;
+  return Math.max(h, MENU_CELL_FLOOR);
+}
+
+function menuIconSize(cellW: number, cellH: number): number {
+  return Math.max(ICON_W, Math.min(cellW, cellH) - 2 * MENU_ICON_PAD);
+}
+
+function cellRectLand(i: number, n: number): { bx: number; by: number; bw: number; bh: number } {
+  const rows = menuRows(n);
+  const cellH = menuCellH(n);
   for (let r = 0; r < rows; r++) {
-    const first = r * base + Math.min(r, extra);
-    const cols = base + (r < extra ? 1 : 0);
+    const { first, cols } = menuRowSpan(n, r);
     if (i < first + cols) {
       const c = i - first;
       const w = Math.floor(LAND_W / cols);
       const bx = c * w;
-      return { bx, by: r * MENU_CELL_H, bw: c === cols - 1 ? LAND_W - bx : w, bh: MENU_CELL_H };
+      return { bx, by: MENU_TOP_INSET + r * cellH, bw: c === cols - 1 ? LAND_W - bx : w, bh: cellH };
     }
   }
   throw new Error(`no cell for index ${i} at ${n} apps`);
@@ -275,16 +306,26 @@ async function main() {
     const name = rawName === "draw" ? "sketch" : rawName === "timer" && coilLabel ? "timer-coil" : rawName;
 
     const { bx, by, bw, bh } = cellRectLand(i, n);
-    const iconX = bx + Math.floor((bw - ICON_W) / 2);
-    const iconY = by + Math.floor((bh - ICON_H) / 2);
-    const box96 = crop(landGray, LAND_W, iconX, iconY, ICON_W, ICON_H);
-    const box4x = upscale(box96, ICON_W, ICON_H, 4);
+    // The icon's actual rendered size (decision 0020) - not always ICON_W
+    // any more. Cropping at a stale fixed 96 would slice a grown icon's
+    // edges off, the exact "silently mislabelled capture" this comment
+    // block's header already warns about.
+    const size = menuIconSize(bw, bh);
+    const iconX = bx + Math.floor((bw - size) / 2);
+    const iconY = by + Math.floor((bh - size) / 2);
+    const boxNative = crop(landGray, LAND_W, iconX, iconY, size, size);
+    const box4x = upscale(boxNative, size, size, 4);
 
-    const p96 = join(ROOT, "preview", `menu-icon-${name}-96.png`);
-    const p4x = join(ROOT, "preview", `menu-icon-${name}-4x.png`);
-    writePng(p96, ICON_W, ICON_H, box96);
+    // The filename CARRIES the size when it is not the old fixed 96, for
+    // the same reason: a file called "menu-icon-tables-96.png" that is
+    // actually a 128px crop is exactly the kind of mislabelling that has
+    // already cost a wrong investigation once in this file's own history.
+    const nativeLabel = size === ICON_W ? "96" : String(size);
+    const pNative = join(ROOT, "preview", `menu-icon-${name}-${nativeLabel}.png`);
+    const p4x = join(ROOT, "preview", `menu-icon-${name}-${nativeLabel}-4x.png`);
+    writePng(pNative, size, size, boxNative);
     writePng(p4x, box4x.w, box4x.h, box4x.data);
-    console.log(`wrote preview/menu-icon-${name}-96.png and -4x.png`);
+    console.log(`wrote ${pNative} and ${p4x}`);
   }
 }
 
