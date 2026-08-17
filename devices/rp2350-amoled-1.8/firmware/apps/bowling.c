@@ -200,6 +200,103 @@
  *     `tools/gate/run.ts --measure`, which counts pixels and pushes, never
  *     microseconds - "is it responsive" is a board question, always
  *     (decision 0003).
+ *
+ * ---------------------------------------------------------------------
+ * 6. THE OWNER'S COMPLAINT: "IT SORT OF FREEZES WHEN I TOSS THE BALL"
+ * ---------------------------------------------------------------------
+ *
+ * THE DELAY, NAMED IN PARTS. From the instant a real finger physically
+ * leaves the glass to the instant the ball first visibly moves, four things
+ * happen in series, and RELEASE_GRACE_MS is only the biggest of them, not
+ * the only one:
+ *
+ *   1. ~17ms median, up to ~129ms tail - the touch controller's own report
+ *      pacing (this board's measured figure, cited in section 5 above)
+ *      before core0 even LEARNS contact is gone. This is not folded into
+ *      RELEASE_GRACE_MS's own 300ms: runtime_core.c's frame.touchDown is a
+ *      LATCH (`down = g_touchWasDown` unless a fresh sample says otherwise -
+ *      see rtcore_tick()'s touch-drain loop), so it holds "still down"
+ *      until the touch controller's own next real poll reports zero
+ *      fingers. Until that happens, s->lastContactMs keeps getting bumped
+ *      to "now" every main-loop tick (105,000/sec), so the grace window
+ *      cannot even START counting.
+ *   2. RELEASE_GRACE_MS itself, 300ms, from the moment step 1 lands.
+ *   3. Up to RENDER_MIN_MS (16ms) of push-throttle before the first moved
+ *      frame is even drawn - bowling_tick()'s own ~60fps flush gate.
+ *   4. A few ms of panel push for the dirty strip (small next to AGENTS.md's
+ *      ~12ms FULL-panel figure, since this is one strip, not the screen).
+ *
+ * TOTAL: roughly 320-460ms from a real lift to a visible response, not
+ * "300ms." The 300ms grace is still the dominant term (step 1's tail is the
+ * only other one worth a name), so the owner's own diagnosis - "it's the
+ * grace" - was right in kind, wrong only in not accounting for step 1.
+ *
+ * WHETHER THE GRACE COULD JUST SHRINK: measured, not guessed, the same way
+ * tables.c's own RELEASE_GRACE_MS was (tools/sweep-tables-grace.ts, cited
+ * verbatim as the precedent this file's own sweep follows -
+ * tools/sweep-bowling-grace.ts). Bowling's failure mode is NOT tables.c's
+ * (a wrong digit): a premature release here only ever shows up as a launch
+ * line at all when the velocity ring buffer already clears MIN_LAUNCH_SPEED
+ * forward, so bowling has more headroom than a plain commit-window would.
+ * 120 trials/scenario/value, a two-phase flick (stationary wind-up, then a
+ * constant-velocity swing to a scripted real release) against every launch
+ * line's own (vx, vy) compared to a clean, dropout-free replay of the same
+ * motion:
+ *
+ *   grace(ms)  flick premature (of 120)   premature speed vs real   fired early (mean)
+ *   ---------  ------------------------   -----------------------   ------------------
+ *          60   58 (48%)                   ~105% (about as fast)     164ms
+ *         100   26 (22%)                   ~104%                     112ms
+ *         140    4 (3.3%)                   ~64% (a bare nudge)      142ms
+ *         180    0                          -                         -
+ *         220    0                          -                         -
+ *         260    0                          -                         -
+ *         300    0                          -                         -
+ *
+ * So a real floor exists, same as tables.c's, but it sits far lower here
+ * (clean from 180ms up, not 290ms) - and 300 sits comfortably inside that
+ * clean band with real margin, not against its edge.
+ *
+ * THE DECISION: RELEASE_GRACE_MS STAYS AT 300, UNCHANGED. Not because
+ * measurement says it must - it does not - but because once the cue below
+ * exists, the player is already watching the ball move within about
+ * 17-129ms of letting go; whether the FLIGHT itself is committed to at
+ * +250ms or +300ms behind that moving picture is no longer something a
+ * two-year-old's patience can tell apart. Shrinking a safety-relevant
+ * constant for a felt-experience win the cue already delivers is not a
+ * trade worth making, and every test/tool file that mirrors this constant
+ * (feature-bowling.ts, repro-touch-dropout-bowling-throw.ts,
+ * tools/preview-bowling.ts) stays untouched as a result. RELEASE_GRACE_MS
+ * is #ifndef-guarded now (tables.c's own pattern) purely so
+ * tools/sweep-bowling-grace.ts can re-run this measurement after any future
+ * change to the dropout profile, without that being a reason to actually
+ * lower the shipped value today.
+ *
+ * THE FIX THAT SHIPPED INSTEAD: a provisional release CUE, not a shorter
+ * grace. The instant contact is lost while the ball is held (PH_HELD),
+ * before ANY silence is trusted, the ball is nudged PROV_RELEASE_NUDGE_PX
+ * (14px, well under BALL_R=17 and negligible next to the ~370px lane) in
+ * the flick's own direction - computed by calling
+ * launch_velocity_from_vbuf() itself, so the cue can only ever appear when
+ * the CURRENT window already looks like a real throw (same MIN/MAX/forward
+ * rules the real decision uses, not a second, looser copy of them). This
+ * gives an immediate "it let go" within roughly one touch-report period of
+ * the real lift (step 1 above), while step 2 - the actual launch-or-snap-
+ * back decision - is completely untouched: no phase change, no pin
+ * collision, nothing committed. If contact resumes before the grace window
+ * elapses (the common case: a bridged dropout, not a real lift), the very
+ * next accepted sample overwrites the nudge with the finger's real live
+ * position, so the correction is never more than PROV_RELEASE_NUDGE_PX from
+ * where the finger actually is.
+ *
+ * THE COST, STATED PLAINLY: every real throw's flight now starts
+ * PROV_RELEASE_NUDGE_PX further down the lane than the exact point the
+ * finger let go - always in the throw's own direction (it can never nudge
+ * backward or sideways-only), so it never distorts aim, only gives a
+ * throw-in-progress a fixed ~4% head start on a ~370px lane. See
+ * emulator/wasm/tests/feature-bowling-provisional-release.ts for the proof
+ * this fires promptly, never touches the launch decision, and recovers
+ * cleanly from a bridged dropout.
  */
 #include <math.h>
 #include <stdio.h>
@@ -302,7 +399,21 @@ _Static_assert(LANE_CY - PLAY_HALF_W - PIN_COL_GAP >= (float)SAFE_Y0 &&
 #define ARM_SAMPLES 4
 #define ARM_MS 40
 #define ARM_RATE_HZ 15u
+// #ifndef-guarded, not a plain #define, so tools/sweep-bowling-grace.ts can
+// override it per candidate build via EMU_EXTRA_DEFINES - the same pattern
+// tables.c uses for the identical reason (see that file's own comment).
+#ifndef RELEASE_GRACE_MS
 #define RELEASE_GRACE_MS 300u
+#endif
+
+// The provisional release cue's own size - section 6 below. Comfortably
+// smaller than the ball itself (BALL_R=17) so it never reads as "the ball
+// already left home," and tiny next to the ~370px lane, so it costs nothing
+// physically: every real throw's flight starts this many pixels further
+// down the lane than the exact point the finger let go, always in the
+// throw's own direction (it only ever fires along the vbuf's own forward
+// velocity, so it can never nudge the wrong way).
+#define PROV_RELEASE_NUDGE_PX 14.0f
 
 // The velocity ring buffer: the last few ACCEPTED contact samples (dropped
 // ticks simply do not push one, so the buffer's time span stretches
@@ -433,6 +544,14 @@ typedef struct {
 
     vsample_t vbuf[VBUF_LEN];
     int vbufCount;
+
+    // The provisional release cue - section 6. Set (once) the instant
+    // contact is lost while PH_HELD and left alone until the gesture
+    // resolves one way or the other: graceDirX/Y is the unit direction the
+    // ball was nudged in, (0,0) meaning "no nudge" (too slow or backward at
+    // that instant, same bucket launch_velocity_from_vbuf() itself uses).
+    bool  graceWaiting;
+    float graceDirX, graceDirY;
 
     bool wasStrike;
 
@@ -853,6 +972,7 @@ static void go_ready(bowling_state_t *s, uint32_t nowMs) {
     s->armed = false;
     s->contactCount = 0;
     vbuf_reset(s);
+    s->graceWaiting = false;
     for (int i = 0; i < PIN_COUNT; i++) {
         s->pins[i].down = false;
         s->pins[i].fellAtMs = 0;
@@ -939,7 +1059,12 @@ static void gesture_tick(bowling_state_t *s, const app_frame_t *f) {
             return;
         }
 
-        // PH_HELD: track the finger every accepted sample.
+        // PH_HELD: track the finger every accepted sample. Real contact is
+        // back, so any provisional nudge from a bridged dropout is moot -
+        // the line below overwrites ballX/Y with the truth anyway, but
+        // clearing this lets the NEXT dropout (if any) start its own nudge
+        // fresh rather than thinking one is still pending.
+        s->graceWaiting = false;
         mark_ball(s);
         s->ballX = lx; s->ballY = ly;
         mark_ball(s);
@@ -950,12 +1075,51 @@ static void gesture_tick(bowling_state_t *s, const app_frame_t *f) {
     // No contact this tick - almost always a dropout, not a lift, per
     // four.c's own reasoning; only believe a release after real silence.
     if (!s->contactSeen) return;
-    if ((f->nowMs - s->lastContactMs) < RELEASE_GRACE_MS) return;
+    if ((f->nowMs - s->lastContactMs) < RELEASE_GRACE_MS) {
+        // Still waiting out the grace window - section 6 of this file's
+        // header comment. The FIRST tick this silence is observed, nudge
+        // the ball a small, fixed distance in the flick's own direction: a
+        // felt "it let go" the instant the touch controller stops
+        // reporting contact, while the safety-critical decision (launch or
+        // snap back, below) still waits the FULL RELEASE_GRACE_MS
+        // untouched - this block never sets phase, never runs pin
+        // collision, and never changes what launch_velocity_from_vbuf()
+        // will compute once the grace genuinely elapses. If contact
+        // resumes - the common case, a dropout rather than a real lift -
+        // the touchDown branch above overwrites this with the finger's
+        // real position on the very next accepted sample, so the nudge is
+        // never more than PROV_RELEASE_NUDGE_PX from where the finger
+        // actually is.
+        if (s->phase == PH_HELD && !s->graceWaiting) {
+            s->graceWaiting = true;
+            float vx, vy;
+            if (launch_velocity_from_vbuf(s, &vx, &vy)) {
+                // launch_velocity_from_vbuf() already guarantees speed >=
+                // MIN_LAUNCH_SPEED > 0 whenever it returns true, so this
+                // length can never be zero.
+                float len = sqrtf(vx * vx + vy * vy);
+                s->graceDirX = vx / len;
+                s->graceDirY = vy / len;
+                mark_ball(s);
+                s->ballX += s->graceDirX * PROV_RELEASE_NUDGE_PX;
+                s->ballY += s->graceDirY * PROV_RELEASE_NUDGE_PX;
+                mark_ball(s);
+            } else {
+                // Too slow or backward RIGHT NOW - the same "not really a
+                // throw" verdict the real decision will reach if this
+                // silence turns out to be genuine. Nothing to show yet.
+                s->graceDirX = 0.0f;
+                s->graceDirY = 0.0f;
+            }
+        }
+        return;
+    }
 
     bool wasHeld = (s->phase == PH_HELD);
     s->contactSeen = false;
     s->armed = false;
     s->contactCount = 0;
+    s->graceWaiting = false;
 
     if (!wasHeld) { vbuf_reset(s); return; }
 

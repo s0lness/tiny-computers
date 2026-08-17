@@ -51,10 +51,14 @@ export const CLEAN_INPUT_BASELINE: Record<string, string> = {
     "statement of what dino's jump/restart state machine does; the dropout half is repro-touch-dropout-dino-jump.ts",
   "feature-bowling.ts":
     "statement of what the bowling app is; the dropout half is repro-touch-dropout-bowling-throw.ts",
+  "feature-bowling-provisional-release.ts":
+    "the assertions are about EXACT millisecond timing relative to RELEASE_GRACE_MS (nudge fires well before the grace elapses, the real launch fires only once it genuinely has) - a simulated dropout could itself trigger an early or late release and contaminate the very before/after-grace boundary under test. The dropout-side property this feature touches (a premature release under real controller weather) is already covered by tools/sweep-bowling-grace.ts's own flick scenario and by repro-touch-dropout-bowling-throw.ts's held-still/drag scenarios; this file is deliberately the clean, exact-timing half, not a second copy of either.",
   "feature-sketch-palette.ts":
     "statement of what the palette is; the dropout half is repro-touch-dropout-palette-open.ts",
   "feature-tables.ts":
     "statement of what multiplication-tables practice is; the dropout/jitter half is repro-touch-dropout-tables.ts",
+  "feature-breakout.ts":
+    "statement of what the lives/game-over state machine does (breakout.c's own header, \"THREE LIVES\"); the touch it drives is the one narrow exception, the restart tap read only at LP_GAMEOVER_WAIT, and the dropout half is repro-touch-dropout-breakout-restart.ts",
   "repro-arena-not-zeroed.ts":
     "about the arena on app switch, not about a gesture: the touch here is a way to dirty state, and controller noise would only make the dirtying less certain",
   "repro-switch-input.ts":
