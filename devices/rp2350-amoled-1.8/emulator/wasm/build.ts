@@ -87,6 +87,8 @@ const EMU_EXPORTS = [
   "emu_tilt",
   "emu_app_current",
   "emu_app_switch",
+  "emu_menu_app_count",
+  "emu_menu_app_index",
   "emu_arena_used",
   "emu_arena_capacity",
   "emu_tune_get",

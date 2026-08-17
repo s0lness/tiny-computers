@@ -312,6 +312,24 @@ float emu_tilt(int field);
 int  emu_app_current(void);
 void emu_app_switch(int index);
 
+/* ---- optional: the menu's own roster -------------------------------------
+ *
+ * Which g_apps[] entries the on-device MENU actually shows (app.h's
+ * g_menuAppCount/g_menuAppIndex), and in what order. NOT the same thing as
+ * "apps" above: emu_device()'s "apps" array is every app this firmware
+ * carries (g_appCount), and a roster change (an app taken off the picker
+ * without deleting it - docs/decisions/0019) can make that list longer than
+ * what the grid actually draws. A test oracle for the same reason emu_tilt()
+ * is one: the thing that can actually go wrong here (a slot pointing at the
+ * wrong app) happens between this table and menu.c's own rendering, so
+ * reading it back from the compiled firmware is the only check that is not
+ * upstream of the bug.
+ *
+ * emu_menu_app_index(slot) is only defined for 0 <= slot < emu_menu_app_count().
+ */
+int emu_menu_app_count(void);
+int emu_menu_app_index(int slot);
+
 /* ---- optional: the arena, for the gate's headroom rule -------------------
  *
  * How many bytes of the app arena the CURRENT app allocated in its enter()

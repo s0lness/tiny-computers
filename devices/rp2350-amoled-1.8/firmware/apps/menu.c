@@ -127,9 +127,19 @@ extern const app_t g_tablesApp;
  * marks on the glass are the icons themselves and a round halo. The grid
  * lives entirely in menu_hit() and cell_rect_land().
  *
- * g_appCount is an extern int, not a macro (sized from the linked app
- * table, see app.h), so every split below is computed at runtime rather
- * than checked with a compile-time _Static_assert.
+ * g_menuAppCount is an extern int, not a macro (sized from the menu's own
+ * roster table, see app.h), so every split below is computed at runtime
+ * rather than checked with a compile-time _Static_assert.
+ *
+ * THE ROSTER, ADDED 2026-08-17. Everything below reads g_menuAppCount, not
+ * g_appCount: the two used to be the same number, and are not any more. The
+ * owner cut the menu to five apps (chrono, sketch/"draw", timer, four,
+ * tables) without deleting the other six (clock, morpion, dino, bowling,
+ * tiltball, breakout) - they stay fully built in g_apps[], just not on this
+ * screen. render_cell() below reads g_apps[g_menuAppIndex[i]] rather than
+ * g_apps[i] for exactly that reason: cell i is a SLOT in the menu's own
+ * roster, and g_menuAppIndex[slot] is where that slot's app actually lives
+ * in the full table. See docs/decisions/0019.
  * ===================================================================== */
 
 #define ICON_W 96
@@ -156,7 +166,7 @@ extern const app_t g_tablesApp;
 // thirteenth app widens the rows instead of drawing a row off the bottom of
 // the glass - see WHERE IT STOPS above.
 static int menu_rows(void) {
-    int n = g_appCount;
+    int n = g_menuAppCount;
     if (n < 1) return 1;
     int rows = (n + MENU_COLS_MAX - 1) / MENU_COLS_MAX;
     if (rows > MENU_ROWS_MAX) rows = MENU_ROWS_MAX;
@@ -171,7 +181,7 @@ static int menu_rows(void) {
 // the narrowest cell on the screen. Five apps are 3 then 2 (149px then
 // 224px cells), never 4 then 1.
 static void menu_row_span(int r, int *first, int *cols) {
-    int n = g_appCount;
+    int n = g_menuAppCount;
     int rows = menu_rows();
     int base = n / rows;
     int extra = n % rows;
@@ -2034,7 +2044,7 @@ static void render_cell(int i, bool hovered) {
         shapes_fill_disc_aa_land((float)(bx + bw / 2), (float)(by + bh / 2),
                                   r, menu_halo_color());
     }
-    draw_icon_for(g_apps[i], iconX, iconY, PX_BLACK);
+    draw_icon_for(g_apps[g_menuAppIndex[i]], iconX, iconY, PX_BLACK);
 }
 
 static void push_cell(int i) {
@@ -2044,7 +2054,7 @@ static void push_cell(int i) {
 }
 
 static void menu_paint_all(void) {
-    for (int i = 0; i < g_appCount; i++) render_cell(i, false);
+    for (int i = 0; i < g_menuAppCount; i++) render_cell(i, false);
 }
 
 /* ---------------------------------------------------------------------
@@ -2150,8 +2160,14 @@ static void menu_tick(const app_frame_t *f) {
         if (wasArmed) printf("menu: cancelled\r\n");
         return;
     }
-    printf("menu: launch %d\r\n", cell);
-    app_switch_to(cell);
+    // cell is a SLOT in the menu's own roster (0..g_menuAppCount-1), not a
+    // g_apps[] index - see g_menuAppIndex's comment in app.h. Both are
+    // logged, so a serial capture says which cell was touched AND which app
+    // it actually launched, rather than making a reader do the lookup by
+    // hand against a table that can change under this file.
+    int appIndex = g_menuAppIndex[cell];
+    printf("menu: launch slot %d -> app %d\r\n", cell, appIndex);
+    app_switch_to(appIndex);
 }
 
 const app_t g_menuApp = {

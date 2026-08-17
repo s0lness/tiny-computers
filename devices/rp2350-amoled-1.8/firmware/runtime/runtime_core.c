@@ -96,6 +96,49 @@ const app_t *const g_apps[] = {
 };
 const int g_appCount = sizeof(g_apps) / sizeof(g_apps[0]);
 
+/* ---- the menu's roster, separate from the table above ---------------------
+ *
+ * app.h's own comment on g_menuAppIndex/g_menuAppCount has the contract; this
+ * is where it is decided. Five of the eleven apps above, the owner's cut on
+ * 2026-08-17: chrono, sketch ("draw"), timer, four, tables. The other six -
+ * clock, morpion, dino, bowling, tiltball, breakout - stay exactly where they
+ * were in g_apps[] above, fully built, fully compiled into both targets, and
+ * fully reachable by every test under emulator/wasm/tests/ that already
+ * switches to one of them by its g_apps[] index (APP_CLOCK = 4 and so on) -
+ * this table only decides what menu.c draws and what a touch on the grid can
+ * launch, nothing about what the firmware carries. See docs/decisions/0019.
+ *
+ * Indices into g_apps[] above, spelled out one per line rather than computed,
+ * the same "a few lines that say what they do cost nothing" call g_apps[]
+ * itself makes for MENU_STUB_APPS.
+ */
+#if MENU_STUB_APPS
+// SCREENSHOT-FIXTURE BUILD (firmware/apps/stubapps.c). This branch is never
+// compiled into a real build - CMakeLists.txt never lists stubapps.c and no
+// build here defines MENU_STUB_APPS on its own; it exists only for
+// tools/preview-menu-grid.ts's own instructions for judging decision 0013's
+// grid arithmetic at an app count this device does not have real apps for.
+// The roster tracks the WHOLE padded g_apps[] table here, real apps and the
+// stub alike, so that fixture keeps doing the one job it was built for
+// (showing the layout through the real menu_enter(), not a reimplementation)
+// rather than being capped at the fixed five-app roster below.
+const int g_menuAppIndex[] = {
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+#if MENU_STUB_APPS > 11
+    11,
+#endif
+};
+#else
+const int g_menuAppIndex[] = {
+    0,  // chrono
+    1,  // sketch ("draw")
+    2,  // timer
+    3,  // four
+    10, // tables
+};
+#endif
+const int g_menuAppCount = (int)(sizeof(g_menuAppIndex) / sizeof(g_menuAppIndex[0]));
+
 // Startup-only sentinel: "nothing has been entered yet", so do_switch()'s
 // first-ever call has no outgoing app to call leave() on. Never observed by
 // app_current() once rtcore_tick() has run at least once.

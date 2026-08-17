@@ -38,10 +38,11 @@ const coilLabel = args.includes("--coil");
 
 // ---- menu.c's own layout, mirrored exactly (see that file's "THE LAYOUT"
 // section: menu_rows, menu_row_span, cell_rect_land, ICON_W/ICON_H).
-// g_appCount is read back from the device itself in main() (emu_device()'s
-// "apps" array), not hardcoded, so this script cannot silently drift from an
-// app-table change - see main()'s own comment for the time it did exactly
-// that.
+// The app count is read back from the device itself in main()
+// (emu_menu_app_count(), the menu's OWN roster - docs/decisions/0019, not
+// necessarily g_appCount any more), not hardcoded, so this script cannot
+// silently drift from an app-table change - see main()'s own comment for the
+// time it did exactly that.
 //
 // UPDATED 2026-08-15, when the menu became a grid: an icon's box is no longer
 // at a fixed y, it is centred in its own cell, and a cell's row is decided by
@@ -125,6 +126,12 @@ async function loadDevice() {
       const json = JSON.parse(decoder.decode(b.subarray(0, end)));
       return Array.isArray(json.apps) ? (json.apps as string[]) : [];
     },
+    // The MENU's own roster (docs/decisions/0019), not g_appCount: a slot in
+    // the grid names an index INTO appNames() above, and since the roster
+    // cut that is no longer the identity mapping (slot 4 is "tables",
+    // appNames()[10], not appNames()[4]).
+    menuAppCount(): number { return exp.emu_menu_app_count(); },
+    menuAppIndex(slot: number): number { return exp.emu_menu_app_index(slot); },
   };
 }
 
@@ -253,22 +260,31 @@ async function main() {
   // The filenames keep this directory's existing vocabulary rather than the
   // app's own: the drawing app calls itself "draw" and its captures have
   // always been "menu-icon-sketch-*".
+  // appNames() is the FULL app table (g_apps[]/g_appCount) - a name per
+  // g_apps[] index. n and the per-slot index below come from the menu's own
+  // roster (emu_menu_app_count()/emu_menu_app_index()) instead, since
+  // docs/decisions/0019 the two counts differ: the grid shows five slots,
+  // not all eleven apps the firmware carries, and slot i is not g_apps[i]
+  // any more (slot 4 is "tables", g_apps[10]).
   const appNames = dev.appNames();
-  const n = appNames.length;
-  if (n === 0) throw new Error("emu_device() declared no apps - cannot place the crops");
-  const names = appNames.map((a) => (a === "draw" ? "sketch" : a === "timer" && coilLabel ? "timer-coil" : a));
+  const n = dev.menuAppCount();
+  if (n === 0) throw new Error("emu_menu_app_count() returned 0 - cannot place the crops");
   for (let i = 0; i < n; i++) {
+    const appIdx = dev.menuAppIndex(i);
+    const rawName = appNames[appIdx];
+    const name = rawName === "draw" ? "sketch" : rawName === "timer" && coilLabel ? "timer-coil" : rawName;
+
     const { bx, by, bw, bh } = cellRectLand(i, n);
     const iconX = bx + Math.floor((bw - ICON_W) / 2);
     const iconY = by + Math.floor((bh - ICON_H) / 2);
     const box96 = crop(landGray, LAND_W, iconX, iconY, ICON_W, ICON_H);
     const box4x = upscale(box96, ICON_W, ICON_H, 4);
 
-    const p96 = join(ROOT, "preview", `menu-icon-${names[i]}-96.png`);
-    const p4x = join(ROOT, "preview", `menu-icon-${names[i]}-4x.png`);
+    const p96 = join(ROOT, "preview", `menu-icon-${name}-96.png`);
+    const p4x = join(ROOT, "preview", `menu-icon-${name}-4x.png`);
     writePng(p96, ICON_W, ICON_H, box96);
     writePng(p4x, box4x.w, box4x.h, box4x.data);
-    console.log(`wrote preview/menu-icon-${names[i]}-96.png and -4x.png`);
+    console.log(`wrote preview/menu-icon-${name}-96.png and -4x.png`);
   }
 }
 

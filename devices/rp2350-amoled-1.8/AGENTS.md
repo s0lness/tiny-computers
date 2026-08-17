@@ -3,15 +3,26 @@
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED in a
 small plastic puck.
 
-**One binary, eleven apps, a menu.** This is a single-binary runtime
-(`firmware/runtime/`) holding an app table (`firmware/apps/`): a stopwatch
-(`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw"), a
-countdown timer (`timer.c`), Connect Four (`four.c`), a clock (`clock.c`),
-morpion (`morpion.c`, noughts and crosses), and four games merged together
-on 2026-08-15: a Chrome-style
-tap-to-jump runner with a flash-backed high score (`dino.c`), a
-finger-flick bowling lane (`bowling.c`), a tilt-a-ball dish (`tiltball.c`)
-and a tilt-controlled breakout (`breakout.c`). Switching apps is a
+**One binary, eleven apps built, five on the menu.** This is a single-binary
+runtime (`firmware/runtime/`) holding an app table (`firmware/apps/`): a
+stopwatch (`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`,
+"draw"), a countdown timer (`timer.c`), Connect Four (`four.c`), a clock
+(`clock.c`), morpion (`morpion.c`, noughts and crosses), four games merged
+together on 2026-08-15 (a Chrome-style tap-to-jump runner with a
+flash-backed high score, `dino.c`; a finger-flick bowling lane,
+`bowling.c`; a tilt-a-ball dish, `tiltball.c`; a tilt-controlled breakout,
+`breakout.c`), and a multiplication-tables practice app (`tables.c`).
+**The on-device picker does not show all eleven.** The owner cut it to
+five on 2026-08-17 - chrono, draw, timer, four, tables - without deleting
+the other six: their source, icons, tests and previews all stay exactly
+where they were, just off the screen. `g_apps[]`/`g_appCount` (`app.h`,
+`runtime_core.c`) is still every app this firmware compiles, unchanged and
+still what every regression test addresses an app by index through; a
+separate `g_menuAppCount`/`g_menuAppIndex` table decides only what
+`menu.c` draws and what a touch on the grid can launch. See
+`docs/decisions/0019-the-menu-is-a-roster-not-the-table.md` for the full
+argument and why a future reader finding six fully-built, fully-tested
+apps the device does not show is not a bug. Switching apps is a
 function call, not a reboot: holding BOOT and PWR together until PWR's
 long-press verdict fires opens a picture menu (`menu.c`) to pick another
 app; the same chord closes it again. See
@@ -166,13 +177,18 @@ Consequences worth having in mind before laying anything out:
   four arms reaching to four edges. Anything that shows a selection UNDER the
   hand is not showing it.
 
-**The menu row is full at five apps.** `ICON_W` is 96 and a column is
-`LAND_W/g_appCount`: 149 at three, 112 at four, **89 at five**, where the icon
-box is wider than the column it belongs to. `menu.c` handles that correctly
-(it redraws the neighbouring icons a column's repaint erases, and pushes the
-union of the column and its own icon box - see `icon_x_land()`), so nothing is
-broken, but the icons now overlap each other's boxes by 7px. A sixth app needs
-the row itself redesigned, not another entry in `g_apps[]`.
+**The menu row is full at five apps**, in the OLD single-row layout this
+paragraph describes - kept here as the historical arithmetic that motivated
+decision 0013's grid rewrite, not a description of the menu as it is today.
+`ICON_W` is 96 and a column was `LAND_W/g_appCount`: 149 at three, 112 at
+four, **89 at five**, where the icon box is wider than the column it belongs
+to; a sixth app needed the row itself redesigned, which is exactly what
+decision 0013 did on 2026-08-15 (see `docs/decisions/0013`). The CURRENT
+five-app menu (decision 0019, 2026-08-17) is a coincidence of the same
+number, not a return to this design: it is two rows of the GRID (3 then 2,
+149x112 and 224x112 cells), not one row of five 89px columns, and every
+target is comfortably above the 112px floor - see decision 0019 for the
+actual current layout.
 
 Verify the diagonal against the product page before treating the exact figures
 as gospel; the ratio is what matters and it is not close to the edge.
@@ -220,8 +236,12 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       below),
                       breakout.c (a tilt-controlled paddle and a wall of
                       bricks on an arc, no floor to lose the ball off),
+                      tables.c (multiplication-tables practice, the owner's
+                      own magnifying numpad),
                       menu.c (the app picker: a grid of 112px
-                      cells filling the glass, all apps visible at once,
+                      cells filling the glass, every app ON THE MENU'S OWN
+                      ROSTER visible at once (g_menuAppCount/g_menuAppIndex,
+                      not necessarily g_appCount - decision 0019),
                       press-drag-release to launch - decision 0013),
                       stubapps.c (empty unless the menu-stub define is
                       set; how that layout gets captured at six and twelve

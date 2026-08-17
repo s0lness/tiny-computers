@@ -760,6 +760,18 @@ void emu_app_switch(int index) {
     app_switch_to(index);
 }
 
+// The menu's own roster (app.h's g_menuAppCount/g_menuAppIndex), read back
+// rather than assumed - see emu_abi.h's comment on why this is a separate
+// oracle from emu_device()'s "apps" list. app.h is already in this file's
+// declared include set, so no new dependency is added to reach it.
+int emu_menu_app_count(void) {
+    return g_menuAppCount;
+}
+
+int emu_menu_app_index(int slot) {
+    return g_menuAppIndex[slot];
+}
+
 // The arena oracle, per emu_abi.h: reads runtime_core.c's bump pointer at
 // the app boundary. int, not size_t, because a wasm export hands back an
 // i32 either way and APP_ARENA_BYTES (64KB) is nowhere near the sign bit.

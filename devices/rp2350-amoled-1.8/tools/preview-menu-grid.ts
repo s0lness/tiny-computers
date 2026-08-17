@@ -1,9 +1,11 @@
 /**
  * Pixel-accurate capture of the WHOLE menu screen, from the real compiled
- * firmware (emulator/wasm/dist/emu.wasm), at whatever app count that
- * firmware declares. Two pictures per run: the menu at rest, and the menu
- * with one cell lit under a thumb, because the halo is the entire feedback
- * story of the press-drag-release gesture and a still picture of the grid
+ * firmware (emulator/wasm/dist/emu.wasm), at whatever count the menu's OWN
+ * roster declares (emu_menu_app_count() - not necessarily every app the
+ * firmware carries, see docs/decisions/0019). Two pictures per run: the
+ * menu at rest, and the menu with one cell lit under a thumb, because the
+ * halo is the entire feedback story of the press-drag-release gesture and
+ * a still picture of the grid
  * without it says nothing about how a child knows what she is about to get.
  *
  *   ZIG_EXE=... bun run emulator/wasm/build.ts
@@ -105,6 +107,11 @@ async function loadDevice() {
       const json = JSON.parse(decoder.decode(b.subarray(0, end)));
       return Array.isArray(json.apps) ? (json.apps as string[]) : [];
     },
+    // The MENU's own count, not g_appCount: since docs/decisions/0019 the
+    // menu shows a roster that can be smaller than everything g_apps[]
+    // carries. appNames().length would silently go back to describing the
+    // full app table, not the grid this script is actually a picture of.
+    menuAppCount(): number { return exp.emu_menu_app_count(); },
   };
 }
 
@@ -175,7 +182,7 @@ async function capture(litCell: number | null): Promise<{ gray: Uint8Array; n: n
   dev.appSwitch(APP_INDEX_MENU);
   dev.tick(16);
   if (dev.appCurrent() !== APP_INDEX_MENU) throw new Error("did not land in the menu");
-  const n = dev.appNames().length;
+  const n = dev.menuAppCount();
 
   if (litCell !== null) {
     const { bx, by, bw, bh } = cellRect(n, litCell);

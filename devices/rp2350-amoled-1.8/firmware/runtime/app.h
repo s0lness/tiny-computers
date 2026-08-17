@@ -216,6 +216,21 @@ typedef struct {
 extern const app_t *const g_apps[];
 extern const int g_appCount;
 
+/* ---- the menu's own roster ----------------------------------------------
+ *
+ * Which g_apps[] entries the on-device picker (firmware/apps/menu.c) shows,
+ * and in what order - slot 0 is the grid's top-left cell. This is NOT the
+ * same list as g_apps[]/g_appCount above, on purpose: taking an app off the
+ * menu is a roster decision (a product choice about what a child can reach),
+ * never a deletion, and g_apps[]/g_appCount stays the full, index-stable
+ * table so every existing test still addresses a retired app through its own
+ * unchanged index - see docs/decisions/0019-the-menu-is-a-roster-not-the-
+ * table.md. g_menuAppIndex[slot] is an index INTO g_apps[], never an app
+ * pointer, so a roster change never has to touch the app it is naming.
+ */
+extern const int g_menuAppCount;
+extern const int g_menuAppIndex[];
+
 // Switches to an app by index. Safe to call from inside tick(): the switch
 // is deferred to the end of the current frame, so an app is never torn down
 // underneath its own stack frame.

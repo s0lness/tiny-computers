@@ -132,12 +132,24 @@ async function loadDevice() {
     }
 
     const dev = {
-        appCount(): number {
+        // The MENU's own roster (docs/decisions/0019), not g_appCount /
+        // emu_device()'s "apps" array: the two used to be the same number,
+        // and since the roster cut are not any more (the grid this file
+        // tests shows five slots, not every app g_apps[] carries). A slot
+        // launches g_apps[menuAppIndex(slot)], not g_apps[slot] - the launch
+        // checks below read that back rather than assuming slot === app
+        // index the way the pre-0019 version of this file could.
+        menuAppCount(): number { return exp.emu_menu_app_count(); },
+        menuAppIndex(slot: number): number { return exp.emu_menu_app_index(slot); },
+        // The full app table's own names (g_apps[]/g_appCount, via
+        // emu_device()'s "apps" array) - used below only to name what a menu
+        // slot resolves to, never for n itself (see menuAppCount() above).
+        appNames(): string[] {
             const ptr = exp.emu_device();
             const b = new Uint8Array(memory.buffer, ptr);
             let end = 0;
             while (b[end] !== 0) end++;
-            return (JSON.parse(decoder.decode(b.subarray(0, end))).apps ?? []).length;
+            return (JSON.parse(decoder.decode(b.subarray(0, end))).apps ?? []) as string[];
         },
         appCurrent(): number { return exp.emu_app_current(); },
         openMenu(nowMs: number) { exp.emu_app_switch(APP_INDEX_MENU); exp.emu_tick(nowMs); },
@@ -281,7 +293,7 @@ async function main() {
     dev.tickChecked(200);
     check("the menu is open", dev.appCurrent() === APP_INDEX_MENU, `app_current()=${dev.appCurrent()}`);
 
-    const n = dev.appCount();
+    const n = dev.menuAppCount();
     const rows = menuRows(n);
     const gridH = rows * MENU_CELL_H;
     console.log(`    ${n} apps, ${rows} row(s), cancel band ${LAND_H - gridH}px`);
@@ -291,6 +303,20 @@ async function main() {
         console.log(`      row ${r}: ${cols} cell(s) of ${bw} x ${bh} px` +
             ` = ${(bw / CHILD_FINGERTIP_PX).toFixed(1)} x ${(bh / CHILD_FINGERTIP_PX).toFixed(1)} child fingertips`);
     }
+
+    // THE ROSTER ITSELF (docs/decisions/0019). Everything above and below
+    // this file was already true about a grid of N slots before the roster
+    // existed; this is the one check that is actually about the cut - that
+    // the five slots resolve, in order, to exactly the apps the owner kept,
+    // read by NAME off the real compiled g_apps[] table (appNames(), the
+    // full roster) through the menu's own mapping (menuAppIndex()), not
+    // assumed from either list on its own.
+    const EXPECTED_MENU_APPS = ["chrono", "draw", "timer", "four", "TABLES"];
+    const names = dev.appNames();
+    const menuNames = Array.from({ length: n }, (_, i) => names[dev.menuAppIndex(i)]);
+    check("the menu shows exactly the five apps the owner kept, in this order",
+        JSON.stringify(menuNames) === JSON.stringify(EXPECTED_MENU_APPS),
+        `menu = [${menuNames.join(", ")}]`);
 
     let t = 200;
 
@@ -383,12 +409,13 @@ async function main() {
 
     /* ---- 3. release launches ------------------------------------------ */
     const target = litCell(dev, n);
-    console.log(`\n-- it lifts over cell ${target} --`);
+    const targetApp = dev.menuAppIndex(target);
+    console.log(`\n-- it lifts over cell ${target} (app ${targetApp}) --`);
     dev.drainLog();
     t = release(dev, t, MENU_RELEASE_GRACE_MS + 200);
     const launch = dev.log().find((l) => l.includes("menu: launch"));
     check("releasing over a lit cell launches that app",
-        !!launch && launch.includes(`launch ${target}`) && dev.appCurrent() === target,
+        !!launch && launch.includes(`-> app ${targetApp}`) && dev.appCurrent() === targetApp,
         `${launch?.trim() ?? "(no launch line)"}, app_current()=${dev.appCurrent()}`);
 
     /* ---- 4. cancel ---------------------------------------------------- */
@@ -505,18 +532,24 @@ async function main() {
         for (let e = 0; e < 400; e += STEP) { tt += STEP; d.feedRaw(sim.poll(tt), tt); sampleHalo(d); }
         if (d.appCurrent() !== APP_INDEX_MENU) { early++; continue; }
 
-        // WHAT THE SCREEN SAID at the instant of the lift, read from pixels.
+        // WHAT THE SCREEN SAID at the instant of the lift, read from pixels -
+        // a SLOT (or -1/-2), same numbering as `from`/`to` above. Mapped to
+        // an app index below only when it names a real slot, so a launch
+        // verdict is never compared against a mapping of "nothing lit" or
+        // "two cells lit".
         const litAtLift = litCell(d, n);
+        const litAtLiftApp = litAtLift >= 0 ? d.menuAppIndex(litAtLift) : litAtLift;
 
         sim.setPointer(false, 0, 0);
         for (let e = 0; e < MENU_RELEASE_GRACE_MS + 400; e += STEP) { tt += STEP; d.feedRaw(sim.poll(tt), tt); }
         const got = d.appCurrent();
+        const toApp = d.menuAppIndex(to);
         if (got === APP_INDEX_MENU) missed++;
-        else if (got === to) correct++;
+        else if (got === toApp) correct++;
         else wrong++;
-        if (got !== litAtLift) {
+        if (got !== litAtLiftApp) {
             disagreed++;
-            if (disagreed <= 3) console.log(`      trial ${trial}: lit ${litAtLift} at the lift, launched ${got}`);
+            if (disagreed <= 3) console.log(`      trial ${trial}: lit slot ${litAtLift} (app ${litAtLiftApp}) at the lift, launched app ${got}`);
         }
     }
     console.log(`    ${correct}/${TRIALS} launched the cell the thumb finished on; ${early} launched early, ${missed} never launched, ${wrong} launched the wrong app`);
