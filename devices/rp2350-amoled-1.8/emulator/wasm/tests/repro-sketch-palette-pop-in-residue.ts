@@ -217,10 +217,24 @@ async function main() {
     // Visits every cell other than HOLD_INDEX exactly once, then returns to
     // FINAL_INDEX (== HOLD_INDEX here) so the last transition still fires a
     // real hand-off (leaving FINAL_INDEX grown, the second-to-last cell not).
+    //
+    // 20ms between stops, not 15: palette_render_handoff() is now paced by
+    // the same PALETTE_RENDER_MIN_MS=16ms floor palette_render_animating()
+    // already enforced on itself (see palette_advance_animation()'s own
+    // comment in sketch.c for the mechanism this closes - decision 0001's
+    // still-open "per-row DMA re-arm race", and feature-sketch-palette-
+    // edge-column.ts's own scenario D for the red-then-green proof). A
+    // tour stepping faster than that floor would have some of its stops
+    // coalesced into the next one that clears it - correct throttling
+    // behaviour, but it would silently turn this tour into fewer than nine
+    // real hand-offs and break the "every visited cell gets its own frame"
+    // premise this reference is built on. 20ms clears the floor with room
+    // to spare while staying far under any real touch report interval
+    // (~16.67ms at the controller's own 60Hz).
     const tourOrder = [0, 1, 2, 3, 5, 6, 7, 8, FINAL_INDEX];
     for (const idx of tourOrder) {
         const { cx, cy } = paletteCellCentre(idx);
-        tB += 15;
+        tB += 20;
         devB.touch(true, cx, cy);
         devB.tick(tB);
         for (const l of devB.drainLog()) if (l.includes("palette: frame kind=settled")) handoffFrames++;

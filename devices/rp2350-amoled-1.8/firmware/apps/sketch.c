@@ -2080,15 +2080,50 @@ static void palette_advance_animation(sketch_state_t *st, uint16_t *fb, uint32_t
         // palette_render_animating()'s own PALETTE_RENDER_MIN_MS throttle
         // decides whether this particular tick actually draws anything.
         palette_render_animating(st, fb, nowMs, candidate, dMinX, dMinY, dMaxX, dMaxY);
-    } else if (candidate != st->paletteLastCandidate) {
-        // Settled: unchanged from before this round - a redraw happens only
-        // on a genuine hand-off, scoped to the (at most two) cells involved.
-        palette_render_handoff(st, fb, candidate, dMinX, dMinY, dMaxX, dMaxY);
+        st->paletteLastCandidate = candidate;
+        return;
     }
-    // Bookkeeping every path below needs on the NEXT call, regardless of
-    // which branch above actually rendered anything (or neither did, the
-    // settled-and-unchanged case) - has to reflect the true current
-    // candidate every time, not just the ones that triggered a redraw.
+
+    if (candidate == st->paletteLastCandidate) return; // nothing to hand off
+
+    // THROTTLE, same PALETTE_RENDER_MIN_MS the animating path already
+    // enforces on itself - see gfx.h/gfx.c's own decision-0001 comments and
+    // this file's own "the board reset this throttle below fixes" header
+    // for why a palette push is never allowed to fire faster than that.
+    // Before this, palette_render_handoff() was the ONE palette push site
+    // with no rate limit at all: every OTHER push here (animating's own
+    // pop-in, an ordinary stroke segment paced by touch sample arrival) is
+    // bounded to some real minimum gap between two panel transactions, and
+    // a hand-off firing on every candidate-changing tick had no such floor
+    // - under the controller's own measured position jitter (sensors.h,
+    // repro-touch-dropout-*'s own calibrated profile: a still finger can
+    // read 80-250px away for up to three reports), a finger resting near a
+    // cell boundary can flip the candidate, and therefore the pushed
+    // window, on consecutive ticks with no gap between them at all. That is
+    // exactly the shape decision 0001 itself never got to rule out: "a
+    // per-row DMA re-arm race that only bites when the transfer is short
+    // enough to complete inside the re-arm window... not confirmed against
+    // the SH8601 datasheet" (docs/decisions/0001-push-min-width.md). This
+    // does not touch a single rectangle's width or alignment - both are
+    // already correct by construction (gfx_push rounds every row length to
+    // PUSH_GRAN_W unconditionally, proven and fuzzed clean in emulator/wasm/
+    // tests/feature-sketch-palette-edge-column.ts, including under that
+    // exact jitter profile, reaching every cell) - it only bounds how often
+    // two DIFFERENT such windows may follow one another, which is the one
+    // policy every other push site already had and this one did not.
+    //
+    // NOT dropped: a throttled tick returns WITHOUT updating
+    // paletteLastCandidate, so the same pending transition is retried on
+    // the very next tick rather than silently lost - the cell the finger
+    // is actually over still gets its highlight, just delayed by at most
+    // PALETTE_RENDER_MIN_MS, the same latency the pop-in's own throttle
+    // already spends and nobody has ever reported feeling.
+    if ((nowMs - st->paletteLastRenderMs) < (uint32_t)PALETTE_RENDER_MIN_MS) return;
+
+    // Settled: a redraw happens only on a genuine hand-off, scoped to the
+    // (at most two) cells involved.
+    palette_render_handoff(st, fb, candidate, dMinX, dMinY, dMaxX, dMaxY);
+    st->paletteLastRenderMs = nowMs;
     st->paletteLastCandidate = candidate;
 }
 
