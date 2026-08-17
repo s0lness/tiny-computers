@@ -823,6 +823,119 @@ export const rule5FramebufferFitsInHeap: Invariant = {
   },
 };
 
+// --- rule 6: storage.c's sector fits inside the smallest partition this
+//     firmware could ever be booted from -----------------------------------
+//
+// docs/decisions/0018: the RP2350 bootrom maps the XIP window onto the
+// ACTIVE PARTITION, not the whole chip, so storage.c's one durable sector
+// is placed at a PARTITION-RELATIVE offset (STORAGE_SECTOR_OFFSET =
+// STORAGE_PARTITION_BYTES - FLASH_SECTOR_SIZE) rather than a chip-absolute
+// one. STORAGE_PARTITION_BYTES is therefore a claim about how big the
+// partition storage.c actually runs inside is, and the only thing that can
+// falsify that claim is store/partitions.json - the file the board's own
+// partition table is embedded from (decision 0011,
+// store/bootloader/CMakeLists.txt's pico_embed_pt_in_binary()). This rule
+// reads that file as data, the same discipline rule 5 already applies to
+// gfx.h/AMOLED_1in8.h, and fails if STORAGE_PARTITION_BYTES exceeds the
+// smallest partition sharing this firmware's own boot family
+// ("rp2350-arm-s" - slot_a and slot_b; the manifest partition is family
+// "data" and this image never boots from it, so it is excluded rather than
+// making this check impossible to pass by construction).
+
+const STORAGE_C = "firmware/runtime/storage.c";
+const PARTITIONS_JSON = "store/partitions.json";
+const FIRMWARE_PARTITION_FAMILY = "rp2350-arm-s";
+
+interface PartitionEntry {
+  name: string;
+  start: number;
+  size: number;
+  families: string[];
+}
+
+// Not a full C preprocessor: strips a trailing numeric-literal suffix
+// (u/U/l/L, possibly both) off a single-token #define and parses what is
+// left as a decimal or hex integer - the one extra step findDefine's own
+// caller (rule 5) never needed, because PANEL_W/PANEL_H carry no suffix.
+function parseNumericDefine(text: string, name: string, path: string): number {
+  const tok = findDefine(text, name, path);
+  const stripped = tok.replace(/[uUlL]+$/, "");
+  const value = Number(stripped);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `invariant checker: ${path}'s "#define ${name}" did not parse to a positive integer: ${JSON.stringify(tok)}`
+    );
+  }
+  return value;
+}
+
+function readPartitionTable(): PartitionEntry[] {
+  const abs = join(DEVICE_ROOT, PARTITIONS_JSON);
+  if (!existsSync(abs)) {
+    throw new Error(`invariant checker: no such file: ${PARTITIONS_JSON} (looked for ${abs})`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(abs, "utf8"));
+  } catch (e) {
+    throw new Error(`invariant checker: ${PARTITIONS_JSON} did not parse as JSON: ${(e as Error).message}`);
+  }
+  const partitions = (parsed as { partitions?: unknown }).partitions;
+  if (!Array.isArray(partitions)) {
+    throw new Error(`invariant checker: ${PARTITIONS_JSON} has no "partitions" array`);
+  }
+  return partitions.map((p): PartitionEntry => {
+    const name = (p as { name?: unknown }).name;
+    const start = (p as { start?: unknown }).start;
+    const size = (p as { size?: unknown }).size;
+    const families = (p as { families?: unknown }).families;
+    if (
+      typeof name !== "string" ||
+      typeof start !== "number" ||
+      typeof size !== "number" ||
+      !Array.isArray(families) ||
+      !families.every((f) => typeof f === "string")
+    ) {
+      throw new Error(`invariant checker: ${PARTITIONS_JSON} has a malformed partition entry: ${JSON.stringify(p)}`);
+    }
+    return { name, start, size, families: families as string[] };
+  });
+}
+
+export const rule6StorageFitsPartition: Invariant = {
+  name: "storage.c's durable sector fits inside the smallest partition this firmware could boot from",
+  why:
+    "storage.c's STORAGE_SECTOR_OFFSET is PARTITION-RELATIVE (docs/decisions/0018: the RP2350 " +
+    "bootrom maps the XIP window onto the active partition, not the chip), so it is only ever " +
+    "valid if it stays inside every partition this same image could actually be booted from. " +
+    "store/partitions.json is the file that claim is checked against, not a number restated by " +
+    "hand in two places that could drift apart silently.",
+  see: "docs/decisions/0018-two-address-spaces-one-flash-offset.md",
+  check(_fw) {
+    const storageSrc = readDeviceSource(STORAGE_C);
+    const partitionBytes = parseNumericDefine(storageSrc, "STORAGE_PARTITION_BYTES", STORAGE_C);
+
+    const bootable = readPartitionTable().filter((p) => p.families.includes(FIRMWARE_PARTITION_FAMILY));
+    if (bootable.length === 0) {
+      throw new Error(
+        `invariant checker: ${PARTITIONS_JSON} has no partition of family "${FIRMWARE_PARTITION_FAMILY}" - ` +
+          `cannot check storage.c's sector against it`
+      );
+    }
+    const smallest = bootable.reduce((a, b) => (a.size < b.size ? a : b));
+    if (partitionBytes <= smallest.size) return [];
+    return [
+      {
+        message:
+          `storage.c's STORAGE_PARTITION_BYTES (${partitionBytes}) exceeds "${smallest.name}"'s ` +
+          `own size (${smallest.size}) in ${PARTITIONS_JSON} - a board that booted from ` +
+          `"${smallest.name}" would compute a storage sector that falls outside its own partition`,
+        symbols: [`STORAGE_PARTITION_BYTES=${partitionBytes}`, `${smallest.name}.size=${smallest.size}`],
+      },
+    ];
+  },
+};
+
 export const ALL_INVARIANTS: Invariant[] = [
   rule0EscapesAnnotated,
   rule1NoCodeInFlash,
@@ -830,4 +943,5 @@ export const ALL_INVARIANTS: Invariant[] = [
   rule3NoSdkI2cOnCore1,
   rule4Core1StackRegion,
   rule5FramebufferFitsInHeap,
+  rule6StorageFitsPartition,
 ];

@@ -6,12 +6,46 @@
  * are still the W25Q128JV datasheet's typical/maximum, not this puck's own
  * measured numbers; see the honesty note near the bottom of this file).
  *
- * THE SECTOR. Offset 0x00FFF000, the LAST 4KB sector of the 16MB part -
- * 15.9MB clear of the ~110KB image, and above every region
- * store/partitions.json has ever claimed (decision 0011). If store/'s
- * golden-image fallback is ever revived, that table must declare this
- * sector rather than leave it squatted - decision 0011 says so and nothing
- * here enforces it.
+ * TWO ADDRESS SPACES, NOT ONE - docs/decisions/0018. Decision 0011 sized
+ * this sector against the chip's own 16MB, and that reasoning was correct
+ * for a write: flash_range_erase()/flash_range_program() take an offset
+ * from the start of the WHOLE CHIP. It does not hold for a READ: the
+ * RP2350 bootrom maps the XIP window onto the ACTIVE PARTITION, not the
+ * chip, so a read through XIP_BASE only ever sees the 7MB slot_a/slot_b is
+ * declared as (store/partitions.json), never anything past it - measured
+ * on hardware sweeping XIP reads with a watchdog-armed probe: reads
+ * succeed to 6.75MB into the partition and stall the bus from 7.00MB up,
+ * exactly slot_a's length, hard enough to lose the USB link too. Every
+ * offset below is therefore named for which space it lives in:
+ * PARTITION-RELATIVE ones feed an XIP read; CHIP-ABSOLUTE ones feed
+ * flash_range_erase()/flash_range_program(). They differ by the active
+ * partition's own base, which active_partition_base() below resolves at
+ * runtime through the bootrom's partition-table API rather than assuming
+ * slot_a's 0x100000 - the same image also boots from slot_b's 0x800000
+ * whenever store/'s crash-recovery machinery has last chosen that slot
+ * (decision 0002 section 6), and a literal here would be wrong exactly
+ * then.
+ *
+ * THE SECTOR. PARTITION-RELATIVE offset STORAGE_SECTOR_OFFSET, the LAST
+ * 4KB sector of whichever partition is active - clear of the ~110KB image
+ * at the front, and (rule 6, tools/invariants/rules/rp2350-amoled-1.8.ts)
+ * checked at build time against store/partitions.json to actually fit
+ * inside the smallest partition this firmware could boot from. If store/'s
+ * golden-image fallback is ever revived, that table must still declare
+ * this sector rather than leave it squatted - decision 0011 says so and
+ * rule 6 only checks that it FITS, not that it is declared.
+ *
+ * A SLOT SWITCH MAKES THIS PER-SLOT, AND THAT IS NEW. Because the sector
+ * is partition-relative, slot_a and slot_b each keep their OWN copy at
+ * different chip-absolute addresses. Ordinary app switching never reboots
+ * (decision 0002: it is a function call), so this never matters during
+ * normal play. It matters only for store/'s crash-recovery reboot path: a
+ * board that boots into slot_b for the first time finds its own sector
+ * genuinely erased (all-0xFF) and starts a fresh dino high score, even if
+ * slot_a's sector still holds an old one a few megabytes away and
+ * unreachable from here. Nothing in this file carries a value across that
+ * boundary; if that is ever undesirable, it is store/'s problem to solve,
+ * not this file's to paper over.
  *
  * THE RECORD. 16 bytes, append-only:
  *
@@ -115,19 +149,33 @@
 #include "hardware/sync.h"
 #include "pico/error.h"
 #include "pico/flash.h"
+#include "pico/bootrom.h"  // rom_get_boot_info(), rom_get_partition_table_info() -
+                            // active_partition_base() below. Already linked:
+                            // hardware_flash pulls in pico_bootrom (its own
+                            // CMakeLists.txt), so no new target_link_libraries
+                            // entry was needed in firmware/CMakeLists.txt.
+#include "boot/picobin.h"  // PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_* -
+                            // pulled in transitively by pico_bootrom's own
+                            // link to boot_picobin_headers.
 
 #define STORAGE_RECORD_SIZE       16u
 #define STORAGE_RECORDS_PER_PAGE  (FLASH_PAGE_SIZE / STORAGE_RECORD_SIZE)  // 16
 #define STORAGE_TOTAL_RECORDS     (FLASH_SECTOR_SIZE / STORAGE_RECORD_SIZE) // 256
 #define STORAGE_MAGIC             0xC0DEu // arbitrary, non-0x0000, non-0xFFFF (erased)
 
-// Literal, not derived from PICO_FLASH_SIZE_BYTES: the pico2 board file
-// this build uses defaults that to 4MB (the Raspberry Pi Pico 2's own
-// flash, not this Waveshare board's actual 16MB W25Q128JVSIQ), and
-// firmware/CMakeLists.txt does not override it. firmware/probe/rtcprobe.c's
-// PROBE_FLASH_OFFSET is the same literal for the same reason. See
-// docs/decisions/0011.
-#define STORAGE_FLASH_OFFSET (16u * 1024u * 1024u - FLASH_SECTOR_SIZE)
+// PARTITION-RELATIVE (see "TWO ADDRESS SPACES" above) - this puck's
+// slot_a/slot_b are each 7MiB (store/partitions.json), and
+// STORAGE_PARTITION_BYTES is that same number restated here as one plain
+// numeric #define (not an expression, not derived from
+// PICO_FLASH_SIZE_BYTES - the chip's 16MB is real, per
+// firmware/CMakeLists.txt's own comment, but it is simply the wrong number
+// for this: the XIP window this offset is read through never sees more
+// than the active PARTITION), so
+// tools/invariants/rules/rp2350-amoled-1.8.ts's rule 6 can parse it as a
+// single token and check it against store/partitions.json directly - the
+// same discipline rule 5 already applies to gfx.h's PANEL_W/PANEL_H.
+#define STORAGE_PARTITION_BYTES 7340032u   // 7 * 1024 * 1024
+#define STORAGE_SECTOR_OFFSET   (STORAGE_PARTITION_BYTES - FLASH_SECTOR_SIZE)
 
 typedef struct __attribute__((packed)) {
     uint16_t magic;
@@ -201,10 +249,72 @@ static int cache_slot_for(uint8_t kind, bool create) {
 // the next free slot.
 static int s_nextFreeSlot = -2;
 
+// CHIP-ABSOLUTE (see "TWO ADDRESS SPACES" above): active partition's own
+// base plus STORAGE_SECTOR_OFFSET, resolved once by storage_init() and fed
+// to flash_range_erase()/flash_range_program() below. The XIP read a few
+// lines down needs none of this - it stays partition-relative on purpose.
+static uint32_t s_absoluteSectorOffset = 0;
+
+// Resolves the CHIP-ABSOLUTE base of the partition THIS BOOT is actually
+// running from, via two bootrom ROM calls (pico/bootrom.h) rather than a
+// hardcoded 0x100000 (slot_a) or 0x800000 (slot_b, store/partitions.json):
+// the same image boots from either, depending on which one store/'s
+// crash-recovery machinery last chose (decision 0002 section 6), so a
+// literal here would be wrong exactly half the time. Both calls are
+// already-shipped pico-sdk API, not new machinery - this is the identical
+// shape pico_cyw43_driver's cyw43_driver.c uses at runtime to locate its
+// own firmware partition:
+//
+//   1. rom_get_boot_info() - which partition index did THIS boot come
+//      from (0 = slot_a, 1 = slot_b, matching store/partitions.json's own
+//      "id" field)? A negative index ("not applicable" - a RAM or debug
+//      boot) is treated as failure, never as "assume slot_a".
+//   2. rom_get_partition_table_info(..., PT_INFO_PARTITION_LOCATION_AND_
+//      FLAGS | PT_INFO_SINGLE_PARTITION | (partition << 24)) - that one
+//      partition's own location, packed as first/last SECTOR NUMBERS
+//      (PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_BITS/_LSB). Multiplying
+//      the first-sector number by FLASH_SECTOR_SIZE is exactly the byte
+//      offset flash_range_erase()/flash_range_program() want.
+//
+// UNVERIFIED ON SILICON, same honesty this file's header already keeps for
+// tSE/tPP: this is read from the bootrom header and pico-sdk's own caller
+// of the identical two calls, not observed on this puck. See
+// docs/decisions/0018's own account of what could not be established.
+static bool active_partition_base(uint32_t *outBase) {
+    boot_info_t info;
+    if (!rom_get_boot_info(&info)) return false;
+    if (info.partition < 0) return false; // not booted from a partition - refuse rather than guess
+
+    uint32_t buffer[3];
+    uint32_t query = PT_INFO_PARTITION_LOCATION_AND_FLAGS | PT_INFO_SINGLE_PARTITION |
+                      ((uint32_t)info.partition << 24);
+    int words = rom_get_partition_table_info(buffer, count_of(buffer), query);
+    if (words != 3) return false;
+    if (buffer[0] != (PT_INFO_PARTITION_LOCATION_AND_FLAGS | PT_INFO_SINGLE_PARTITION)) return false;
+
+    uint32_t firstSector = (buffer[1] & PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_BITS) >>
+                            PICOBIN_PARTITION_LOCATION_FIRST_SECTOR_LSB;
+    *outBase = firstSector * FLASH_SECTOR_SIZE;
+    return true;
+}
+
 void storage_init(void) {
-    const uint8_t *base = (const uint8_t *)(XIP_BASE + STORAGE_FLASH_OFFSET);
     s_cacheCount = 0;
     s_nextFreeSlot = -1; // sector full/unwritable until a genuinely erased slot is found
+
+    uint32_t partitionBase;
+    if (!active_partition_base(&partitionBase)) {
+        // Could not learn which partition this boot is running from -
+        // refuse rather than guess a chip-absolute address. Reuses the
+        // same "-2" state storage_save_u32() already reads as "storage_
+        // init() never ran": from a caller's point of view the two are
+        // indistinguishable - storage simply is not available this boot.
+        s_nextFreeSlot = -2;
+        return;
+    }
+    s_absoluteSectorOffset = partitionBase + STORAGE_SECTOR_OFFSET;
+
+    const uint8_t *base = (const uint8_t *)(XIP_BASE + STORAGE_SECTOR_OFFSET);
     for (int i = 0; i < STORAGE_TOTAL_RECORDS; i++) {
         storage_record_t rec;
         memcpy(&rec, base + (size_t)i * STORAGE_RECORD_SIZE, STORAGE_RECORD_SIZE);
@@ -242,7 +352,7 @@ bool storage_get_u32(uint8_t kind, uint32_t *outValue) {
 
 static void do_erase(void *param) {
     (void)param;
-    flash_range_erase(STORAGE_FLASH_OFFSET, FLASH_SECTOR_SIZE);
+    flash_range_erase(s_absoluteSectorOffset, FLASH_SECTOR_SIZE);
 }
 
 typedef struct {
@@ -252,7 +362,7 @@ typedef struct {
 
 static void do_program(void *param) {
     program_page_args_t *a = (program_page_args_t *)param;
-    flash_range_program(STORAGE_FLASH_OFFSET + a->pageOffset, a->data, FLASH_PAGE_SIZE);
+    flash_range_program(s_absoluteSectorOffset + a->pageOffset, a->data, FLASH_PAGE_SIZE);
 }
 
 // 1500, not the probe's 1000: this bounds "core1 never answered the
@@ -287,7 +397,7 @@ void storage_save_u32(uint8_t kind, uint32_t value) {
     uint32_t pageOffset = pageIndex * FLASH_PAGE_SIZE;
 
     uint8_t page[FLASH_PAGE_SIZE];
-    const uint8_t *pageFlash = (const uint8_t *)(XIP_BASE + STORAGE_FLASH_OFFSET + pageOffset);
+    const uint8_t *pageFlash = (const uint8_t *)(XIP_BASE + STORAGE_SECTOR_OFFSET + pageOffset);
     memcpy(page, pageFlash, FLASH_PAGE_SIZE);
     memcpy(page + slotInPage * STORAGE_RECORD_SIZE, &rec, STORAGE_RECORD_SIZE);
 

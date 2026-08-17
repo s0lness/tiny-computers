@@ -575,45 +575,63 @@ tree should be believed until `bun run tools/gate/fingerprint.ts --device`
 agrees - a differential harness once diffed three apps on the board against
 four here and reported a 28% rendering divergence that was a stale flash.
 
-## OPEN: the twelve-app build freezes on a white screen at boot
+## SOLVED: the twelve-app build's white-screen freeze was `storage_init()` reading outside the XIP window
 
-**Do not flash `firmware/build/main.uf2` to a board you need working until
-this is closed.** Everything here builds clean and passes all six
-invariants, 37/37 emulator tests and the gate. It still hangs the board.
+It was `storage_init()`, the second of the three suspects this section used
+to name, and the mechanism was neither of the two things it looked like at
+the time. Full account, measured evidence and the fix: docs/decisions/0018.
 
-What the symptom already tells us, so nobody re-derives it:
+**The RP2350 bootrom maps the XIP window onto the ACTIVE PARTITION, not the
+whole chip.** This board boots `slot_a`, a 7MB partition
+(`store/partitions.json`), and `storage.c` computed its one flash offset as
+`16MB - 4KB` - a chip-absolute number, correct for `flash_range_erase()`/
+`flash_range_program()` (which really do take a chip-relative offset) and
+wildly out of range for the XIP read `storage_init()` does first, on the
+very first line it runs. Sweeping XIP reads with a watchdog-armed probe
+found the window's real shape: reads succeed to 6.75MB into the partition
+and stall the bus from 7.00MB up. A stalled read freezes the core hard
+enough that it cannot service the USB interrupt either, which is exactly
+why `picotool ... -f` could not force a reboot once this happened - that
+request is served by the hung app's own USB interface, so recovery still
+needed the physical sequence under "Recovering a board that will not boot"
+below whenever this bug fired, and will for any future hang of the same
+shape.
 
-- **White is not "nothing".** `gfx_init()` mallocs the framebuffer, fills it
-  0xFFFF and pushes it. A white panel therefore proves the allocation
-  succeeded (decision 0016's ceiling is NOT the cause) and that the firmware
-  ran past it.
-- **A stable white screen, not a flickering one**, puts the hang BEFORE
-  `watchdog_enable()`: a hang after arming reboot-loops instead of sitting
-  still.
-- That leaves exactly `devlink_init()`, `storage_init()` and
-  `sensors_start()` in `runtime/runtime.c`.
-- Once hung, the CDC data endpoint stops answering (the port opens with a
-  semaphore timeout) and **`picotool ... -f` cannot force a reboot**, because
-  that request is served by the hung app's own USB interface. Loads report
-  success and silently do nothing. Recovery is the physical sequence under
-  "Recovering a board that will not boot" below.
+**A second, quieter bug rode along with it.** Even at an in-window offset,
+the read and the write were computed one megabyte apart (`slot_a`'s own
+base) and never met: a save would appear to succeed, land at the wrong
+physical address, and the durable value would be gone the moment the boot's
+RAM cache aged out. Nothing would ever have raised an error.
 
-Three things new to that interval arrived on 2026-08-15 and any of them
-could be it. They were each accused in turn, on good reasoning, with no way
-to tell them apart:
+**The fix separates the two address spaces explicitly**, because they are
+two address spaces: a partition-relative offset for the XIP read, and a
+chip-absolute offset (partition base + partition-relative offset) for the
+erase/program calls, with the active partition's base discovered at
+runtime via `pico/bootrom.h`'s `rom_get_boot_info()`/
+`rom_get_partition_table_info()` - the same API pico-sdk's own
+`pico_cyw43_driver` uses to locate its firmware partition - rather than
+hardcoded, since the same image boots from either `slot_a` or `slot_b`
+depending on what `store/`'s crash-recovery machinery last chose. A sixth
+- now seventh - invariant (`tools/invariants/rules/rp2350-amoled-1.8.ts`,
+rule 6) checks the sector still fits inside the smallest partition this
+firmware could boot from, against `store/partitions.json` directly.
 
-1. `pico_set_binary_type(copy_to_ram)` was removed in favour of XIP
-   execution with only core1's reachable set pinned (decision 0017).
-2. `storage_init()`, which had never executed on silicon before this build.
-3. `flash_safe_execute_core_init()` in `core1_entry()`, likewise never run.
+**Two of the three original suspects were cleared, not fixed.** Neither
+`copy_to_ram`'s removal (decision 0017) nor `flash_safe_execute_core_init()`
+in `core1_entry()` needed to change; the earlier `PICO_FLASH_SIZE_BYTES`
+correction (declaring this board's real 16MB, rather than the Pico 2 board
+file's 4MB default) was itself a real and necessary fix, just not a
+sufficient one - the freeze was never about the chip's declared size, only
+about how far the XIP window actually reaches from inside a partition.
 
-**The instrument to use, not another theory.** Paint a band on the panel
-after each of the three steps and read how far it got off the screen itself;
-the serial link is useless once it hangs, so the panel is the only
-instrument left. That takes ten minutes to build and answers in one flash
-what three hours of reasoning did not. It is decision 0010's own law: the
-bug lives downstream of where the instrument reads, and there was no
-instrument in this interval at all.
+**Unverified on silicon.** This fix builds clean, passes all seven
+invariants (red then green, per this project's own rule - see decision
+0018), 12/12 apps clean through the gate, and the diagnosis itself rests on
+real hardware measurements taken today. The runtime partition-lookup call
+itself - does `rom_get_boot_info()` actually report the partition this
+board booted from, does the sector-number decode actually land on
+`0x100000`/`0x800000` - has not been flashed. The owner will verify that on
+the board himself.
 
 ## Gotchas that bite
 
