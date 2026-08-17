@@ -29,7 +29,7 @@ import { seededRng, seedFromName } from "../../../tools/gate/touch";
 import {
   PANEL_W, PANEL_H,
   NUMPAD_X0, NUMPAD_Y0, NUMPAD_W, NUMPAD_H, NUMPAD_COLS, NUMPAD_ROWS, CELL_W, CELL_H,
-  CELL_ZERO, cellCx, cellCy, cellValueName, landToPanel,
+  CELL_ZERO, cellCx, cellCy, cellValueName, panelPoint,
 } from "../../../tools/tables-layout";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
@@ -108,7 +108,7 @@ async function main() {
     const dev = await freshDevice();
     const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`tables-hold-${i}`)));
     const cell = i % 9;
-    const [px, py] = landToPanel(cellCx(cell), cellCy(cell));
+    const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
     sim.setPointer(true, px, py);
     let t = 1000;
     for (let held = 0; held < HOLD_MS; held += STEP_MS) {
@@ -135,14 +135,14 @@ async function main() {
     let t = 1000;
     for (let e = 0; e < DRAG_MS; e += STEP_MS) {
       const u = e / DRAG_MS;
-      const [px, py] = landToPanel(
+      const [px, py] = panelPoint(
         cellCx(from) + (cellCx(to) - cellCx(from)) * u,
         cellCy(from) + (cellCy(to) - cellCy(from)) * u);
       sim.setPointer(true, px, py);
       t += STEP_MS;
       dev.feed(sim.poll(t), t);
     }
-    const [tx, ty] = landToPanel(cellCx(to), cellCy(to));
+    const [tx, ty] = panelPoint(cellCx(to), cellCy(to));
     sim.setPointer(true, tx, ty);
     for (let e = 0; e < SETTLE_MS; e += STEP_MS) { t += STEP_MS; dev.feed(sim.poll(t), t); }
 
@@ -179,7 +179,7 @@ async function main() {
     for (const count of [1, 2, 3]) {
       const dev = await freshDevice();
       let t = 1000;
-      const [sx, sy] = landToPanel(cellCx(4), cellCy(4));
+      const [sx, sy] = panelPoint(cellCx(4), cellCy(4));
       for (let k = 0; k < count; k++) {
         dev.feed({ fingers: 1, x: sx, y: sy }, t);
         for (let e = STEP_MS; e < spacingMs; e += STEP_MS) { t += STEP_MS; dev.feed({ fingers: 0, x: 0, y: 0 }, t); }
@@ -223,10 +223,12 @@ async function main() {
   };
   // Which numpad cell a PANEL-space report names, mirroring tables.c's own
   // numpad_hit(): clamped into the grid if inside its bounding box,
-  // otherwise -1 (the cancel region - the loupe zone above, the info
-  // column to the right, or off-panel).
+  // otherwise -1 (the cancel region - the loupe zone above, the counter
+  // pills below, or off-panel). Portrait, native, unrotated: a panel report
+  // (panelX, panelY) IS (lx, ly) directly - no rotation to undo, unlike
+  // this app's landscape detour, which this function used to map through.
   function cellFromReport(panelX: number, panelY: number): number {
-    const lx = panelY, ly = PANEL_W - 1 - panelX;
+    const lx = panelX, ly = panelY;
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W || ly < NUMPAD_Y0 || ly >= NUMPAD_Y0 + NUMPAD_H) return -1;
     let col = Math.floor((lx - NUMPAD_X0) / CELL_W);
     let row = Math.floor((ly - NUMPAD_Y0) / CELL_H);
@@ -242,7 +244,7 @@ async function main() {
     const dev = await freshDevice();
     const sim = new TouchSim(jitterProfile, PANEL_W, PANEL_H, seededRng(seedFromName(`tables-jitter-${i}`)));
     const cell = i % 9;
-    const [px, py] = landToPanel(cellCx(cell), cellCy(cell));
+    const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
     sim.setPointer(true, px, py);
     let t = 1000;
     const reported = new Set<number>();

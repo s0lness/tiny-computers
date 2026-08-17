@@ -57,6 +57,8 @@ export const CLEAN_INPUT_BASELINE: Record<string, string> = {
     "statement of what the palette is; the dropout half is repro-touch-dropout-palette-open.ts",
   "feature-tables.ts":
     "statement of what multiplication-tables practice is; the dropout/jitter half is repro-touch-dropout-tables.ts",
+  "repro-tables-loupe-flicker.ts":
+    "the whole point is a PERFECTLY unchanged touch coordinate across many consecutive ticks (the owner's own scenario, a finger held still); a simulated controller's dropouts and position jitter would themselves change the coordinate tick to tick, defeating exactly the condition under test - same reasoning as repro-sketch-palette-animation-starved.ts's own exemption (a simulated stream would be adding the very variation the test is about the absence of). The gesture-under-duress half of this app's touch handling is already covered by repro-touch-dropout-tables.ts; this file is about a redraw decision inside one already-settled hover, not about whether the hover itself survives real controller weather.",
   "feature-breakout.ts":
     "statement of what the lives/game-over state machine does (breakout.c's own header, \"THREE LIVES\"); the touch it drives is the one narrow exception, the restart tap read only at LP_GAMEOVER_WAIT, and the dropout half is repro-touch-dropout-breakout-restart.ts",
   "repro-arena-not-zeroed.ts":

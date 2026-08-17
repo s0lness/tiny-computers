@@ -11,46 +11,76 @@ import { join } from "node:path";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368, PANEL_H = 448;
-const LAND_W = PANEL_H, LAND_H = PANEL_W; // 448 x 368
 const BEZEL = 10;
 
 // tables.c's own layout constants, lifted rather than re-derived (the
-// convention every test in this directory uses against its app). Updated
-// 2026-08-17 for the owner's exact mockup: QROW_H grew from 64 to 80 to
-// give the new full-width rule real separation from the equation above it
-// (tables.c's QROW_H comment), recovered from the loupe (LOUPE_ZONE_H
-// 88->80) and the pad (CELL_H 49->47) - see tables.c's own LAYOUT comment
-// for the arithmetic (80+80+188=348=USABLE_H).
+// convention every test in this directory uses against its app). This app
+// is now genuinely PORTRAIT (PANEL_W x PANEL_H, native, unrotated) - see
+// tables.c's own LAYOUT comment for the two-pass orientation correction
+// (a relayed "stay in landscape, shuffle the bands" was superseded once
+// the owner specified the physical grip precisely and it was checked
+// against emu_shim.c's own button descriptor). Touch coordinates below are
+// therefore PANEL coordinates directly, no rotation.
 const OX = 10, OY = 10;
-const QROW_H = 80, LOUPE_ZONE_H = 80;
-const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H;
-const CELL_W = 95, CELL_H = 47, NUMPAD_COLS = 3;
+const USABLE_W = PANEL_W - 2 * OX, USABLE_H = PANEL_H - 2 * OY; // 348, 428
+const QROW_H = 64, LOUPE_ZONE_H = 80;
+// CELL_W is 100, not "however much width is left over" - a rendered
+// preview at CELL_W=140 (nearly the full USABLE_W) showed three isolated
+// digit columns rather than a grid a child's eye reads as a keypad (see
+// tables.c's own comment on this constant). CELL_H (57) comes out taller
+// than any earlier version of this pad managed: portrait's own 428px of
+// usable height is markedly more generous than landscape's 348px.
+const CELL_W = 100, CELL_H = 57, NUMPAD_COLS = 3;
+const NUMPAD_W = CELL_W * NUMPAD_COLS; // 300
+const NUMPAD_X0 = OX + (USABLE_W - NUMPAD_W) / 2, NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H; // 34, 154
 const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
 const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
 const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
 const digitCell = (d: number) => (d === 0 ? CELL_ZERO : d - 1);
 
-// The question band and the counters box, lifted from tables.c the same
-// way the numpad geometry above is. Updated again for the owner's exact
-// mockup (2026-08-17): the blank's own x0 now depends on whether the
-// current question's factor is one digit or two (question_slot_x0() in
-// tables.c - the fix for the "6 x    1 =" spacing hole), so a test that
-// does not yet know the first question's factor checks BOTH possible
-// cursor positions rather than assuming one.
-const QROW_CY = OY + QROW_H / 2;      // 50
-const Q_FACTOR_X0 = 142, Q_GAP = 20, QDIGIT_W = 36, QICON_BOX = 32, Q2W = 76;
-const Q_SLOT_X0_NARROW = Q_FACTOR_X0 + QDIGIT_W + Q_GAP + QICON_BOX + Q_GAP; // 250, 1-digit factor
-const Q_SLOT_X0_WIDE = Q_FACTOR_X0 + Q2W + Q_GAP + QICON_BOX + Q_GAP;        // 290, 2-digit factor ("10")
+// The question band, lifted from tables.c the same way the numpad geometry
+// above is. The blank's own x0 depends on whether the current question's
+// factor is one digit or two (question_slot_x0() in tables.c - the fix for
+// the "6 x    1 =" spacing hole), so a test that does not yet know the
+// first question's factor checks BOTH possible cursor positions rather
+// than assuming one. Smaller than the app's landscape-detour numbers:
+// portrait's USABLE_W (348) is narrower than landscape's (428), a real
+// width constraint independent of portrait's extra vertical room.
+const QROW_CY = OY + QROW_H / 2;      // 42
+const Q_FACTOR_X0 = 112, Q_GAP = 14, QDIGIT_W = 34, QICON_BOX = 26, Q2W = 72;
+const Q_SLOT_X0_NARROW = Q_FACTOR_X0 + QDIGIT_W + Q_GAP + QICON_BOX + Q_GAP; // 200, 1-digit factor
+const Q_SLOT_X0_WIDE = Q_FACTOR_X0 + Q2W + Q_GAP + QICON_BOX + Q_GAP;        // 238, 2-digit factor ("10")
 const CURSOR_X_CANDIDATES = [Q_SLOT_X0_NARROW + 4, Q_SLOT_X0_WIDE + 4];      // tables.c's cursor_x_for_len(0)
-const RULE_Y = OY + QROW_H - 4; // 86, tables.c's RULE_Y
 
-const NUMPAD_W = CELL_W * NUMPAD_COLS;
-const INFO_X0 = NUMPAD_X0 + NUMPAD_W;   // 295
-const BOX_X0 = INFO_X0 + 8, BOX_Y0 = NUMPAD_Y0 + CELL_H;         // 303, 211
-const COUNTER_ROW_X0 = BOX_X0 + 5, COUNTER_ROW_W = (428 - NUMPAD_W - 16) - 10; // 308, 117
-const COUNTERS_Y0 = BOX_Y0 + 5;          // 222
-const BOX_H = CELL_H * 4 - CELL_H - 6;   // 135, tables.c's (NUMPAD_H - CELL_H - 6)
-const COUNTER_ROW_H = (BOX_H - 10) / 2;  // 62, tables.c's (BOX_H - 2*BOX_INSET) / 2
+// THE COUNTER PILLS (tables.c's THE COUNTER PILLS), replacing the earlier
+// boxed, stacked counters: two coloured pills side by side along the very
+// bottom, spanning the FULL usable width - NOT tied to NUMPAD_W, since a
+// pill is a readout rather than a key and is free to be wider than the
+// pad's own key-driven width. PILL_ICON_CX_OFF/PILL_NUM_CX_OFF are
+// tables.c's own, used below to locate the icon/digit ink inside each
+// pill without guessing.
+const COUNTERS_Y0 = NUMPAD_Y0 + CELL_H * 4;               // 382 - the pad's own bottom edge
+const COUNTERS_H = USABLE_H - QROW_H - LOUPE_ZONE_H - CELL_H * 4; // 56
+const PILL_GAP = 20, PILL_H = 44;
+const PILL_W = (USABLE_W - PILL_GAP) / 2;                 // 164
+const PILL_Y0 = COUNTERS_Y0 + (COUNTERS_H - PILL_H) / 2;  // 388
+const PILL_WRONG_X0 = OX;                                 // 10
+const PILL_RIGHT_X0 = OX + PILL_W + PILL_GAP;             // 194
+const PILL_ICON_CX_OFF = 42, PILL_NUM_CX_OFF = 100;
+// Sampled well clear of the icon/digit ink (both sit at the pill's own
+// vertical centre) - near the pill's own top edge, still inside the
+// rounded cap's coloured span at the pill's horizontal centre (see
+// tables.c's gfx_fill_pill comment: every row's span includes the centre
+// column whenever its half-width is above 0, which it is this close to
+// the pill's own vertical centre column).
+const pillSampleX = (x0: number) => x0 + PILL_W / 2;
+const PILL_SAMPLE_Y = PILL_Y0 + 4;
+
+// THE LOUPE (tables.c's THE LOUPE) - needed for the flicker-fix check
+// below (loupe_update()'s own comment has the full bug history).
+const LOUPE_R = 34, LOUPE_PAD = 6;
+const LOUPE_BOX_W = LOUPE_R * 2 + 2 * LOUPE_PAD, LOUPE_BOX_H = LOUPE_BOX_W; // 80
+const LOUPE_CY = OY + QROW_H + LOUPE_ZONE_H / 2; // 114
 
 const ARM_MS = 40, COMMIT_CONFIRM_MS = 72, RELEASE_GRACE_MS = 300;
 const HOLD_MS = ARM_MS + COMMIT_CONFIRM_MS + 60;   // comfortably past both
@@ -60,10 +90,6 @@ let passCount = 0, failCount = 0;
 function check(label: string, ok: boolean, detail?: string) {
   if (ok) passCount++; else failCount++;
   console.log(`[${ok ? "PASS" : "FAIL"}] ${label}${detail ? " - " + detail : ""}`);
-}
-
-function landToPanel(lx: number, ly: number): [number, number] {
-  return [PANEL_W - 1 - Math.round(ly), Math.round(lx)];
 }
 
 async function loadDevice() {
@@ -105,12 +131,24 @@ async function loadDevice() {
 }
 type Device = Awaited<ReturnType<typeof loadDevice>>;
 
-function grayAt(fb: Uint8Array, lx: number, ly: number): number {
-  if (lx < 0 || ly < 0 || lx >= LAND_W || ly >= LAND_H) return 252;
-  const px = PANEL_W - 1 - ly, py = lx;
-  const i = (py * PANEL_W + px) * 2;
+// Portrait, native, unrotated: (x, y) IS the framebuffer's own index, no
+// landscape->panel remapping needed any more (this app's landscape detour
+// used to route this through PANEL_W-1-ly/lx - see git history).
+function grayAt(fb: Uint8Array, x: number, y: number): number {
+  if (x < 0 || y < 0 || x >= PANEL_W || y >= PANEL_H) return 252;
+  const i = (y * PANEL_W + x) * 2;
   const v = (fb[i]! << 8) | fb[i + 1]!;
   return ((v >> 5) & 0x3f) << 2;
+}
+
+// The real RGB behind a panel pixel, same reconstruction preview-tables.ts's
+// own landPx() uses - needed for the counter pills, which (per tables.c's
+// THE COUNTER PILLS) are a real RGB565 colour, not black ink on a grey
+// scale, so grayAt() alone cannot tell orange from green.
+function rgbAt(fb: Uint8Array, x: number, y: number): [number, number, number] {
+  const i = (y * PANEL_W + x) * 2;
+  const v = (fb[i]! << 8) | fb[i + 1]!;
+  return [((v >> 11) & 0x1f) * 255 / 31, ((v >> 5) & 0x3f) * 255 / 63, (v & 0x1f) * 255 / 31];
 }
 
 // Byte-identical over a rect, at the grayscale resolution grayAt reads -
@@ -155,7 +193,7 @@ function pressCell(dev: Device, cell: number) {
 // what the "first hover is immediate" test below uses to drive a hold
 // shorter than the old ARM_MS+COMMIT_CONFIRM_MS=112ms floor.
 function pressCellFor(dev: Device, cell: number, holdMs: number) {
-  const [px, py] = landToPanel(cellCx(cell), cellCy(cell));
+  const px = Math.round(cellCx(cell)), py = Math.round(cellCy(cell)); // panel coords directly - portrait, no rotation
   let t = clock;
   const end = t + holdMs;
   while (t < end) { t += STEP_MS; dev.touch(true, px, py); dev.tick(t); }
@@ -187,11 +225,11 @@ async function main() {
     await enterTables(dev, APP_TABLES);
     const fb = dev.fb();
     let worst = { x: 0, y: 0 };
-    for (let ly = 0; ly < LAND_H; ly++) {
-      for (let lx = 0; lx < LAND_W; lx++) {
-        if (grayAt(fb, lx, ly) >= 248) continue;
-        const nearEdge = lx < BEZEL || ly < BEZEL || lx >= LAND_W - BEZEL || ly >= LAND_H - BEZEL;
-        if (nearEdge) worst = { x: lx, y: ly };
+    for (let y = 0; y < PANEL_H; y++) {
+      for (let x = 0; x < PANEL_W; x++) {
+        if (grayAt(fb, x, y) >= 248) continue;
+        const nearEdge = x < BEZEL || y < BEZEL || x >= PANEL_W - BEZEL || y >= PANEL_H - BEZEL;
+        if (nearEdge) worst = { x, y };
       }
     }
     check("nothing is drawn inside the bezel band on entry", worst.x === 0 && worst.y === 0,
@@ -241,8 +279,8 @@ async function main() {
   {
     const dev = await loadDevice();
     await enterTables(dev, APP_TABLES);
-    // Somewhere in the info column, well clear of the pad.
-    const [px, py] = landToPanel(370, 40);
+    // Somewhere in the question band, well clear of the pad (NUMPAD_Y0=154).
+    const px = 300, py = 30;
     let t = clock;
     const end = t + HOLD_MS;
     while (t < end) { t += STEP_MS; dev.touch(true, px, py); dev.tick(t); }
@@ -412,47 +450,54 @@ async function main() {
     typeDigits(dev, [9, 9]);
     pressCell(dev, CELL_CHECK); // FIRST wrong attempt -> PHASE_WRONG_RETRY, not a give-up
     const afterFirstWrong = dev.fb();
-    const changedAfterFirst = !rectUnchanged(atEntry, afterFirstWrong, COUNTER_ROW_X0, COUNTERS_Y0, COUNTER_ROW_W, COUNTER_ROW_H);
+    const changedAfterFirst = !rectUnchanged(atEntry, afterFirstWrong, PILL_WRONG_X0, PILL_Y0, PILL_W, PILL_H);
     check("the wrong counter changes on the FIRST wrong attempt already, not only on the final give-up",
       changedAfterFirst);
 
     typeDigits(dev, [9, 9]);
     pressCell(dev, CELL_CHECK); // SECOND wrong attempt -> gives up
     const afterSecondWrong = dev.fb();
-    const changedAfterSecond = !rectUnchanged(afterFirstWrong, afterSecondWrong, COUNTER_ROW_X0, COUNTERS_Y0, COUNTER_ROW_W, COUNTER_ROW_H);
+    const changedAfterSecond = !rectUnchanged(afterFirstWrong, afterSecondWrong, PILL_WRONG_X0, PILL_Y0, PILL_W, PILL_H);
     check("the wrong counter changes AGAIN on the second (give-up) attempt - two wrong submissions, two increments",
       changedAfterSecond);
   }
 
-  // ---- the full-width rule under the question band stays UNBROKEN, even
-  // after a keystroke redraws the answer box on top of the same row -------
+  // ---- the two counter pills carry their own colour, and it survives a
+  // keystroke redrawing the answer box on the same frame -------------------
   //
-  // The rule and the answer box used to share a row (ANSWER_BOX_H was
-  // QROW_H, the full band height): every keystroke's own white/tint fill
-  // repainted straight through the rule's y-coordinate wherever the answer
-  // box happened to sit, erasing the MIDDLE of the rule without ever
-  // redrawing it - a line that ran in from the left, stopped under the
-  // blank, and resumed on the right. Found by looking at the rendered PNG,
-  // not by inspection: it reads as one interrupted line, not "a blank with
-  // a separator below it". ANSWER_BOX_H now stops at the underline's own
-  // bottom edge, clear of RULE_Y, so nothing redraw_answer() does can ever
-  // touch the rule's row again - checked here both at rest and after an
-  // actual keystroke, which is exactly the sequence that broke it before.
+  // The owner's own instruction after seeing this built: "plutot que rose
+  // fais la case X de la couleur orange que tu utilisais" - the wrong pill
+  // is orange (sketch.c's own palette orange, px_swap(0xFC60), tables.c's
+  // pill_color_wrong()), the right pill green (sketch.c's palette green,
+  // px_swap(0x07E0), pill_color_right()). Sampled well clear of the black
+  // icon/digit ink drawn on top (see PILL_SAMPLE_Y's own comment) - a
+  // wide RGB tolerance because the panel's RGB565 quantisation and the
+  // emulator's own px_swap round-trip do not reproduce the source byte
+  // exactly, only the same HUE. Checked both at rest and after a keystroke
+  // elsewhere on screen redraws the answer box, which is the sequence an
+  // earlier layout's full-width rule broke under (see git history) - a
+  // regression this test would also catch if a future redraw ever bled
+  // into the pills' own band.
   {
     const dev = await loadDevice();
     await enterTables(dev, APP_TABLES);
-    function ruleGapAt(fb: Uint8Array): number {
-      for (let lx = 20; lx < LAND_W - 20; lx++) {
-        if (grayAt(fb, lx, RULE_Y) >= 180) return lx;
-      }
-      return -1;
+    function isOrange(rgb: [number, number, number]): boolean {
+      const [r, g, b] = rgb;
+      return r > 200 && g > 90 && g < 190 && b < 60;
     }
-    const gapBefore = ruleGapAt(dev.fb());
-    check("the full-width rule is unbroken right after entry", gapBefore === -1, `first gap at x=${gapBefore}`);
+    function isGreen(rgb: [number, number, number]): boolean {
+      const [r, g, b] = rgb;
+      return g > 200 && r < 60 && b < 60;
+    }
+    const beforeWrong = rgbAt(dev.fb(), pillSampleX(PILL_WRONG_X0), PILL_SAMPLE_Y);
+    const beforeRight = rgbAt(dev.fb(), pillSampleX(PILL_RIGHT_X0), PILL_SAMPLE_Y);
+    check("the wrong pill is orange right after entry", isOrange(beforeWrong), `rgb(${beforeWrong.map((v) => v.toFixed(0))})`);
+    check("the right pill is green right after entry", isGreen(beforeRight), `rgb(${beforeRight.map((v) => v.toFixed(0))})`);
     typeDigits(dev, [4, 2]);
-    const gapAfter = ruleGapAt(dev.fb());
-    check("the rule stays unbroken after typing into the answer (the answer box redraw does not erase it)",
-      gapAfter === -1, `first gap at x=${gapAfter}`);
+    const afterWrong = rgbAt(dev.fb(), pillSampleX(PILL_WRONG_X0), PILL_SAMPLE_Y);
+    const afterRight = rgbAt(dev.fb(), pillSampleX(PILL_RIGHT_X0), PILL_SAMPLE_Y);
+    check("the wrong pill is still orange after a keystroke redraws the answer box", isOrange(afterWrong), `rgb(${afterWrong.map((v) => v.toFixed(0))})`);
+    check("the right pill is still green after a keystroke redraws the answer box", isGreen(afterRight), `rgb(${afterRight.map((v) => v.toFixed(0))})`);
   }
 
   // ---- a CORRECT answer never touches the wrong counter -------------------
@@ -482,10 +527,10 @@ async function main() {
       typeDigits(dev, digits);
       pressCell(dev, CELL_CHECK);
       const after = dev.fb();
-      const wrongRowUnchanged = rectUnchanged(before, after, COUNTER_ROW_X0, COUNTERS_Y0, COUNTER_ROW_W, COUNTER_ROW_H);
-      check("a correct answer leaves the WRONG counter row's pixels untouched", wrongRowUnchanged);
-      const correctRowChanged = !rectUnchanged(before, after, COUNTER_ROW_X0, COUNTERS_Y0 + COUNTER_ROW_H, COUNTER_ROW_W, COUNTER_ROW_H);
-      check("a correct answer DOES change the CORRECT counter row's pixels", correctRowChanged);
+      const wrongRowUnchanged = rectUnchanged(before, after, PILL_WRONG_X0, PILL_Y0, PILL_W, PILL_H);
+      check("a correct answer leaves the WRONG counter pill's pixels untouched", wrongRowUnchanged);
+      const correctRowChanged = !rectUnchanged(before, after, PILL_RIGHT_X0, PILL_Y0, PILL_W, PILL_H);
+      check("a correct answer DOES change the CORRECT counter pill's pixels", correctRowChanged);
     }
   }
 
@@ -533,8 +578,9 @@ async function main() {
       const w = e.emu_push_w(i);
       if (w % 8 !== 0) bad++;
     }
-    // Also exercise a drag across the numpad, which is where a landscape
-    // cell push (row length = cell HEIGHT, per gfx.h's swap) could go wrong.
+    // Also exercise a drag across the numpad, which is where a numpad cell
+    // push (row length = cell WIDTH, straight from gfx_push - portrait,
+    // native, no rotation to swap it) could go wrong.
     pressCell(dev, digitCell(7));
     const n2 = e.emu_push_count();
     for (let i = 0; i < n2; i++) {

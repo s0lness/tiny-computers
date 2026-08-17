@@ -14,16 +14,23 @@
  *   - decision 0001, the 8-pixel push rule (gfx enforces it regardless);
  *   - decision 0009, nothing drawn with a ruler where a curve or a round
  *     cap can carry it instead - every icon in this file (the checkmark,
- *     the backspace chevron, the multiply and equals marks, the two
- *     counter glyphs, the numpad digits themselves) is built from
- *     shapes.h's float primitives (capsule/disc/annulus), the same brush
- *     every other app's ink uses, never a filled rectangle standing in for
- *     a shape. The counters' own box and the rule under the question band
- *     (both added by the owner's exact mockup, see LAYOUT below) are
- *     straight for the same accepted reason multiply/equals already are:
- *     a ruled line and a rectangle are exactly what they look like even on
- *     paper, and both are still drawn with the float brush (round-capped
- *     capsules), not a hard-edged fill;
+ *     the backspace arrow, the multiply and equals marks, the two counter
+ *     glyphs, the numpad digits themselves) is built from shapes.h's float
+ *     primitives (capsule/disc/annulus), reached through this file's own
+ *     portrait wrappers (see PORTRAIT DRAWING HELPERS below) - the same
+ *     brush every other app's ink uses, never a filled rectangle standing
+ *     in for a shape. The two counter PILLS (see THE COUNTER PILLS below)
+ *     are the one flat-colour exception, and decision 0009 already accepts
+ *     it: they are drawn with shapes.h's older, non-anti-aliased
+ *     "generation 1" technique (shapes_fill_half_width_table plus a row of
+ *     gfx_fill_rect calls), the exact machinery timer.c's own progress-ring
+ *     TRACK already uses for a flat colour fill - the AA primitives cannot
+ *     carry colour at all (they composite by converting every colour to a
+ *     grey level, see shapes.c's aa_composite_land), which is also why
+ *     every icon and digit drawn ON TOP of a pill still goes through the AA
+ *     float brush unchanged, in black, the same ink-on-a-tinted-background
+ *     trick this file's answer band already used before pills existed (see
+ *     RIGHT/WRONG COLOUR below);
  *   - the press-drag-release idiom (menu.c, four.c, morpion.c) and its
  *     arm/release-grace filtering against the FT3168's measured jitter -
  *     see "THE GESTURE" below for what is reused verbatim and what is
@@ -54,7 +61,7 @@
  * The obvious first design was a numpad sized the way menu.c's grid is: a
  * child's fingertip contact measures ~75-100px on this panel (AGENTS.md),
  * so twelve keys (0-9, backspace, submit) at a size a thumb can hit
- * reliably would have consumed nearly the whole 448x368 glass, leaving
+ * reliably would have consumed nearly the whole 368x448 glass, leaving
  * little room for the question or the counters, and would still have
  * inherited the FT3168's measured 80-250px centroid jitter on every
  * boundary between two adjacent keys - the worst case named in AGENTS.md's
@@ -68,16 +75,13 @@
  * the arithmetic problem rather than solving it: a key no longer has to be
  * bigger than a fingertip, because she is not required to land on one
  * precisely. She lands roughly, reads the loupe, slides if it is wrong,
- * lifts when it is right. That is what freed the numpad keys down to
- * 95x49 (see THE LOUPE and THE NUMPAD below) - small enough to leave real
- * room for a full-width question band above the pad and the three
- * counters beside it, legible rather than finger-sized, because
+ * lifts when it is right. That is what freed the numpad keys down to a
+ * fraction of a fingertip (see THE LOUPE and THE NUMPAD below) - small
+ * enough to leave real room for a full-width question band above the pad
+ * and the counters below it, legible rather than finger-sized, because
  * legibility is what a shrunk target can now be judged on instead of
- * hit-rate. (First shipped at 99x64, when the question and answer still
- * lived in a column beside the pad rather than a band above it; the
- * owner's redrawn layout - see LAYOUT below - claims a full-width row for
- * the question, which is what shrank the pad again. See this app's own
- * report for what that comes out to against a child's fingertip.)
+ * hit-rate. See this app's own report for what that comes out to against a
+ * child's fingertip.
  *
  * It is also this device's own idiom rather than a thirteenth new gesture:
  * press-drag-release, with the candidate lit under the thumb before
@@ -107,7 +111,8 @@
  *     menu.c's halo comment describes) down to one fixed-height horizontal
  *     band that never overlaps a key at all, because nothing but the
  *     loupe is ever drawn there. See THE LOUPE's own comment for the
- *     redraw cost this buys.
+ *     redraw cost this buys, and loupe_update()'s own comment for the
+ *     flicker this design still let through until it was found and fixed.
  *   - releasing outside the pad must cancel, not commit - the way she
  *     corrects a wrong press without a delete key, and the same rule the
  *     menu already enforces by name for its own cancel band ("nothing
@@ -130,82 +135,164 @@
 #include "shapes.h"
 
 /* =========================================================================
- * LAYOUT. Landscape 448x368. Everything below is inset from all four
- * physical panel edges by PANEL_BEZEL_MARGIN_PX (10px), because in
- * landscape space every one of the four edges (x=0, x=LAND_W, y=0,
- * y=LAND_H) is a real panel edge the case hides part of - not just two of
- * them, the way a portrait app's own top/bottom might read. The usable
- * canvas is therefore 428x348.
+ * LAYOUT. Portrait 368x448 - the panel's own native space, unrotated.
+ * Everything below is inset from all four physical panel edges by
+ * PANEL_BEZEL_MARGIN_PX (10px): in portrait space, same as landscape, every
+ * one of the four edges (x=0, x=PANEL_W, y=0, y=PANEL_H) is a real panel
+ * edge the case hides part of. The usable canvas is therefore 348x428.
  *
- * THE OWNER'S LAYOUT. Went through two of his own drawings before this
- * file matched what he meant: a reMarkable sketch (2026-08-17) settled the
- * broad shape - a full-width question band across the top, the numpad
- * lower-left, the counters lower-right - and an exact mockup the same day
- * ("7 x 2 = |___", full mockup referenced in the commit that landed it)
- * settled the details a sketch cannot: a full-width RULE under the
- * question band, the counters living inside a DRAWN BOX rather than
- * strung down the column, and exactly TWO counters (wrong, right), not
- * three. Four bands, stacked and side by side: the question band across
- * the very top (the blank at the right end of that line, carrying a
- * blinking caret - see THE BLINKING CURSOR below), the rule under it, then
- * the numpad lower-left (~2/3 of the width) and the boxed counters
- * lower-right (~1/3), roughly the pad's own lower rows in height. This
- * replaces the first version's layout, which stacked the two factors, the
- * multiply mark and the answer as their own column beside the pad (posee,
- * not horizontal).
+ * THE OWNER'S THIRD DRAWING, AND THE ORIENTATION CORRECTION BEHIND IT. His
+ * first reMarkable sketch (2026-08-17) settled the broad shape - a
+ * full-width question band across the top, the numpad lower-left, the
+ * counters lower-right - and his exact mockup the same day settled the
+ * details a sketch cannot (see git history for that layout: a full-width
+ * rule under the question, the counters in a drawn box, both landscape). A
+ * THIRD drawing, later, was held PORTRAIT and redrew the arrangement again:
+ * the question across the top, the numpad below it, and two counter pills
+ * at the very bottom, side by side. Which physical grip that drawing meant
+ * took two passes to settle, and the second reversed the first:
+ *
+ *   - First relayed as "stay in landscape, just shuffle the bands" - the
+ *     owner's own words at the time, "tu peux juste shuffle les trucs pour
+ *     avoir le mode paysage" - which is why an earlier version of this file
+ *     kept a landscape rotation and widened the pad inside the 448x368
+ *     landscape canvas instead of drawing portrait at all.
+ *   - Corrected once the owner specified the physical grip precisely: PWR
+ *     upper, BOOT lower, both on the panel's own right edge. Checked
+ *     against the code rather than taken on trust (the relayed reading
+ *     contradicted AGENTS.md's own documented grip, so it needed settling
+ *     before anything was built to it): the emulator's own "TOP" turn
+ *     setting (data-deg="0" in emulator/src/index.html) is the panel's
+ *     native, UNROTATED orientation, and emu_shim.c's own button
+ *     descriptor - `{"id":"boot",...,"edge":"right","at":0.38}` before
+ *     `{"id":"pwr",...,"edge":"right","at":0.62}`, both fractions measured
+ *     top-down along that edge - puts BOOT above PWR there, i.e. BOOT
+ *     upper, PWR lower. The owner's OWN choice, once that contradiction was
+ *     put to him with both readings spelled out, was BOOT upper/PWR lower:
+ *     the SAME grip AGENTS.md already documents ("screen facing you,
+ *     buttons on the right: PWR lower, BOOT upper"), not a 180-degree flip
+ *     of it. So this app is genuinely, plainly portrait: `landscape =
+ *     false` in g_tablesApp below, drawn in the panel's own native
+ *     x-right/y-down space, no rotation of any kind - not a landscape app
+ *     shuffled to look portrait, and not a point-reflected grip either.
+ *
+ * Four bands, stacked top to bottom in this single portrait column: the
+ * question band across the very top (the blank at the right end of that
+ * line, carrying a blinking caret - see THE BLINKING CURSOR below), the
+ * loupe's own reserved zone under it, the numpad below that, and the two
+ * counter pills at the very bottom - see THE NUMPAD and THE COUNTER PILLS
+ * below for the arithmetic that fits all four into 428px of usable height,
+ * and this app's own report for the resulting key size checked against a
+ * child's fingertip rather than assumed.
  * ========================================================================= */
 #define OX PANEL_BEZEL_MARGIN_PX
 #define OY PANEL_BEZEL_MARGIN_PX
-#define USABLE_W (LAND_W - 2 * PANEL_BEZEL_MARGIN_PX) // 428
-#define USABLE_H (LAND_H - 2 * PANEL_BEZEL_MARGIN_PX) // 348
+#define USABLE_W (PANEL_W - 2 * PANEL_BEZEL_MARGIN_PX) // 348
+#define USABLE_H (PANEL_H - 2 * PANEL_BEZEL_MARGIN_PX) // 428
+
+/* =========================================================================
+ * PORTRAIT DRAWING HELPERS.
+ *
+ * This app draws in PANEL space directly (portrait, native, unrotated -
+ * see LAYOUT above), but shapes.h's anti-aliased primitives
+ * (shapes_fill_capsule_aa_land, shapes_fill_disc_aa_land) only ever take
+ * LANDSCAPE coordinates: they are the one deliberate exception to "gfx
+ * owns rotation" (shapes.c's own header comment), mapping each pixel
+ * through gfx.h's landscape<->panel relation themselves, so there is no
+ * portrait-space sibling to call instead. digits.c already solved exactly
+ * this problem for DIGITS_PORTRAIT (its own soft_capsule/soft_dot
+ * helpers): a capsule is two points and a radius, and gfx.h's
+ * landscape/panel relation is an isometry (it preserves distances and
+ * angles), so mapping the two endpoints through the inverse relation -
+ * portrait (x,y) -> landscape (y, PANEL_W - x) - before calling the _land
+ * primitive is the ENTIRE conversion; there is no second rasteriser to
+ * write. These two wrappers are exactly that inverse, lifted from
+ * digits.c's own soft_capsule/soft_dot rather than re-derived, so both
+ * files agree on the one mapping rather than carrying two copies of it.
+ */
+static void shapes_fill_capsule_aa(float x0, float y0, float r0,
+                                    float x1, float y1, float r1, uint16_t color) {
+    float edge = (float)PANEL_W;
+    shapes_fill_capsule_aa_land(y0, edge - x0, r0, y1, edge - x1, r1, color);
+}
+static void shapes_fill_disc_aa(float cx, float cy, float r, uint16_t color) {
+    shapes_fill_disc_aa_land(cy, (float)PANEL_W - cx, r, color);
+}
+
+// gfx_push() takes an INCLUSIVE panel rectangle (minX,minY,maxX,maxY); every
+// call site in this file thinks in (x,y,w,h), the same shape gfx_push_land()
+// used to take, so this converts once, here, rather than repeating
+// `x+w-1, y+h-1` arithmetic at a dozen call sites - exactly the kind of
+// off-by-one gfx.h's own header comment warns an inclusive form invites,
+// and there IS a live, unfixed hardware bug elsewhere in this tree where a
+// pushed rectangle failed to cover its own right edge and left vertical
+// streaks on the real panel (a different defect, in gfx.c's own push path,
+// not this file - but the same CLASS of mistake), which is exactly the
+// reason to get this conversion right in one place instead of several.
+static void gfx_push_wh(int x, int y, int w, int h) {
+    gfx_push(x, y, x + w - 1, y + h - 1);
+}
 
 /* ---- THE QUESTION BAND ---------------------------------------------------
  *
  * The full-width row across the top. QROW_H is chosen so that, together
- * with LOUPE_ZONE_H and the numpad's own four rows below it, the left
- * column's three stacked pieces still sum to exactly USABLE_H - see THE
- * NUMPAD's own comment for that arithmetic.
+ * with LOUPE_ZONE_H, the numpad's own four rows and the counter pills'
+ * band below it, all FOUR stacked pieces sum to exactly USABLE_H - see THE
+ * NUMPAD and THE COUNTER PILLS below for that arithmetic.
  */
 #define QROW_Y0 OY
-// 80, not the first pass's 64: the owner's exact mockup shows real
-// whitespace between the equation and the full-width rule below it (see
-// draw_question_rule()), and 64 left only 1-2px between the answer's own
-// underline and that rule - the two read as one smudged double-line, not
-// "text, then a divider". The extra 16px is recovered from the loupe
-// (LOUPE_R 38->34, still safely bigger than its own content - see
-// draw_loupe_at()'s comment) and the numpad (CELL_H 49->47) rather than
-// grown for free; see THE NUMPAD's own comment for the full arithmetic.
-#define QROW_H  80
-#define QROW_CY (OY + QROW_H / 2) // 50
+// 64: 10px of margin above the equation (QDIGIT_H=44, centred at QROW_CY)
+// and real clearance below the underline (Q_UNDERLINE_Y, THE QUESTION
+// BAND'S OWN LAYOUT below) before the loupe zone starts - the same margins
+// the very first version of this band shipped with. Nothing shares this
+// row's width any more (no rule below it, no column beside it), so QROW_H
+// is sized purely by what it has to contain, not by anything next to it.
+#define QROW_H  64
+#define QROW_CY (OY + QROW_H / 2) // 42
 
 /* ---- THE NUMPAD ---------------------------------------------------------
  *
  * 3 columns x 4 rows, phone-dial order (1 2 3 / 4 5 6 / 7 8 9 / back 0
- * check), 12 cells, filling the lower-left ~2/3 of the width: with the
- * loupe doing the precision work (see this file's header), a cell only has
- * to be roughly aimable and legibly labelled, not fingertip-sized. See
- * this app's own report for CELL_W x CELL_H checked against a child
- * fingertip rather than assumed.
+ * check), 12 cells, centred under the question band - with the loupe still
+ * doing the precision work (see this file's header), a cell only has to be
+ * roughly aimable and legibly labelled, not fingertip-sized. See this
+ * app's own report for CELL_W x CELL_H checked against a child fingertip
+ * rather than assumed.
  *
- * QROW_H + LOUPE_ZONE_H + NUMPAD_H must sum to exactly USABLE_H (348),
- * because the question band and the loupe zone now compete with the
- * numpad for the SAME vertical budget the first version had all to itself
- * (the question band spans the numpad's own width too, unlike the earlier
- * column that sat beside it) - 80 + 80 + 188 = 348. CELL_H dropped one
- * more step, from 49 to 47, to help buy QROW_H the room it needed for the
- * rule to read as separated from the equation above it (see QROW_H's own
- * comment) - see this app's own report for what that comes out to in
- * pixels against a child's fingertip.
+ * CELL_W IS NOT "however much width is left over". Stretching the pad to
+ * nearly the full USABLE_W (tried at CELL_W=140 during this app's
+ * landscape detour) makes a cell a 3.7:1 sliver - each of the three digit
+ * columns reads as its own thin, isolated vertical strip with a wide gap
+ * of dead white space to its neighbour, not a grid a child's eye
+ * assembles into a keypad at all (found on a rendered preview, not by
+ * inspection). CELL_W=100 keeps a cell closer to a real numpad key's own
+ * proportions (1.75:1 against CELL_H=57) and leaves real margin on both
+ * sides instead, which reads as "a pad, centred", not "digits, stranded".
+ * The counter pills below are NOT tied to this width - see THE COUNTER
+ * PILLS below for why they span close to the full USABLE_W on their own
+ * regardless of how wide the pad ends up.
+ *
+ * QROW_H + LOUPE_ZONE_H + NUMPAD_H + the counter pills' own band height
+ * must sum to exactly USABLE_H (428): 64 + 80 + 228 + 56 = 428 (see THE
+ * COUNTER PILLS below for the last term). LOUPE_ZONE_H is untouched from
+ * this app's very first version - the loupe itself is preserved exactly,
+ * never resized to make room for anything else, per the owner's own word
+ * that its behaviour is settled and not to be touched. Portrait's own
+ * 428px of usable height is markedly more generous than the 348px this
+ * app had to fit the same four bands into during its landscape detour,
+ * which is why CELL_H (57) comes out taller here than any earlier version
+ * of this pad managed - see this app's own report for the exact
+ * comparison against a child's fingertip.
  */
 #define NUMPAD_COLS 3
 #define NUMPAD_ROWS 4
-#define CELL_W 95
-#define CELL_H 47
-#define NUMPAD_W (CELL_W * NUMPAD_COLS)             // 285 - about 2/3 of USABLE_W (428)
-#define NUMPAD_H (CELL_H * NUMPAD_ROWS)             // 188
-#define LOUPE_ZONE_H 80                              // = LOUPE_BOX_H exactly, see THE LOUPE below
-#define NUMPAD_X0 OX                                 // 10
-#define NUMPAD_Y0 (OY + QROW_H + LOUPE_ZONE_H)       // 170
+#define CELL_W 100
+#define CELL_H 57
+#define NUMPAD_W (CELL_W * NUMPAD_COLS)             // 300
+#define NUMPAD_H (CELL_H * NUMPAD_ROWS)             // 228
+#define LOUPE_ZONE_H 80                              // = LOUPE_BOX_H exactly, see THE LOUPE below - unchanged since this app's first version
+#define NUMPAD_X0 (OX + (USABLE_W - NUMPAD_W) / 2)   // 34 - centred, real margin on each side
+#define NUMPAD_Y0 (OY + QROW_H + LOUPE_ZONE_H)       // 154
 
 #define CELL_BACK  9
 #define CELL_ZERO  10
@@ -223,8 +310,8 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
     *bh = CELL_H;
 }
 
-// -1 for "not over any cell" (the loupe zone above, the info column to the
-// right, or outside the panel entirely) - the numpad's own cancel region.
+// -1 for "not over any cell" (the loupe zone above, the counter pills
+// below, or outside the panel entirely) - the numpad's own cancel region.
 // A release verdict that reads -1 here commits nothing, the same rule
 // menu.c's cancel band enforces for the app grid.
 static int numpad_hit(int lx, int ly) {
@@ -240,8 +327,8 @@ static int numpad_hit(int lx, int ly) {
 /* ---- THE LOUPE ------------------------------------------------------------
  *
  * A fixed-HEIGHT band above the numpad, LOUPE_ZONE_H tall, otherwise blank
- * - between the question band and the pad now, not at the very top of the
- * app (the question band owns that top row instead). Only the bubble's
+ * - between the question band and the pad, not at the very top of the app
+ * (the question band owns that top row instead). Only the bubble's
  * horizontal centre tracks the finger; its vertical centre (LOUPE_CY)
  * never moves. See this file's header for why that is a stronger fix than
  * dynamic vertical placement, not a simplification of one: it removes the
@@ -250,23 +337,20 @@ static int numpad_hit(int lx, int ly) {
  * redrawing it is always a plain white fill - never a re-render of numpad
  * cells underneath or of the question band above, because nothing else is
  * ever drawn there. LOUPE_ZONE_H is exactly LOUPE_BOX_H - the tightest
- * this zone can be without clipping the bubble. LOUPE_R dropped from 38 to
- * 34 (see QROW_H's own comment for why) - still comfortably bigger than
- * its own content needs: draw_loupe_at() draws a 30x48 digit inside it,
- * whose half-diagonal is sqrt(15^2+24^2) = ~28.3px, so a radius-34 disc
- * still clears every corner by ~5.7px, about the same relative margin the
- * original 38-radius/34x54-digit pairing had (~6.1px) - shrunk together,
- * not just the frame around unchanged content. Erase-then-redraw costs at
- * most LOUPE_BOX_W x LOUPE_BOX_H twice (old position, new position) per
- * tick while dragging - see the cost accounting in this app's own report.
+ * this zone can be without clipping the bubble. draw_loupe_at() draws a
+ * 30x48 digit inside it, whose half-diagonal is sqrt(15^2+24^2) = ~28.3px,
+ * so a radius-34 disc clears every corner by ~5.7px. See loupe_update()'s
+ * own comment for a real bug this design let through - a flicker under a
+ * held-still finger, found and fixed 2026-08-17 - and why the fix belongs
+ * in WHEN this zone redraws, not in this geometry.
  */
 #define LOUPE_R    34.0f
 #define LOUPE_PAD  6
 #define LOUPE_BOX_W ((int)(LOUPE_R * 2.0f) + 2 * LOUPE_PAD) // 80
 #define LOUPE_BOX_H ((int)(LOUPE_R * 2.0f) + 2 * LOUPE_PAD) // 80
-#define LOUPE_CY   (OY + QROW_H + LOUPE_ZONE_H / 2)          // 130
-#define LOUPE_CX_MIN (NUMPAD_X0 + (int)LOUPE_R + LOUPE_PAD)          // 50
-#define LOUPE_CX_MAX (NUMPAD_X0 + NUMPAD_W - (int)LOUPE_R - LOUPE_PAD) // 255
+#define LOUPE_CY   (OY + QROW_H + LOUPE_ZONE_H / 2)          // 114
+#define LOUPE_CX_MIN (NUMPAD_X0 + (int)LOUPE_R + LOUPE_PAD)          // 74
+#define LOUPE_CX_MAX (NUMPAD_X0 + NUMPAD_W - (int)LOUPE_R - LOUPE_PAD) // 294
 
 static uint16_t loupe_bubble_color(void) { return px_swap(0xDEFB); } // #DEDEDE, same grey as menu.c's halo
 
@@ -277,13 +361,16 @@ static uint16_t loupe_bubble_color(void) { return px_swap(0xDEFB); } // #DEDEDE,
  * 8-bit ink/coverage value"), because shapes.h's anti-aliased primitives
  * all funnel through that trick (aa_composite_land converts every colour
  * to a grey level - see shapes.c). AGENTS.md is explicit that colour IS
- * available on this panel, so this app uses it in exactly the one place
- * that trick cannot reach anyway: a plain, hard-edged background wash
- * behind the answer, painted with gfx_fill_rect_land (which writes the
- * real RGB565 value, no grey conversion - the same "flat colour, no AA"
- * treatment timer.c's own progress-ring TRACK already uses). All the ink
- * on top of it - the digits themselves - stays black, so the wash is
- * background tinting, not a second inking system.
+ * available on this panel, so this app uses it in exactly the places that
+ * trick cannot reach anyway: a plain, hard-edged background wash behind
+ * the answer, painted with gfx_fill_rect (which writes the real RGB565
+ * value, no grey conversion - the same "flat colour, no AA" treatment
+ * timer.c's own progress-ring TRACK already uses), and the two counter
+ * pills below the pad (see THE COUNTER PILLS below, which reuses this
+ * same flat-fill approach for a rounded shape rather than a plain
+ * rectangle). All the ink on top of either - the digits, the icons -
+ * stays black, so the colour is background tinting, not a second inking
+ * system.
  *
  * WHY A WASH AT ALL, tied to "what happens after a wrong answer matters
  * more than the mark itself" (this file's own design brief). A right/wrong
@@ -310,40 +397,51 @@ static uint16_t tint_wrong(void) { return rgb565(250, 232, 196); } // pale amber
  * anywhere in it - which the first version of this band did not do: it
  * reserved a fixed two-digit-wide slot for the factor (it runs 1..10) and
  * always CENTRED whatever was actually typed inside that slot, so a
- * one-digit factor like "1" sat in the middle of a 76px box instead of
- * hugging the multiply mark, and read as "6 x    1 =" - a hole, not a
- * phrase. The fix: base/multiply/factor-START stay fixed (the factor
- * always BEGINS at the same x), but everything from the factor's own
- * width onward - where it ends, where "=" starts, where the blank starts
- * - is a function of whether THIS question's factor is one digit or two,
- * computed fresh from s->factIndex (question_factor_w() and the
- * question_*() positions below it). A single-digit factor now sits flush
- * against the multiply mark; a "10" still fits before "=" without
- * overlapping it. Every fixed position below is a running total (start,
- * then start+width+gap, ...), the same style NUMPAD_Y0 above already uses
- * for a vertical stack.
+ * one-digit factor like "1" sat in the middle of a box instead of hugging
+ * the multiply mark, and read as "6 x    1 =" - a hole, not a phrase. The
+ * fix: base/multiply/factor-START stay fixed (the factor always BEGINS at
+ * the same x), but everything from the factor's own width onward - where
+ * it ends, where "=" starts, where the blank starts - is a function of
+ * whether THIS question's factor is one digit or two, computed fresh from
+ * s->factIndex (question_factor_w() and the question_*() positions below
+ * it). A single-digit factor now sits flush against the multiply mark; a
+ * "10" still fits before "=" without overlapping it. Every fixed position
+ * below is a running total (start, then start+width+gap, ...), the same
+ * style NUMPAD_Y0 above already uses for a vertical stack.
+ *
+ * SMALLER THAN THE LANDSCAPE VERSION OF THIS BAND, ON PURPOSE. Portrait's
+ * USABLE_W is 348px, not the 428px this band had to fit inside during the
+ * app's landscape detour - a genuine width constraint, independent of how
+ * much VERTICAL room portrait otherwise buys back. Q_LPAD, Q_GAP, QDIGIT_W
+ * and QICON_BOX are all trimmed from that landscape version so the widest
+ * real case - a two-digit factor ("10") together with a two-digit answer
+ * slot - still fits with margin: Q_LPAD(14) + QDIGIT_W(34) + Q_GAP(14) +
+ * QICON_BOX(26) + Q_GAP(14) + Q2W(72) + Q_GAP(14) + QICON_BOX(26) +
+ * Q_GAP(14) + Q2W(72) = 300, and the answer's own slot (question_slot_x0()
+ * in the worst case, 238) plus ANSWER_BOX_W (88) = 326, both comfortably
+ * inside 348.
  */
-#define Q_LPAD  24
-#define Q_GAP   20
-#define QDIGIT_W 36
+#define Q_LPAD  14
+#define Q_GAP   14
+#define QDIGIT_W 34
 #define QDIGIT_H 44
 #define QDIGIT_T 10
-#define QICON_BOX 32                    // multiply/equals icon's own reserved width
-#define Q2W (QDIGIT_W * 2 + DIGIT_GAP)  // 76 - a 2-digit factor or answer
+#define QICON_BOX 26                    // multiply/equals icon's own reserved width
+#define Q2W (QDIGIT_W * 2 + DIGIT_GAP)  // 72 - a 2-digit factor or answer
 
-#define Q_X0        (OX + Q_LPAD)                    // 34
-#define Q_BASE_CX   (Q_X0 + QDIGIT_W / 2)             // 52
-#define Q_MUL_X0    (Q_X0 + QDIGIT_W + Q_GAP)         // 90
-#define Q_MUL_CX    (Q_MUL_X0 + QICON_BOX / 2)        // 106
-#define Q_FACTOR_X0 (Q_MUL_X0 + QICON_BOX + Q_GAP)    // 142 - the factor always STARTS here
+#define Q_X0        (OX + Q_LPAD)                    // 24
+#define Q_BASE_CX   (Q_X0 + QDIGIT_W / 2)             // 41
+#define Q_MUL_X0    (Q_X0 + QDIGIT_W + Q_GAP)         // 72
+#define Q_MUL_CX    (Q_MUL_X0 + QICON_BOX / 2)        // 85
+#define Q_FACTOR_X0 (Q_MUL_X0 + QICON_BOX + Q_GAP)    // 112 - the factor always STARTS here
 // question_factor_w()/question_factor_cx()/question_eq_x0()/question_eq_cx()/
 // question_slot_x0()/question_slot_cx() - everything from here on that
 // depends on whether THIS question's factor is one digit or two - are
 // defined just above redraw_question() below: they need tables_state_t and
 // fact_factor(), both declared later in the file than this constants block.
 
-#define Q_SLOT_W    Q2W                                // 76 - up to two digits, always reserved
-#define Q_UNDERLINE_Y (QROW_CY + QDIGIT_H / 2 + 2)    // 74 - just below the digit baseline
+#define Q_SLOT_W    Q2W                                // 72 - up to two digits, always reserved
+#define Q_UNDERLINE_Y (QROW_CY + QDIGIT_H / 2 + 2)    // 66 - just below the digit baseline
 #define Q_UNDERLINE_R 2.0f
 
 // The answer box: what redraw_answer() erases and redraws wholesale on
@@ -355,94 +453,101 @@ static uint16_t tint_wrong(void) { return rgb565(250, 232, 196); } // pale amber
 // Its X0 moves with question_slot_x0() (the factor's width shifts it), its
 // WIDTH does not.
 //
-// ANSWER_BOX_H stops right at the underline's own bottom edge (76) rather
-// than filling the rest of QROW_H down to RULE_Y: the first version of
-// this box was QROW_H tall, which meant every keystroke's own white/tint
-// fill repainted straight through the rule's row and erased the MIDDLE of
-// it (wherever the answer box happened to sit that question) without ever
-// redrawing it - a full-width line that ran in from the left, stopped
-// under the blank, and resumed on the right, which read as one broken
-// line rather than "a blank, and a separator below it". Found by looking
-// at the rendered PNG, not by inspection. Keeping the box's own bottom
-// edge clear of RULE_Y (see that constant's own comment) is what makes
-// the rule untouchable by anything redraw_answer() does, ever - not a
-// tighter erase-and-redraw discipline, just never overlapping in the
-// first place.
+// ANSWER_BOX_H stops right at the underline's own bottom edge (68) rather
+// than filling the rest of QROW_H: kept tight because a smaller erase-and-
+// redraw rectangle on every keystroke costs less, and there is nothing
+// below the underline in this band worth including.
 #define Q_CURSOR_CLEARANCE 16
-#define ANSWER_BOX_W  (Q_SLOT_W + Q_CURSOR_CLEARANCE) // 92
+#define ANSWER_BOX_W  (Q_SLOT_W + Q_CURSOR_CLEARANCE) // 88
 #define ANSWER_BOX_Y0 QROW_Y0
-#define ANSWER_BOX_H  ((int)(Q_UNDERLINE_Y + Q_UNDERLINE_R) - QROW_Y0) // 66 (ends at y=76)
+#define ANSWER_BOX_H  ((int)(Q_UNDERLINE_Y + Q_UNDERLINE_R) - QROW_Y0) // 58 (ends at y=68)
 
-// A full-width rule directly under the question band, separating it from
-// everything below (the owner's exact mockup adds this) - drawn ONCE, in
-// tables_enter(), because it never changes: nothing else in this band ever
-// draws this far down. Given REAL clearance from the answer's own
-// underline: RULE_Y - RULE_R sits 8px below ANSWER_BOX_H's own bottom edge
-// (76), empty white between them, so the two read as two separate
-// objects, not one smudge - the owner's own complaint about the first
-// version of this line, which sat close enough under the underline to
-// look like a broken continuation of it rather than its own element.
-#define RULE_Y (OY + QROW_H - 4) // 86 (ink 84-88), 2px clear of the band's own bottom edge (90);
-                                  // 8px of empty white above it, back to ANSWER_BOX_H's bottom edge (76)
-#define RULE_R 2.0f
-
-/* ---- THE COUNTERS PANEL ---------------------------------------------------
+/* ---- THE COUNTER PILLS -----------------------------------------------------
  *
- * The owner's exact mockup (2026-08-17) settles three things his earlier
- * sketch and brief left open, superseding them:
+ * The owner's third drawing (see LAYOUT above) replaces the boxed, stacked
+ * counters with two COLOURED PILLS side by side along the very bottom: a
+ * pink/magenta "X 1" on the left, a green "check 3" on the right, in his
+ * own sketch. He then corrected the left pill's colour once this was built
+ * and rendered: "plutot que rose fais la case X de la couleur orange que
+ * tu utilisais" - orange rather than pink, and specifically the orange
+ * already used elsewhere on this device rather than inventing a new one
+ * (see THE PILLS' COLOUR below for exactly which constant that is and
+ * where it comes from). The right (correct) pill stays green.
  *
- *   - TWO counters, not three. Both his drawings and this mockup show
- *     exactly a cross-count and a check-count; the time-spent counter this
- *     app carried before was this file's own addition (he mentioned wanting
- *     to know time spent, in speech, well before the mockup), not something
- *     either drawing ever asked to see on screen. Dropped from the display;
- *     s->enterMs/enterMsSet stay (a timestamp is nearly free to keep and
- *     the owner may still want it surfaced later), nothing computes a
- *     shown value from it any more.
- *   - The panel sits INSIDE A DRAWN BOX, lower-right, roughly the vertical
- *     span of the pad's lower rows - not strung down the full height next
- *     to the question the way the first attempt at this redesign put it.
- *     The box is what tells a child this column is a readout, not more
- *     keys - see draw_counter_box()'s own comment for why that reads
- *     better here than changing either glyph would have.
- *   - The CHECK counter keeps the numpad's own checkmark glyph unchanged
- *     (the box already disambiguates it from the CHECK key, so the glyph
- *     itself does not have to).
+ * WHY A FLAT COLOUR NEEDS A DIFFERENT DRAW TECHNIQUE THAN EVERYTHING ELSE
+ * IN THIS FILE. Every icon and every digit in this app is drawn with
+ * shapes.h's anti-aliased float brush (reached through this file's own
+ * portrait wrappers, PORTRAIT DRAWING HELPERS above), which composites by
+ * converting whatever colour it is given down to a GREY LEVEL first
+ * (aa_composite_land in shapes.c - correct for black ink on white or on a
+ * pale wash, since grey IS the channel this panel's monochrome ink already
+ * rides on, but it cannot carry an actual saturated colour). A pill's own
+ * fill has to be a real RGB565 colour, so it is drawn with shapes.h's
+ * OLDER, non-anti-aliased "generation 1" technique instead -
+ * shapes_fill_half_width_table() plus a row of gfx_fill_rect() calls,
+ * exactly what timer.c's own progress-ring TRACK already does for a flat
+ * colour fill (see shapes.h's own header comment on why both generations
+ * still coexist deliberately). The icon and the digit drawn ON TOP of a
+ * pill are still the ordinary AA black ink, unchanged - this is the same
+ * "coloured wash underneath, black ink on top" trick this file's answer
+ * band already used before pills existed (see RIGHT/WRONG COLOUR above),
+ * just with a rounded pill shape standing in for a plain rectangle.
+ *
+ * A COLOURED PILL IS ALSO WHAT NOW TELLS A CHILD "THIS IS A READOUT, NOT
+ * MORE KEYS" - the job an earlier boxed layout gave to a drawn border (see
+ * git history for draw_counter_box(), removed with this redesign): a
+ * solid block of colour reads as its own kind of thing even faster than an
+ * outline does, and it is also what makes "wrong" and "right" legible to a
+ * child who cannot yet read the words, which is this app's own stated
+ * reason for using colour at all (see AGENTS.md's header on this app).
+ * The CHECK pill still reuses the numpad's own checkmark glyph unchanged -
+ * the pill's colour disambiguates it from the CHECK key now, the same job
+ * the box used to do. Still exactly TWO counters, not three: no drawing of
+ * his has ever shown a time-spent readout, only a cross-count and a
+ * check-count, so `s->enterMs`/`enterMsSet` stay in the state struct (a
+ * timestamp costs nothing to keep) but nothing computes a displayed value
+ * from them.
+ *
+ * GEOMETRY. Both pills sit in their own band at the very bottom of the
+ * portrait canvas, spanning the FULL usable width (OX to OX+USABLE_W,
+ * PILL_GAP between them) - deliberately NOT tied to NUMPAD_W: the pad's
+ * own width is chosen for a legible key aspect ratio (see THE NUMPAD's own
+ * comment on why a cell is not just "however much width is left over"),
+ * and a pill is a readout, not a key, so it is free to be as wide as the
+ * panel affords rather than inheriting a narrower key-driven width. This
+ * is the fourth and last of the stacked bands THE NUMPAD's own comment
+ * sums to USABLE_H. PILL_H is centred inside that band with a few pixels
+ * of margin above and below, which is also what gives the anti-aliased
+ * ink drawn on top of a pill room to fall off before it would ever reach
+ * the pushed rectangle's own edge (see this app's own report on the
+ * hardware streak bug named in the brief: a pill's push rectangle is
+ * checked to cover its rounded ends and every anti-aliased icon/digit
+ * pixel drawn on top, not just the flat fill).
  */
-#define INFO_X0 (NUMPAD_X0 + NUMPAD_W) // 295
-#define INFO_W  (USABLE_W - NUMPAD_W)  // 143
+#define PILL_GAP 20
+#define PILL_W  ((USABLE_W - PILL_GAP) / 2)          // 164 - half the full usable width, minus the gap
+#define PILL_H  44
+#define COUNTERS_Y0 (NUMPAD_Y0 + NUMPAD_H)           // 382 - the pad's own bottom edge
+#define COUNTERS_H  (USABLE_H - QROW_H - LOUPE_ZONE_H - NUMPAD_H) // 56 - see THE NUMPAD's arithmetic
+#define PILL_Y0 (COUNTERS_Y0 + (COUNTERS_H - PILL_H) / 2) // 388
+#define PILL_WRONG_X0 OX                              // 10 - flush with the panel's own left margin
+#define PILL_RIGHT_X0 (OX + PILL_W + PILL_GAP)        // 194 - flush with the panel's own right margin
 
-// The box: bottom-flush with the numpad, spanning its lower 3 of 4 rows -
-// "roughly the vertical span of the pad's lower rows" per the mockup, not
-// the whole pad (that would run it up beside the question band again).
-#define BOX_X0 (INFO_X0 + 8)                    // 303
-#define BOX_W  (INFO_W - 16)                    // 127
-#define BOX_Y0 (NUMPAD_Y0 + CELL_H)             // 211 - skip the pad's own top row
-// NUMPAD_H - CELL_H would put the border's own bottom edge exactly on
-// OY+USABLE_H (358), and its stroke radius (BOX_R) then bleeds 1-2px past
-// that into the bezel margin - caught by the gate's "no ink inside
-// PANEL_BEZEL_MARGIN_PX" rule and feature-tables.ts's own bezel check.
-// Trimmed by BOX_R rounded up plus a pixel of margin.
-#define BOX_H  (NUMPAD_H - CELL_H - 6)          // 141
-#define BOX_R  1.5f                              // border stroke radius (~3px thick)
-
-// Two rows inside the box, inset from the border so a row's own redraw
-// (which fills its own rect white first) never touches the border itself.
-#define BOX_INSET 5
-#define COUNTER_ROW_X0 (BOX_X0 + BOX_INSET)      // 308
-#define COUNTER_ROW_W  (BOX_W - 2 * BOX_INSET)   // 117
-#define COUNTERS_Y0    (BOX_Y0 + BOX_INSET)      // 216
-#define COUNTER_ROW_H  ((BOX_H - 2 * BOX_INSET) / 2) // 65 (2 rows: 216, 281)
-
-// Icon and digit placement, shared by both rows so the glyphs line up in
-// one column and the numbers in another. Digit box kept well above the
-// width-to-thickness ratio that bit an earlier, smaller version of this
-// row: too small relative to stroke thickness t, and digits_draw_soft's
-// "0" renders as a solid blob instead of a ring (SOFT_INSET plus the
-// stroke radius leaves less than a stroke-width of daylight between the
-// two verticals) - not caught by eye until a rendered preview was looked
-// at. W/T at or above 3 here keeps clear of it.
-#define COUNTER_ICON_CX_OFF 20
+// Icon and digit placement, shared by both pills (mirrored, since both are
+// PILL_W wide) so the glyphs line up in one column and the numbers in
+// another. Kept clear of the pill's own rounded ends (radius PILL_H/2 =
+// 22): PILL_ICON_CX_OFF (42) puts even the wider cross glyph's own left
+// edge a few pixels past that radius, and PILL_NUM_CX_OFF (100) keeps a
+// full two-digit number's own right edge inside the straight midsection
+// (PILL_W - PILL_H/2 = 142) rather than drifting into the curve. Digit box
+// kept well above the width-to-thickness ratio that bit an earlier,
+// smaller version of this row: too small relative to stroke thickness t,
+// and digits_draw_soft's "0" renders as a solid blob instead of a ring
+// (SOFT_INSET plus the stroke radius leaves less than a stroke-width of
+// daylight between the two verticals) - not caught by eye until a
+// rendered preview was looked at. W/T at or above 3 here keeps clear of it.
+#define PILL_ICON_CX_OFF 42
+#define PILL_NUM_CX_OFF  100
 #define COUNTER_ICON_R 15.0f
 // The cross needs its OWN reach, not COUNTER_ICON_R: draw_icon_multiply and
 // draw_icon_check both take a "reach" parameter, but it means a different
@@ -456,30 +561,52 @@ static uint16_t tint_wrong(void) { return rgb565(250, 232, 196); } // pale amber
 // check already has at COUNTER_ICON_R (2*reach*1.32 = 31.8 => reach ~
 // 12.0), not copied from the check's reach.
 #define COUNTER_CROSS_R 12.0f
-#define COUNTER_NUM_CX_OFF 73
 #define COUNTER_DIGIT_W 30
 #define COUNTER_DIGIT_H 38
 #define COUNTER_DIGIT_T 9
 
+/* ---- THE PILLS' COLOUR -----------------------------------------------------
+ *
+ * Both values are lifted from sketch.c's own colour palette
+ * (palette_color(), firmware/apps/sketch.c) rather than invented here, per
+ * the owner's own instruction to reuse the orange already used elsewhere
+ * on this device rather than a new one: index 1 is sketch.c's "orange"
+ * (px_swap(0xFC60), roughly rgb(255,142,0)), index 3 is its "green"
+ * (px_swap(0x07E0), pure green). Both are the raw px_swap()'d RGB565
+ * constant, copied rather than calling sketch.c's function directly
+ * (nothing here wants a dependency on the sketchpad's own palette code for
+ * two constants), with the source named so the two never drift apart by
+ * accident.
+ */
+static uint16_t pill_color_wrong(void) { return px_swap(0xFC60); } // sketch.c palette_color(1), orange
+static uint16_t pill_color_right(void) { return px_swap(0x07E0); } // sketch.c palette_color(3), green
+
 /* =========================================================================
- * ICONS - shapes.h's float brush only, per decision 0009. Every one of
- * these is either round (no straight edge to worry about) or a short
- * straight capsule stroke, the same treatment digits_draw_soft's own
- * seven-segment rails already use (a capsule shaft is straight, its ends
- * are round caps - accepted throughout this codebase for exactly this
+ * ICONS - shapes.h's float brush only, per decision 0009, reached through
+ * this file's own portrait wrappers (PORTRAIT DRAWING HELPERS above).
+ * Every one of these is either round (no straight edge to worry about) or
+ * a short straight capsule stroke, the same treatment digits_draw_soft's
+ * own seven-segment rails already use (a capsule shaft is straight, its
+ * ends are round caps - accepted throughout this codebase for exactly this
  * shape, see digits.h). Nothing here is a filled rectangle standing in for
  * an icon.
  * ========================================================================= */
 
-// Backspace: a left-pointing chevron, "<" - two capsules meeting at the
-// leftmost point. Universal enough to need no label.
+// Backspace: a left-pointing ARROW, "<-" - a shaft plus an arrowhead. The
+// owner's third drawing (see LAYOUT above) redrew this key as a proper
+// arrow rather than the bare chevron ("<") the earlier two drawings used,
+// so this is now a shaft capsule reaching most of the way to the right
+// PLUS the same two-capsule chevron wings at the left end, rather than the
+// wings alone - the wings on their own were what read as "<".
 static void draw_icon_back(int cx, int cy, float reach, uint16_t color) {
-    float t = reach * 0.32f;
+    float t = reach * 0.26f;
     float tipX = (float)cx - reach, tipY = (float)cy;
-    float topX = (float)cx + reach * 0.55f, topY = (float)cy - reach * 0.85f;
-    float botX = (float)cx + reach * 0.55f, botY = (float)cy + reach * 0.85f;
-    shapes_fill_capsule_aa_land(tipX, tipY, t, topX, topY, t, color);
-    shapes_fill_capsule_aa_land(tipX, tipY, t, botX, botY, t, color);
+    float wingTopX = (float)cx - reach * 0.15f, wingTopY = (float)cy - reach * 0.55f;
+    float wingBotX = (float)cx - reach * 0.15f, wingBotY = (float)cy + reach * 0.55f;
+    float shaftX1 = (float)cx + reach * 0.9f;
+    shapes_fill_capsule_aa(tipX, tipY, t, wingTopX, wingTopY, t, color);
+    shapes_fill_capsule_aa(tipX, tipY, t, wingBotX, wingBotY, t, color);
+    shapes_fill_capsule_aa(wingTopX, tipY, t, shaftX1, tipY, t, color);
 }
 
 // Submit: a checkmark - two capsules meeting at the low point.
@@ -488,8 +615,8 @@ static void draw_icon_check(int cx, int cy, float reach, uint16_t color) {
     float p0x = (float)cx - reach * 0.75f, p0y = (float)cy;
     float p1x = (float)cx - reach * 0.15f, p1y = (float)cy + reach * 0.6f;
     float p2x = (float)cx + reach * 0.85f, p2y = (float)cy - reach * 0.7f;
-    shapes_fill_capsule_aa_land(p0x, p0y, t, p1x, p1y, t, color);
-    shapes_fill_capsule_aa_land(p1x, p1y, t, p2x, p2y, t, color);
+    shapes_fill_capsule_aa(p0x, p0y, t, p1x, p1y, t, color);
+    shapes_fill_capsule_aa(p1x, p1y, t, p2x, p2y, t, color);
 }
 
 // Multiply: an X of two crossing capsule strokes. Kept dead straight
@@ -499,10 +626,10 @@ static void draw_icon_check(int cx, int cy, float reach, uint16_t color) {
 // straight capsule rails too, see this block's own header note).
 static void draw_icon_multiply(int cx, int cy, float reach, uint16_t color) {
     float t = reach * 0.32f;
-    shapes_fill_capsule_aa_land((float)cx - reach, (float)cy - reach, t,
-                                 (float)cx + reach, (float)cy + reach, t, color);
-    shapes_fill_capsule_aa_land((float)cx - reach, (float)cy + reach, t,
-                                 (float)cx + reach, (float)cy - reach, t, color);
+    shapes_fill_capsule_aa((float)cx - reach, (float)cy - reach, t,
+                            (float)cx + reach, (float)cy + reach, t, color);
+    shapes_fill_capsule_aa((float)cx - reach, (float)cy + reach, t,
+                            (float)cx + reach, (float)cy - reach, t, color);
 }
 
 // Equals: two straight horizontal strokes, stacked - as canonically
@@ -512,21 +639,23 @@ static void draw_icon_multiply(int cx, int cy, float reach, uint16_t color) {
 static void draw_icon_equals(int cx, int cy, float reach, uint16_t color) {
     float t = reach * 0.32f;
     float half = reach * 0.5f;
-    shapes_fill_capsule_aa_land((float)cx - reach, (float)cy - half, t,
-                                 (float)cx + reach, (float)cy - half, t, color);
-    shapes_fill_capsule_aa_land((float)cx - reach, (float)cy + half, t,
-                                 (float)cx + reach, (float)cy + half, t, color);
+    shapes_fill_capsule_aa((float)cx - reach, (float)cy - half, t,
+                            (float)cx + reach, (float)cy - half, t, color);
+    shapes_fill_capsule_aa((float)cx - reach, (float)cy + half, t,
+                            (float)cx + reach, (float)cy + half, t, color);
 }
 
 /* ---- COUNTER ICONS ---------------------------------------------------------
  *
  * The two counters are told apart by an EXPLICIT glyph, per the owner's
- * own mockup - a cross for wrong, a checkmark for right (see this file's
+ * own drawings - a cross for wrong, a checkmark for right (see this file's
  * header for why that replaces an earlier ring/disc pairing). "Correct"
  * reuses draw_icon_check verbatim: the SAME mark the numpad's own CHECK
- * key draws - the mockup keeps that collision on purpose and resolves it
- * with the drawn box around the panel instead (draw_counter_box()), not by
- * giving the counter a different glyph. "Wrong" reuses draw_icon_multiply's
+ * key draws - every one of the owner's drawings keeps that collision on
+ * purpose. An earlier layout resolved it with a drawn box around the
+ * panel; this one resolves it with the pill's own colour instead (see THE
+ * COUNTER PILLS above) - either way, not by giving the counter a different
+ * glyph. "Wrong" reuses draw_icon_multiply's
  * own X under its own name, for the reason decision 0009 already accepted
  * a dead-straight X at this size for the multiply sign: a cross is two
  * straight strokes even on paper.
@@ -539,8 +668,7 @@ static void draw_icon_cross(int cx, int cy, float reach, uint16_t color) {
  * NUMBERS. One helper draws 1 or 2 digits (0..99), left-to-right, centred
  * on cx - the shared renderer for the numpad's own digit keys, the
  * question's two factors (the second factor runs 1..10, so it alone needs
- * the two-digit case), the answer she is building, and the MM/SS time
- * counter (padTo2 forces a leading zero there).
+ * the two-digit case), the answer she is building, and the two counters.
  * ========================================================================= */
 #define DIGIT_GAP 4
 
@@ -550,14 +678,14 @@ static void draw_number_lr(int cx, int cy, int digitW, int digitH, int t,
     if (value > 99) value = 99;
     bool twoDigits = padTo2 || value >= 10;
     if (!twoDigits) {
-        digits_draw_soft(DIGITS_LANDSCAPE, cx - digitW / 2, cy - digitH / 2, digitW, digitH, t, value, color);
+        digits_draw_soft(DIGITS_PORTRAIT, cx - digitW / 2, cy - digitH / 2, digitW, digitH, t, value, color);
         return;
     }
     int tens = value / 10, ones = value % 10;
     int totalW = digitW * 2 + DIGIT_GAP;
     int x0 = cx - totalW / 2;
-    digits_draw_soft(DIGITS_LANDSCAPE, x0, cy - digitH / 2, digitW, digitH, t, tens, color);
-    digits_draw_soft(DIGITS_LANDSCAPE, x0 + digitW + DIGIT_GAP, cy - digitH / 2, digitW, digitH, t, ones, color);
+    digits_draw_soft(DIGITS_PORTRAIT, x0, cy - digitH / 2, digitW, digitH, t, tens, color);
+    digits_draw_soft(DIGITS_PORTRAIT, x0 + digitW + DIGIT_GAP, cy - digitH / 2, digitW, digitH, t, ones, color);
 }
 
 /* =========================================================================
@@ -755,7 +883,7 @@ typedef struct {
     uint32_t wrongCount;
     uint32_t correctCount;
     uint32_t enterMs;   // kept (cheap) even though nothing displays it any
-    bool     enterMsSet; // more - see THE COUNTERS PANEL's own comment
+    bool     enterMsSet; // more - see THE COUNTER PILLS' own comment
 
     // Touch gesture (see THE GESTURE above).
     bool     contactSeen;
@@ -767,10 +895,16 @@ typedef struct {
     int      pendingCell;
     uint32_t pendingSinceMs;
 
-    // The loupe's last drawn box, so a tick that hides or moves it knows
-    // exactly what to erase.
+    // The loupe's last drawn box AND cell, so a tick that hides, moves or
+    // recontents it knows exactly what to erase and whether anything
+    // actually changed. loupeCell is tracked separately from position -
+    // see loupe_update()'s own comment for why position alone is not
+    // enough (a finger can hold its horizontal position still while
+    // drifting across a row boundary, changing the hovered cell with the
+    // loupe's own box never moving).
     bool     loupeVisible;
     int      loupeBx, loupeBy, loupeBw, loupeBh;
+    int      loupeCell;
 
     // The answer blank's blinking cursor (see THE BLINKING CURSOR /
     // update_cursor() below). Bookkeeping only - what it draws is a pure
@@ -787,12 +921,12 @@ static tables_state_t *s_tables;
 static void render_cell(int cell, bool hovered) {
     int bx, by, bw, bh;
     cell_rect(cell, &bx, &by, &bw, &bh);
-    gfx_fill_rect_land(bx, by, bw, bh, PX_WHITE);
+    gfx_fill_rect(bx, by, bw, bh, PX_WHITE);
     if (hovered) {
         float rw = (float)bw / 2.0f - 4.0f;
         float rh = (float)bh / 2.0f - 4.0f;
         float r = rw < rh ? rw : rh;
-        shapes_fill_disc_aa_land((float)(bx + bw / 2), (float)(by + bh / 2), r, loupe_bubble_color());
+        shapes_fill_disc_aa((float)(bx + bw / 2), (float)(by + bh / 2), r, loupe_bubble_color());
     }
     int cx = bx + bw / 2, cy = by + bh / 2;
     if (cell_is_digit(cell)) {
@@ -807,7 +941,7 @@ static void render_cell(int cell, bool hovered) {
 static void push_cell(int cell) {
     int bx, by, bw, bh;
     cell_rect(cell, &bx, &by, &bw, &bh);
-    gfx_push_land(bx, by, bw, bh);
+    gfx_push_wh(bx, by, bw, bh);
 }
 
 static void draw_numpad_all(void) {
@@ -816,10 +950,10 @@ static void draw_numpad_all(void) {
 
 /* ---- the loupe: content, then erase/redraw for one tick ------------------ */
 static void draw_loupe_at(int bx, int by, int bw, int bh, int cell) {
-    gfx_fill_rect_land(bx, by, bw, bh, PX_WHITE);
+    gfx_fill_rect(bx, by, bw, bh, PX_WHITE);
     int cx = bx + bw / 2, cy = by + bh / 2;
     float r = LOUPE_R;
-    shapes_fill_disc_aa_land((float)cx, (float)cy, r, loupe_bubble_color());
+    shapes_fill_disc_aa((float)cx, (float)cy, r, loupe_bubble_color());
     if (cell_is_digit(cell)) {
         draw_number_lr(cx, cy, 30, 48, 10, cell_digit_value(cell), false, PX_BLACK);
     } else if (cell == CELL_BACK) {
@@ -830,35 +964,84 @@ static void draw_loupe_at(int bx, int by, int bw, int bh, int cell) {
 }
 
 // Recomputes the loupe for this tick from the live (raw) touch x and the
-// confirmed hoverCell, erasing whatever it drew last tick first. Called
-// only while a gesture is armed; see tables_tick().
-static void loupe_update(tables_state_t *s, int rawLandX) {
+// confirmed hoverCell - but only when something the bubble shows would
+// actually change. Called only while a gesture is armed; see
+// tables_tick().
+//
+// THE FLICKER BUG, AND HOW IT WAS FOUND. The owner's own report: "quand je
+// reste enfoncé sur une touche pour la voir en surbrillance la pastille de
+// surbrillance clignote et flicker, elle devrait être visible en entier" -
+// holding a finger still on a key, the magnifier flickers instead of
+// standing solidly visible. Reproduced before anything was changed, per
+// this project's own standing rule (red before green applies to a
+// mechanism, not only to an assertion): driving a held-still contact
+// through the emulator and reading emu_push_count()/emu_push_x/y/w/h
+// directly for each tick (the settled framebuffer alone cannot show a
+// transient - decision 0003's own limit) showed the SAME 80x80 rectangle
+// pushed TWICE, back to back, on every one of 15 consecutive ticks with an
+// unchanged touch coordinate. The old body of this function erased the
+// whole bubble (a white fill) and redrew it from scratch as two SEPARATE
+// gfx_push() calls, unconditionally, on every tick loupe_update() ran -
+// there was no check for whether the box had moved or the hovered cell
+// had changed at all. Two real pushes a tick, the second painting over the
+// first's blank erase, is exactly a flicker at the tick rate. Both pushed
+// rectangles were a clean multiple of 8 wide, not truncated, so this is
+// NOT the gfx.c row-width push defect another agent is chasing elsewhere
+// in this tree (that one corrupts a single push's own pixels; this one
+// was two clean pushes happening when zero were needed) - a redraw-storm
+// bug local to this function, fixed here.
+//
+// THE FIX, in two parts. First, skip entirely when nothing the bubble
+// shows would change: same visibility, same box position (nbx - nby never
+// moves, only the horizontal centre tracks the finger) AND same cell
+// (s->hoverCell against s->loupeCell). Position alone is not enough: a
+// finger can hold its x steady while y drifts across a ROW boundary,
+// changing which cell numpad_hit() names without moving the loupe's own
+// box at all, and skipping the redraw in that case would leave a stale
+// digit on screen - so s->loupeCell is now tracked to catch exactly that.
+// Second, when the box DOES move while staying visible, erase and redraw
+// as ONE combined region pushed ONCE, not two separate pushes: old and
+// new always share the same y-band (nby is constant), so their union is a
+// single rectangle - fill it white, draw the new bubble on top, push the
+// union. Appearing and disappearing still need only their own single
+// rectangle each.
+static void loupe_update(tables_state_t *s, int rawX) {
     bool show = s->hoverCell >= 0;
-    int nbx = 0, nby = 0, nbw = LOUPE_BOX_W, nbh = LOUPE_BOX_H;
+    int nby = LOUPE_CY - LOUPE_BOX_H / 2, nbw = LOUPE_BOX_W, nbh = LOUPE_BOX_H;
+    int nbx = 0;
     if (show) {
-        int cx = rawLandX;
+        int cx = rawX;
         if (cx < LOUPE_CX_MIN) cx = LOUPE_CX_MIN;
         if (cx > LOUPE_CX_MAX) cx = LOUPE_CX_MAX;
         nbx = cx - LOUPE_BOX_W / 2;
-        nby = LOUPE_CY - LOUPE_BOX_H / 2;
     }
 
-    if (s->loupeVisible) {
-        gfx_fill_rect_land(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh, PX_WHITE);
-        gfx_push_land(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh);
-    }
-    if (show) {
+    bool unchanged = (show == s->loupeVisible) &&
+                      (!show || (nbx == s->loupeBx && nby == s->loupeBy && s->hoverCell == s->loupeCell));
+    if (unchanged) return;
+
+    if (s->loupeVisible && show) {
+        int ux0 = s->loupeBx < nbx ? s->loupeBx : nbx;
+        int uxEnd = (s->loupeBx + s->loupeBw) > (nbx + nbw) ? (s->loupeBx + s->loupeBw) : (nbx + nbw);
+        gfx_fill_rect(ux0, nby, uxEnd - ux0, nbh, PX_WHITE);
         draw_loupe_at(nbx, nby, nbw, nbh, s->hoverCell);
-        gfx_push_land(nbx, nby, nbw, nbh);
+        gfx_push_wh(ux0, nby, uxEnd - ux0, nbh);
+    } else if (s->loupeVisible) { // hiding
+        gfx_fill_rect(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh, PX_WHITE);
+        gfx_push_wh(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh);
+    } else { // appearing (show is true here, loupeVisible was false)
+        draw_loupe_at(nbx, nby, nbw, nbh, s->hoverCell);
+        gfx_push_wh(nbx, nby, nbw, nbh);
     }
     s->loupeVisible = show;
+    s->loupeCell = s->hoverCell;
     s->loupeBx = nbx; s->loupeBy = nby; s->loupeBw = nbw; s->loupeBh = nbh;
 }
 
 static void loupe_hide(tables_state_t *s) {
     if (!s->loupeVisible) return;
-    gfx_fill_rect_land(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh, PX_WHITE);
-    gfx_push_land(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh);
+    gfx_fill_rect(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh, PX_WHITE);
+    gfx_push_wh(s->loupeBx, s->loupeBy, s->loupeBw, s->loupeBh);
     s->loupeVisible = false;
 }
 
@@ -896,24 +1079,6 @@ static int question_slot_cx(tables_state_t *s) {
     return question_slot_x0(s) + Q2W / 2;
 }
 
-// A full-width rule directly under the question band - the owner's exact
-// mockup adds this, separating the band from everything below. Drawn from
-// INSIDE redraw_question(), not once at entry: RULE_Y sits inside QROW_H
-// (see its own comment), and redraw_question()'s own full-band erase runs
-// on every NEW question, which would otherwise wipe the rule the very
-// first time a question changed - found by looking at the "rest" preview
-// PNG, not by inspection (the rule was simply gone). Endpoints inset by
-// the stroke's own radius (+1 for AA coverage), not OX/OX+USABLE_W
-// exactly: a capsule's round cap extends a full radius PAST the endpoint
-// given, so drawing corner-to-corner would bleed a couple of pixels into
-// PANEL_BEZEL_MARGIN_PX on both ends - caught by the gate's "no ink inside
-// the bezel" rule and this app's own feature-tables.ts bezel check.
-static void draw_question_rule(void) {
-    int inset = (int)RULE_R + 1;
-    shapes_fill_capsule_aa_land((float)(OX + inset), (float)RULE_Y, RULE_R,
-                                 (float)(OX + USABLE_W - inset), (float)RULE_Y, RULE_R, PX_BLACK);
-}
-
 // The fixed part: base, multiply mark, factor, equals mark. Only redrawn
 // when a NEW question starts (start_new_question()), never per keystroke -
 // the blank at the right (redraw_answer(), below) owns its own separate
@@ -928,34 +1093,28 @@ static void draw_question_rule(void) {
 // once-per-question cost (never per keystroke, never per tick) so there is
 // no reason to chase the tighter bound.
 static void redraw_question(tables_state_t *s) {
-    gfx_fill_rect_land(OX, QROW_Y0, USABLE_W, QROW_H, PX_WHITE);
+    gfx_fill_rect(OX, QROW_Y0, USABLE_W, QROW_H, PX_WHITE);
     draw_number_lr(Q_BASE_CX, QROW_CY, QDIGIT_W, QDIGIT_H, QDIGIT_T, fact_base(s->factIndex), false, PX_BLACK);
     draw_icon_multiply(Q_MUL_CX, QROW_CY, 12.0f, PX_BLACK);
     draw_number_lr(question_factor_cx(s), QROW_CY, QDIGIT_W, QDIGIT_H, QDIGIT_T, fact_factor(s->factIndex), false, PX_BLACK);
     draw_icon_equals(question_eq_cx(s), QROW_CY, 12.0f, PX_BLACK);
-    draw_question_rule(); // RULE_Y sits inside QROW_H - see that function's own comment
-    gfx_push_land(OX, QROW_Y0, USABLE_W, QROW_H);
+    gfx_push_wh(OX, QROW_Y0, USABLE_W, QROW_H);
 }
 
 // tint: PX_WHITE at rest, a pale wash while a wrong attempt is showing -
-// see redraw_answer's own callers. Plain gfx_fill_rect_land, never the AA
+// see redraw_answer's own callers. Plain gfx_fill_rect, never the AA
 // primitives: those convert every colour to grey (aa_composite_land),
 // which is correct for ink but would silently discard an actual tint.
 static void redraw_answer(tables_state_t *s, uint16_t tint, bool showCorrectValue) {
     int x0 = question_slot_x0(s), cx = question_slot_cx(s);
-    // Tint only the visible slot (Q_SLOT_W, the same 76px reference every
-    // digit centres on below) - the extra Q_CURSOR_CLEARANCE strip past it
-    // is erase margin for the caret's own rightmost rest position, never
-    // part of the "answer box" a child reads, so it always stays plain
-    // white regardless of tint. Painting the whole ANSWER_BOX_W (92) with
-    // the tint made the wash's own visual centre sit 8px right of where
-    // every digit actually centres - measured on a resolved "6": wash
-    // spanned [x0, x0+91] (centre x0+45.5), the digit inked [x0+21,x0+54]
-    // (centre x0+37.5). That 8px bias is what "the highlight reveals it's
-    // not centred" was seeing - the underlying centring (on Q_SLOT_W) was
-    // always right, only the wash disagreed with it.
-    gfx_fill_rect_land(x0, ANSWER_BOX_Y0, Q_SLOT_W, ANSWER_BOX_H, tint);
-    gfx_fill_rect_land(x0 + Q_SLOT_W, ANSWER_BOX_Y0, ANSWER_BOX_W - Q_SLOT_W, ANSWER_BOX_H, PX_WHITE);
+    // Tint only the visible slot (Q_SLOT_W, the same reference every digit
+    // centres on below) - the extra Q_CURSOR_CLEARANCE strip past it is
+    // erase margin for the caret's own rightmost rest position, never part
+    // of the "answer box" a child reads, so it always stays plain white
+    // regardless of tint (see this file's own history for the bias bug
+    // painting the WHOLE ANSWER_BOX_W with the tint used to cause).
+    gfx_fill_rect(x0, ANSWER_BOX_Y0, Q_SLOT_W, ANSWER_BOX_H, tint);
+    gfx_fill_rect(x0 + Q_SLOT_W, ANSWER_BOX_Y0, ANSWER_BOX_W - Q_SLOT_W, ANSWER_BOX_H, PX_WHITE);
     if (showCorrectValue) {
         draw_number_lr(cx, QROW_CY, QDIGIT_W, QDIGIT_H, QDIGIT_T, fact_product(s->factIndex), false, PX_BLACK);
     } else if (s->answerLen > 0) {
@@ -965,9 +1124,9 @@ static void redraw_answer(tables_state_t *s, uint16_t tint, bool showCorrectValu
     }
     // The blank itself: the owner's own underline, always drawn under the
     // slot whether it currently holds a digit, two digits, or nothing yet.
-    shapes_fill_capsule_aa_land((float)x0, (float)Q_UNDERLINE_Y, Q_UNDERLINE_R,
-                                 (float)(x0 + Q_SLOT_W), (float)Q_UNDERLINE_Y, Q_UNDERLINE_R, PX_BLACK);
-    gfx_push_land(x0, ANSWER_BOX_Y0, ANSWER_BOX_W, ANSWER_BOX_H);
+    shapes_fill_capsule_aa((float)x0, (float)Q_UNDERLINE_Y, Q_UNDERLINE_R,
+                            (float)(x0 + Q_SLOT_W), (float)Q_UNDERLINE_Y, Q_UNDERLINE_R, PX_BLACK);
+    gfx_push_wh(x0, ANSWER_BOX_Y0, ANSWER_BOX_W, ANSWER_BOX_H);
     // This just repainted the whole box, cursor included - update_cursor()
     // redraws it fresh next tick against whatever s->answerLen is now.
     s->cursorDrawn = false;
@@ -1005,9 +1164,9 @@ static int cursor_x_for_len(tables_state_t *s) {
         // against x0 - the caret has to follow the digit's ACTUAL right
         // edge or it lands inside the digit's own ink. Measured (owner's
         // bug report, "the cursor doesn't move when I type some numbers"):
-        // a centred "4" inks [x0+21, x0+54]; the old x0+QDIGIT_W+6 (x0+42)
-        // sat squarely inside that span - the caret WAS moving, but into a
-        // spot the digit's own stroke covered, so nothing looked different.
+        // a centred digit sits squarely inside the span a naive fixed
+        // offset would have used - the caret WAS moving, but into a spot
+        // the digit's own stroke covered, so nothing looked different.
         int singleCx = x0 + Q2W / 2; // == question_slot_cx(s)
         return singleCx + QDIGIT_W / 2 + 6;
     }
@@ -1020,7 +1179,7 @@ static int cursor_x_for_len(tables_state_t *s) {
 // several pixels at the top and bottom, a real decision-0001-shaped bug
 // (correct in the emulator's framebuffer, would have gone stale on the
 // board). `rr` (radius, rounded up, plus one for AA falloff) is added on
-// every side, matching what shapes_fill_capsule_aa_land actually paints.
+// every side, matching what shapes_fill_capsule_aa actually paints.
 static void cursor_rect(int cx, int *bx, int *by, int *bw, int *bh) {
     int rr = (int)Q_CURSOR_R + 1;
     int half = Q_CURSOR_H / 2;
@@ -1037,60 +1196,76 @@ static void update_cursor(tables_state_t *s, uint32_t nowMs, bool active) {
 
     if (s->cursorDrawn && (!want || cx != s->cursorX)) {
         cursor_rect(s->cursorX, &bx, &by, &bw, &bh);
-        gfx_fill_rect_land(bx, by, bw, bh, PX_WHITE);
-        gfx_push_land(bx, by, bw, bh);
+        gfx_fill_rect(bx, by, bw, bh, PX_WHITE);
+        gfx_push_wh(bx, by, bw, bh);
         s->cursorDrawn = false;
     }
     if (want && !s->cursorDrawn) {
         float half = (float)Q_CURSOR_H / 2.0f;
-        shapes_fill_capsule_aa_land((float)cx, (float)QROW_CY - half, Q_CURSOR_R,
-                                     (float)cx, (float)QROW_CY + half, Q_CURSOR_R, PX_BLACK);
+        shapes_fill_capsule_aa((float)cx, (float)QROW_CY - half, Q_CURSOR_R,
+                                (float)cx, (float)QROW_CY + half, Q_CURSOR_R, PX_BLACK);
         cursor_rect(cx, &bx, &by, &bw, &bh);
-        gfx_push_land(bx, by, bw, bh);
+        gfx_push_wh(bx, by, bw, bh);
         s->cursorDrawn = true;
         s->cursorX = cx;
     }
 }
 
-/* ---- the counters box -------------------------------------------------- */
-
-// The border: four capsule strokes, one per edge, meeting at the corners -
-// still shapes.h's float brush, per decision 0009 (a straight rule is the
-// cheapest way to draw a straight rule, and the round caps where two edges
-// meet soften what would otherwise be four hard right angles into a
-// rounded-rect rather than a ruled box). Drawn ONCE in tables_enter(): the
-// box itself never changes, only the two rows inside it do, and those stay
-// inset from the border (BOX_INSET) so their own per-redraw white fill
-// never touches it.
-static void draw_counter_box(void) {
-    shapes_fill_capsule_aa_land((float)BOX_X0, (float)BOX_Y0, BOX_R,
-                                 (float)(BOX_X0 + BOX_W), (float)BOX_Y0, BOX_R, PX_BLACK);
-    shapes_fill_capsule_aa_land((float)BOX_X0, (float)(BOX_Y0 + BOX_H), BOX_R,
-                                 (float)(BOX_X0 + BOX_W), (float)(BOX_Y0 + BOX_H), BOX_R, PX_BLACK);
-    shapes_fill_capsule_aa_land((float)BOX_X0, (float)BOX_Y0, BOX_R,
-                                 (float)BOX_X0, (float)(BOX_Y0 + BOX_H), BOX_R, PX_BLACK);
-    shapes_fill_capsule_aa_land((float)(BOX_X0 + BOX_W), (float)BOX_Y0, BOX_R,
-                                 (float)(BOX_X0 + BOX_W), (float)(BOX_Y0 + BOX_H), BOX_R, PX_BLACK);
+/* ---- the counter pills --------------------------------------------------
+ *
+ * gfx_fill_pill: a flat-coloured, rounded-end "stadium" shape - a
+ * rectangle body with a semicircular cap at each end - filled the same
+ * generation-1, non-anti-aliased way timer.c's own progress ring is (see
+ * THE COUNTER PILLS above for why the AA float brush cannot carry a real
+ * colour). shapes_fill_half_width_table() gives the half-width of a circle
+ * of radius `h/2` at every row of an `h`-tall grid; row `i`'s span is the
+ * rectangle's own full width (w - h) plus twice that row's half-width,
+ * centred - at the middle row the half-width equals the radius and the
+ * span is the full pill width `w`; at the top/bottom rows it collapses
+ * toward the rectangle body alone, which is exactly the rounded-end
+ * silhouette. `h` is capped at 64 (this app's pills are 44px tall) so a
+ * fixed-size stack array covers it with no VLA.
+ */
+static void gfx_fill_pill(int x, int y, int w, int h, uint16_t color) {
+    if (h <= 0 || w <= 0) return;
+    int16_t halfW[64];
+    int hh = h > 64 ? 64 : h;
+    int r = h / 2;
+    shapes_fill_half_width_table(halfW, hh, (float)r);
+    for (int row = 0; row < hh; row++) {
+        int half = halfW[row];
+        int rowW = (w - 2 * r) + 2 * half;
+        if (rowW < 1) rowW = 1;
+        int rowX = x + (r - half);
+        gfx_fill_rect(rowX, y + row, rowW, 1, color);
+    }
 }
 
-static void redraw_counter_row(int row, int iconKind, int value, bool padTo2) {
-    int y = COUNTERS_Y0 + row * COUNTER_ROW_H;
-    gfx_fill_rect_land(COUNTER_ROW_X0, y, COUNTER_ROW_W, COUNTER_ROW_H, PX_WHITE);
-    int iconCx = COUNTER_ROW_X0 + COUNTER_ICON_CX_OFF, iconCy = y + COUNTER_ROW_H / 2;
+// One pill: the flat coloured fill, then the icon and the digit in black
+// ink on top (see THE COUNTER PILLS above for why that split is necessary
+// rather than a style choice). Pushes exactly the pill's own bounding
+// rectangle, which contains every pixel either draw step can touch - the
+// fill by construction (it never paints outside [x,x+w)x[y,y+h)), the icon
+// and digit because their own centres and reaches were chosen with margin
+// from the pill's rounded ends (see PILL_ICON_CX_OFF/PILL_NUM_CX_OFF's own
+// comment).
+static void redraw_pill(int x0, uint16_t color, int iconKind, int value) {
+    gfx_fill_pill(x0, PILL_Y0, PILL_W, PILL_H, color);
+    int iconCx = x0 + PILL_ICON_CX_OFF, iconCy = PILL_Y0 + PILL_H / 2;
     if (iconKind == 0) draw_icon_cross(iconCx, iconCy, COUNTER_CROSS_R, PX_BLACK);
     else draw_icon_check(iconCx, iconCy, COUNTER_ICON_R, PX_BLACK);
-    draw_number_lr(COUNTER_ROW_X0 + COUNTER_NUM_CX_OFF, iconCy, COUNTER_DIGIT_W, COUNTER_DIGIT_H,
-                    COUNTER_DIGIT_T, value, padTo2, PX_BLACK);
-    gfx_push_land(COUNTER_ROW_X0, y, COUNTER_ROW_W, COUNTER_ROW_H);
+    draw_number_lr(x0 + PILL_NUM_CX_OFF, iconCy, COUNTER_DIGIT_W, COUNTER_DIGIT_H,
+                    COUNTER_DIGIT_T, value, false, PX_BLACK);
+    gfx_push_wh(x0, PILL_Y0, PILL_W, PILL_H);
 }
 
 static void redraw_wrong(tables_state_t *s) {
     uint32_t v = s->wrongCount > 99 ? 99 : s->wrongCount;
-    redraw_counter_row(0, 0, (int)v, false);
+    redraw_pill(PILL_WRONG_X0, pill_color_wrong(), 0, (int)v);
 }
 static void redraw_correct(tables_state_t *s) {
     uint32_t v = s->correctCount > 99 ? 99 : s->correctCount;
-    redraw_counter_row(1, 1, (int)v, false);
+    redraw_pill(PILL_RIGHT_X0, pill_color_right(), 1, (int)v);
 }
 
 /* =========================================================================
@@ -1209,11 +1384,6 @@ static void action_submit(tables_state_t *s, uint32_t nowMs) {
     resolve_answer(s, nowMs, value == fact_product(s->factIndex));
 }
 
-static void panel_to_land(int px, int py, int *lx, int *ly) {
-    *lx = py;
-    *ly = PANEL_W - 1 - px;
-}
-
 /* =========================================================================
  * app_t callbacks
  * ========================================================================= */
@@ -1224,8 +1394,7 @@ static void tables_enter(void) {
     s->pendingCell = -1;
 
     draw_numpad_all();
-    draw_counter_box();
-    start_new_question(s); // also draws the rule (redraw_question() owns it - see draw_question_rule())
+    start_new_question(s);
     redraw_wrong(s);
     redraw_correct(s);
     printf("tables: entered\r\n");
@@ -1266,20 +1435,23 @@ static void tables_tick(const app_frame_t *f) {
             s->armed = true;
         }
         if (s->armed) {
-            int lx, ly;
-            panel_to_land(f->touchX, f->touchY, &lx, &ly);
+            // Panel coordinates directly - no rotation needed, this app is
+            // portrait, native, unrotated (see LAYOUT above). Landscape
+            // apps map through panel_to_land() first; this one does not
+            // need or have such a function.
+            int lx = f->touchX, ly = f->touchY;
             int cell = numpad_hit(lx, ly);
             if (s->hoverCell < 0) {
                 // The FIRST cell of this gesture. COMMIT_CONFIRM_MS exists to
                 // filter jitter against an already-shown cell (see THE
                 // GESTURE above); there is nothing shown yet to filter
                 // against, hoverCell is still -1, and nothing commits on a
-                // hover (only a release does, re-reading hoverCell at that
-                // point - "WHAT COMMITS IS WHAT THE LOUPE SHOWED", this
-                // file's header). So showing the first cell the instant the
-                // gesture arms is free: it cannot let a commit happen on a
-                // cell the loupe never displayed, because the loupe is about
-                // to display exactly this one.
+                // hover in the first place (a release does, re-reading
+                // hoverCell at that point - "WHAT COMMITS IS WHAT THE LOUPE
+                // SHOWED", this file's header). So showing the first cell
+                // the instant the gesture arms is free: it cannot let a
+                // commit happen on a cell the loupe never displayed,
+                // because the loupe is about to display exactly this one.
                 set_hover(s, cell);
                 s->pendingCell = cell;
                 s->pendingSinceMs = f->nowMs;
@@ -1320,6 +1492,6 @@ const app_t g_tablesApp = {
     .enter      = tables_enter,
     .tick       = tables_tick,
     .leave      = NULL,
-    .landscape  = true,
+    .landscape  = false,
     .wantsShake = false,
 };

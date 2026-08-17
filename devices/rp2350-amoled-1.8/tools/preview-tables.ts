@@ -14,13 +14,15 @@
  * because a hardcoded index silently points at the wrong app the moment
  * the table is reordered.
  *
- * Writes preview/tables-<shot>.png, LANDSCAPE (448x368).
+ * Writes preview/tables-<shot>.png, PORTRAIT (368x448) - this app's real
+ * orientation, native panel space, no rotation (see tables.c's own LAYOUT
+ * comment for the two-pass orientation correction that settled this).
  *
  * THE SHOTS, and why these seven:
  *
- *   rest         fresh entry - the question band, the rule under it, an
- *                empty answer blank with its caret, the boxed counters
- *                both at zero.
+ *   rest         fresh entry - the question band, an empty answer blank
+ *                with its caret, the two coloured counter pills both at
+ *                zero.
  *   mid-drag     a finger held on a numpad digit - the LOUPE, mid-gesture.
  *                A still PNG cannot show a gesture moving, but it can show
  *                the one frame that matters: the bubble open, showing the
@@ -50,31 +52,21 @@
  */
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { PANEL_W, PANEL_H, CELL_BACK, CELL_CHECK, cellCx, cellCy, digitCell, panelPoint } from "./tables-layout";
 
 const ROOT = join(import.meta.dir, "..");
 const WASM_PATH = join(ROOT, "emulator", "wasm", "dist", "emu.wasm");
 const PREVIEW_DIR = join(ROOT, "preview");
 
-const PANEL_W = 368, PANEL_H = 448;
-const LAND_W = PANEL_H, LAND_H = PANEL_W; // 448 x 368
 const FRAME_MS = 16;
 
-// tables.c's own layout constants, lifted (see this file's header on why
-// that is the right discipline rather than re-deriving them). Updated
-// 2026-08-17 for the owner's exact mockup - see tables.c's own LAYOUT
-// comment for the 80+80+188=348 arithmetic behind these numbers.
-const OX = 10, OY = 10;
-const QROW_H = 80, LOUPE_ZONE_H = 80;
-const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H;
-const CELL_W = 95, CELL_H = 47, NUMPAD_COLS = 3;
-const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
-const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
-const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
-const digitCell = (d: number) => (d === 0 ? CELL_ZERO : d - 1);
-
-function landToPanel(lx: number, ly: number): [number, number] {
-    return [PANEL_W - 1 - Math.round(ly), Math.round(lx)];
-}
+// tables.c's own layout constants, read from ./tables-layout.ts rather
+// than hand-copied here - see that file's own header for why (the four
+// consumers under this directory each carrying their own copy is exactly
+// how repro-touch-dropout-tables.ts and sweep-tables-grace.ts silently
+// hit-tested the WRONG numpad rectangle for a full redesign cycle once
+// already). cellCx/cellCy/digitCell/CELL_BACK/CELL_CHECK/panelPoint all
+// come from there now.
 
 async function loadDevice() {
     let memory!: WebAssembly.Memory;
@@ -119,13 +111,13 @@ async function loadDevice() {
         // (tables.c's ARM_MS/COMMIT_CONFIRM_MS), leaving it DOWN - for the
         // mid-drag shot, which wants the loupe caught open.
         pressAndHold(cell: number, ms: number) {
-            const [px, py] = landToPanel(cellCx(cell), cellCy(cell));
+            const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
             const end2 = t + ms;
             while (t < end2) { t += FRAME_MS; e.emu_touch(1, px, py); e.emu_tick(t); }
         },
         // A full press-hold-release on one cell.
         tapCell(cell: number) {
-            const [px, py] = landToPanel(cellCx(cell), cellCy(cell));
+            const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
             const end2 = t + 200;
             while (t < end2) { t += FRAME_MS; e.emu_touch(1, px, py); e.emu_tick(t); }
             e.emu_touch(0, 0, 0);
@@ -142,7 +134,7 @@ function typeDigits(dev: Device, digits: number[]) {
     for (const d of digits) dev.tapCell(digitCell(d));
 }
 
-// ---- PNG (landscape, 24-bit RGB), same machinery as preview-tiltball.ts --
+// ---- PNG (portrait, 24-bit RGB), same machinery as preview-tiltball.ts --
 function crc32Table(): Uint32Array {
     const t = new Uint32Array(256);
     for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
@@ -170,8 +162,11 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
     dv.setUint32(4 + body.length, crc32(body), false);
     return out;
 }
-function landPx(fb: Uint8Array, lx: number, ly: number): [number, number, number] {
-    const idx = (lx * PANEL_W + (PANEL_W - 1 - ly)) * 2;
+// Portrait, native, unrotated: (x, y) IS the framebuffer's own index - no
+// landscape->panel remapping needed any more (this app's landscape detour
+// used to route this through PANEL_W-1-ly/lx, see git history).
+function panelPx(fb: Uint8Array, x: number, y: number): [number, number, number] {
+    const idx = (y * PANEL_W + x) * 2;
     const v = (fb[idx]! << 8) | fb[idx + 1]!;
     return [
         Math.round((((v >> 11) & 0x1f) * 255) / 31),
@@ -180,13 +175,13 @@ function landPx(fb: Uint8Array, lx: number, ly: number): [number, number, number
     ];
 }
 async function write(shot: string, fb: Uint8Array) {
-    const raw = new Uint8Array((LAND_W * 3 + 1) * LAND_H);
-    for (let ly = 0; ly < LAND_H; ly++) {
-        const off = ly * (LAND_W * 3 + 1);
+    const raw = new Uint8Array((PANEL_W * 3 + 1) * PANEL_H);
+    for (let y = 0; y < PANEL_H; y++) {
+        const off = y * (PANEL_W * 3 + 1);
         raw[off] = 0;
-        for (let lx = 0; lx < LAND_W; lx++) {
-            const [r, g, b] = landPx(fb, lx, ly);
-            const o = off + 1 + lx * 3;
+        for (let x = 0; x < PANEL_W; x++) {
+            const [r, g, b] = panelPx(fb, x, y);
+            const o = off + 1 + x * 3;
             raw[o] = r; raw[o + 1] = g; raw[o + 2] = b;
         }
     }
@@ -197,7 +192,7 @@ async function write(shot: string, fb: Uint8Array) {
     new DataView(idat.buffer).setUint32(2 + z.length, adler32(raw), false);
     const ihdr = new Uint8Array(13);
     const dv = new DataView(ihdr.buffer);
-    dv.setUint32(0, LAND_W, false); dv.setUint32(4, LAND_H, false);
+    dv.setUint32(0, PANEL_W, false); dv.setUint32(4, PANEL_H, false);
     ihdr[8] = 8; ihdr[9] = 2;
     const sig = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))];
