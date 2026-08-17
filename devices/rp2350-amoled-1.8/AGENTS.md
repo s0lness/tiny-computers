@@ -325,6 +325,50 @@ command line you recognise. Two traps, both hit here already:
 If you cannot prove a process is yours, leave it and say so in your report.
 A stale process costs a note; the owner's open tabs do not come back.
 
+## Where a subagent's time actually goes, measured
+
+The owner asked why agents take so long. Answered on 2026-08-17 by parsing
+that day's own agent transcripts and pairing every `tool_use` with its
+`tool_result`, rather than by guessing. Across five agents, 344 minutes of
+wall clock:
+
+| | minutes | share |
+|---|---|---|
+| tool execution | 33 | 10% |
+| model generating tokens | 311 | **90%** |
+
+So an agent is not slow because of the commands it runs. It is slow because
+of how much it writes. Three specific costs came out of that day, in order
+of what they actually cost:
+
+**1. Waiting on a background task nobody will ever answer.** The worst agent
+ran 154 minutes and **48 of them were a single turn** spent waiting on a
+backgrounded build it had started and could not be notified about. Three
+separate agents did this on the same day. **Run builds, tests and previews
+in the foreground and read their output.** A build that takes ninety seconds
+costs ninety seconds; a build you wait on asynchronously can cost an hour and
+produce nothing.
+
+**2. Transcript length, which is paid on every single turn.** Model time
+tracks transcript size at roughly **0.02 minutes per kilobyte**, near enough
+linearly. The two most expensive agents that day carried 3MB transcripts, and
+both got there the same way: they were resumed over and over with new
+instructions, and every resume replays the whole history. An agent past about
+1.5MB is structurally an hour long whatever it is asked to do. **Finish it and
+start a fresh one** rather than handing a long-running agent its ninth task.
+
+**3. Concurrent `zig cc` fighting over a shared cache.** 240 retried
+invocations in one day, 104 of them in a single agent. See
+`emulator/wasm/build.ts`, whose comment diagnosed the contention correctly
+long before it was measured.
+
+What this does NOT say: that agents should write less carefully. The same
+day's most valuable single act was an agent spending a turn checking a
+relayed instruction against `emu_shim.c`, finding it self-contradictory, and
+refusing to build until it was resolved. That turn cost two minutes and saved
+a rewrite in the wrong orientation. Verification time and stall time look the
+same on a clock and are not the same thing.
+
 ## Running it
 
 Build (nothing is on PATH by default, so the env has to be set):
