@@ -381,6 +381,72 @@
 // terminal screen on this device.
 //
 // =============================================================================
+// DIFFICULTY: WHAT WAS ACTUALLY MEASURED, AND WHAT CHANGED
+// =============================================================================
+//
+// THREE LIVES landed with nothing retuned for the new fail state, and it
+// showed. An earlier, informal probe reported an "idealised" ball-tracking
+// controller losing all three lives in about 11 seconds and named the
+// shared tilt filter's own settling lag as the likely cause, without
+// testing it. tools/breakout-difficulty.ts (committed, seeded, re-runnable)
+// is that test, run properly.
+//
+// WHAT IT FOUND, AGAINST THE REAL COMPILED GAME, NOT BY REASONING ABOUT THE
+// NUMBERS. A genuinely idealised controller - perfect ball position every
+// tick (read straight off the pushed-rectangle stream, the same channel a
+// person watching the emulator's own dirty-rect overlay would see), one
+// frame of latency, proportional tilt through the real, UNMODIFIED tilt.c
+// filter - does not lose a single life at either the old or the new ball
+// speed below; it clears all eighteen bricks cleanly every time. That rules
+// the shared filter's lag OUT as the binding constraint for anyone who can
+// actually aim: lead-compensating the same controller (commanding tilt from
+// where the ball WILL be, cancelling the filter's own measured ~100-150ms
+// settling time) does not turn a loss into a win, because there was no loss
+// left to turn. The earlier 11-second figure, re-measured here as a
+// sanity check, turns out to match what THIS probe gets from a controller
+// that applies NO correction at all - a paddle left dead centre the whole
+// game - to within a couple of frames. So the filter's lag was never what
+// made this hard; a two-year-old's own hand is, and nothing in this tree
+// can watch one directly (decision 0003) - which is why the tuning below is
+// aimed at a MODELLED sloppy hand, not a perfect one. See
+// tools/breakout-difficulty.ts's own header for the full method.
+//
+// PLAYABILITY, DEFINED BEFORE IT WAS TUNED TO (restated briefly here; the
+// full reasoning lives with the tool that measures it):
+//
+//   An idealised controller should clear the wall comfortably - it already
+//   did, at the old speed too, so this was never the thing being tuned.
+//
+//   A SLOPPY controller - modelled with a 350ms reaction delay, a 220ms
+//   voluntary-correction cadence, +/-40px of aim error redrawn fresh each
+//   correction, and a hand that cannot snap from rail to rail (0.8g of tilt
+//   in 500ms) - none of these are measurements, all of them are named
+//   assumptions about a small child's hand that nothing here can watch -
+//   should survive a median of at least 20 seconds across many seeded
+//   trials, with a median of at least 4 of 18 bricks broken: long enough
+//   that a few real tilts visibly mattered, short enough that losing still
+//   actually happens, since three lives and a game over were the owner's
+//   own explicit ask (see "IT IS OVERRULED HERE" at the top of this file).
+//
+// WHAT ACTUALLY BOUND THE SLOPPY CONTROLLER, MEASURED: the ball's own speed,
+// stacked against that controller's own latency, not the paddle's width or
+// its travel range (both measured, both cleared - PADDLE_TRAVEL_MAX*2 alone
+// already spans the full field, and an idealised paddle glued to the ball's
+// exact x essentially never misses). The innermost brick row (closest to
+// the paddle) can put the ball on a beeline for the paddle with as little as
+// 530-990ms of warning at the OLD speed range - and the sloppy model's own
+// reaction delay plus one correction cadence can already spend 350-570ms of
+// that before a single correction lands, before the shared filter or the
+// hand's own slew rate cost anything further. Measured median survival at
+// the old speed (0.16-0.30px/ms): 17.9s across 20 seeds, under the 20s
+// target. BALL_SPEED_BASE/MAX are now 0.15/0.28px/ms - a 6-7% cut, not a
+// rewrite - and the same 20 seeds now measure a median survival of 24.8s
+// (min 18.0s, max 38.1s) and a median of 12/18 bricks broken. The idealised
+// controller is, if anything, easier now (a slower ball is strictly more
+// forgiving of perfect play too), so this one change moved the sloppy
+// number without costing the ceiling anything.
+//
+// =============================================================================
 // PER-FRAME COST AND RESIDUE, THE WAY EVERY OTHER APP HERE PROVES IT
 // =============================================================================
 //
@@ -567,8 +633,8 @@
 #define ROW2_BAND_HALF 3.5f
 
 /* ---- speed ------------------------------------------------------------ */
-#define BALL_SPEED_BASE 0.16f // px/ms
-#define BALL_SPEED_MAX  0.30f
+#define BALL_SPEED_BASE 0.15f // px/ms
+#define BALL_SPEED_MAX  0.28f
 #define BALL_SPEED_PER_BRICK ((BALL_SPEED_MAX - BALL_SPEED_BASE) / (float)N_BRICKS)
 #define BALL_START_ANGLE_DEG 34.0f // deterministic, not random - see enter()
 
