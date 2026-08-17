@@ -8,14 +8,15 @@
 //   bun run emulator/wasm/build.ts
 //   bun run emulator/wasm/tests/repro-breakout-residue.ts
 //
-// Breakout is in the default app table unconditionally, like level.c - see
-// feature-breakout.ts's header for why no build flag is needed.
+// Breakout is in the default app table unconditionally, the way every real
+// app on this device is now - see feature-breakout.ts's header for why no
+// build flag is needed.
 //
 // THREE PROPERTIES, all measured on the framebuffer and the real push
-// windows, never on an internal - the same convention
-// repro-level-bubble-residue.ts uses, and the same reason: anything that
-// fails here is something a person looking at the device could also have
-// seen.
+// windows, never on an internal - the same convention every repro-*-
+// residue.ts file in this directory uses, and the same reason: anything
+// that fails here is something a person looking at the device could also
+// have seen.
 //
 //   1. Every pixel that CHANGES during a tick lies inside a rectangle that
 //      tick pushed. A pixel written outside a pushed window is correct in

@@ -1,7 +1,7 @@
 /**
  * Renders breakout (firmware/apps/breakout.c) from the REAL compiled
  * firmware, headlessly, for the owner to judge by eye - same technique as
- * tools/preview-level.ts and every file under emulator/wasm/tests/: load
+ * tools/preview-tiltball.ts and every file under emulator/wasm/tests/: load
  * emu.wasm, drive it, read the framebuffer back. Nothing here reimplements
  * the app; the wall, the ball and the paddle in these PNGs are the same C
  * that runs on the board.
@@ -30,7 +30,7 @@
  * The run is driven with no touch and no tilt throughout (the paddle sits
  * at its default centred rest position the whole time) - this is
  * deliberately the "nobody is holding it" case breakout.c's own header
- * comment argues has to still be worth watching. tools/preview-level.ts's
+ * comment argues has to still be worth watching. tools/preview-tiltball.ts's
  * equivalent instead varies tilt, because that IS its app's whole input;
  * this app's most interesting unattended behaviour is watching the clock
  * alone clear and regrow a wall.
@@ -121,7 +121,7 @@ function wallInk(fb: Uint8Array): number {
     return n;
 }
 
-// ---- PNG (landscape, 24-bit RGB), same machinery as preview-level.ts -----
+// ---- PNG (landscape, 24-bit RGB), same machinery as preview-tiltball.ts --
 function crc32Table(): Uint32Array {
     const t = new Uint32Array(256);
     for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }

@@ -6,9 +6,9 @@ small plastic puck.
 **One binary, eleven apps, a menu.** This is a single-binary runtime
 (`firmware/runtime/`) holding an app table (`firmware/apps/`): a stopwatch
 (`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`, "draw"), a
-countdown timer (`timer.c`), Connect Four (`four.c`), a bubble level
-(`level.c`), a clock (`clock.c`), morpion (`morpion.c`, noughts and
-crosses), and four games merged together on 2026-08-15: a Chrome-style
+countdown timer (`timer.c`), Connect Four (`four.c`), a clock (`clock.c`),
+morpion (`morpion.c`, noughts and crosses), and four games merged together
+on 2026-08-15: a Chrome-style
 tap-to-jump runner with a flash-backed high score (`dino.c`), a
 finger-flick bowling lane (`bowling.c`), a tilt-a-ball dish (`tiltball.c`)
 and a tilt-controlled breakout (`breakout.c`). Switching apps is a
@@ -200,11 +200,7 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       release to drop, and a chosen cpu opponent plays
                       itself with the same gesture, tuned beatable and
                       measured against a naive player model, see section 9
-                      and tools/four-cpu-winrate.ts), level.c (a bubble
-                      level: tip the puck, a dot
-                      slides downhill, hold it flat and a ring closes round
-                      it - reads app_frame_t.tilt like any other app, see
-                      "Which way is down" below), clock.c (two faces, set by
+                      and tools/four-cpu-winrate.ts), clock.c (two faces, set by
                       holding BOOT and sliding a finger over the pair being
                       set; blank rather than wrong when the RTC's OS flag
                       says the battery emptied), morpion.c (noughts and
@@ -220,7 +216,8 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       (tilt-a-ball: a ball rolls in a round dish, roll it
                       into the hole and it falls in with a sound and a
                       ripple, then comes back - reads app_frame_t.tilt like
-                      the level, see "The tilt-a-ball" below),
+                      any other orientation-aware app, see "The tilt-a-ball"
+                      below),
                       breakout.c (a tilt-controlled paddle and a wall of
                       bricks on an arc, no floor to lose the ball off),
                       menu.c (the app picker: a grid of 112px
@@ -849,8 +846,9 @@ The five things worth knowing before you build on it:
   Do not add your own smoothing; if the feel is wrong, change the constants
   in `tilt.c` and say why. Ported here from the bubble level's own original
   filter (it was the first app that needed real orientation and measured
-  the trade before there was a shared signal to hand it to); `level.c`
-  carries none of it any more.
+  the trade before there was a shared signal to hand it to); the bubble
+  level itself is gone from the app table (the owner had it removed
+  outright, 2026-08-17), so this file is what is left of its work.
 - **Check `valid`.** It is false before the first reading and if the IMU
   goes quiet, and a level drawn from an invalid reading is a confident lie.
   `coasting` is a separate, narrower flag: true while the trust gate has
@@ -956,57 +954,30 @@ big reading, because a single spike is indistinguishable from a firm tap. It is
 suppressed while a finger is down, and has a cooldown so one shake cannot erase
 twice. Erase is an animated wipe in 16 bands, not an instant blank.
 
-## The bubble level (`firmware/apps/level.c`)
-
-Tip the puck and a dot slides downhill; hold it flat and a grey target ring
-turns black and closes around it. No text, no numbers, no degrees: the whole
-verdict is one shape closing. It is in `g_apps[]` like every other app,
-reading `app_frame_t.tilt` the same way any orientation-aware app does (see
-"Which way is down" above) - it carries no accelerometer code of its own.
-
-It was built and tested behind `APPS_INCLUDE_LEVEL` before the shared
-orientation signal (`firmware/runtime/tilt.h`) and the grid menu (decision
-0013) both landed; both blockers it was written against are gone now, so the
-flag was removed and the app joined the table unconditionally.
-
-Level is 3 degrees from flat, with 0.6 degrees of hysteresis and a 250ms
-dwell, because a two-year-old holding a puck cannot hold half a degree and a
-band she can never reach reads as broken rather than as strict. Drawing
-recomputes every pixel of a repainted rectangle from the model rather than
-erasing and redrawing, so residue is impossible by construction rather than
-by bookkeeping (`emulator/wasm/tests/repro-level-bubble-residue.ts` asserts
-an incrementally updated screen is bit-identical to a freshly entered one
-after motion). Measured cost: 3.3% of the panel on an average drawing frame,
-12.2% on the one frame the verdict changes, nothing at all when still.
-
-```powershell
-bun run emulator/wasm/build.ts
-bun run emulator/wasm/tests/feature-level.ts
-bun run emulator/wasm/tests/repro-level-bubble-residue.ts
-bun tools/preview-level.ts     # preview/level-*.png
-```
-
 ## The tilt-a-ball (`firmware/apps/tiltball.c`)
 
 A ball rolls in a round dish (no walls, no maze - decision 0009 forbids
-straight ones anyway); tip the puck and it rolls, the way tipping the level's
-dial makes its dot slide, except this one carries momentum: the dish is
-modelled as a shallow bowl (a damped, driven 2D spring, not a plain
-accelerate-and-coast), so however hard a small hand tips it, the ball always
-has a bounded home to return to rather than a direction it can be sent off
-in forever. Roll it into the one fixed hole and it slides in, shrinking, with
-a falling-pitch sound (`sound_synth_capture_sample`, `sound.h`'s
-`SOUND_ID_BALL_CAPTURE`) and a ripple expanding from the hole; a short pause,
-then it grows back at the dish's centre and play continues - there is no
-score, no level and no way to lose the ball for good. Like the level, it
-reads `app_frame_t.tilt` and carries no accelerometer code of its own.
+straight ones anyway); tip the puck and it rolls, the way tipping the
+now-removed bubble level's dial used to make its dot slide, except this one
+carries momentum: the dish is modelled as a shallow bowl (a damped, driven
+2D spring, not a plain accelerate-and-coast), so however hard a small hand
+tips it, the ball always has a bounded home to return to rather than a
+direction it can be sent off in forever. Roll it into the one fixed hole
+and it slides in, shrinking, with a falling-pitch sound
+(`sound_synth_capture_sample`, `sound.h`'s `SOUND_ID_BALL_CAPTURE`) and a
+ripple expanding from the hole; a short pause, then it grows back at the
+dish's centre and play continues - there is no score, no level (in the
+stage sense) and no way to lose the ball for good. It reads
+`app_frame_t.tilt` and carries no accelerometer code of its own, the same
+discipline the bubble level followed while it was still in the app table.
 
-The tilt-to-push scale is deliberately gentler than the level's own 15-degree
-"full scale" (see the file's own header comment): the level was tuned around
-an adult's careful, deliberate tip, and a two-year-old tips much harder than
-that, so this app wants a real, decisive tilt to reach the hole rather than
-reacting to every small wobble. Measured cost (a rolling ball every tick, a
-capture cycle including the ripple): worst frame 6.6% of the panel, average
+The tilt-to-push scale is deliberately gentler than the bubble level's own
+15-degree "full scale" was (see the file's own header comment, which still
+records the number the level app no longer draws): that scale was tuned
+around an adult's careful, deliberate tip, and a two-year-old tips much
+harder than that, so this app wants a real, decisive tilt to reach the hole
+rather than reacting to every small wobble. Measured cost (a rolling ball
+every tick, a capture cycle including the ripple): worst frame 6.6% of the panel, average
 pushing frame 2.5%, nothing at all when settled and still
 (`emulator/wasm/tests/repro-tiltball-residue.ts` prints these and asserts an
 incrementally-updated screen is bit-identical to a freshly-driven replay of

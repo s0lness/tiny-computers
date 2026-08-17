@@ -50,8 +50,9 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_H = PANEL_W;
 const LAND_W = PANEL_H;
-// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }
-const APP_CLOCK = 5;
+// g_apps[] = { chrono, sketch("draw"), timer, four, clock, morpion, ... }
+// (level removed from the table 2026-08-17)
+const APP_CLOCK = 4;
 const BEZEL = 10;     // gfx.h PANEL_BEZEL_MARGIN_PX
 
 let passCount = 0;

@@ -52,12 +52,13 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }.
-// The clock used to sit at its own private negative index (APP_INDEX_CLOCK)
-// because appending it to g_apps[] moved every menu column under the old
-// row-of-columns layout. Decision 0013's grid replaced that layout, so the
-// private slot is gone and the clock is just g_apps[5] like any other app.
-const APP_CLOCK = 5;
+// g_apps[] = { chrono, sketch("draw"), timer, four, clock, morpion, ... }
+// (level removed from the table 2026-08-17). The clock used to sit at its
+// own private negative index (APP_INDEX_CLOCK) because appending it to
+// g_apps[] moved every menu column under the old row-of-columns layout.
+// Decision 0013's grid replaced that layout, so the private slot is gone
+// and the clock is just g_apps[4] like any other app.
+const APP_CLOCK = 4;
 const APP_ARENA_BYTES = 65536; // app.h APP_ARENA_BYTES
 const BEZEL = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
 

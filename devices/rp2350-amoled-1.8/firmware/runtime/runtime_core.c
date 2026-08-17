@@ -34,7 +34,6 @@ extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 extern const app_t g_fourApp;
-extern const app_t g_levelApp;
 extern const app_t g_clockApp;
 extern const app_t g_morpionApp;
 extern const app_t g_dinoApp;
@@ -51,17 +50,18 @@ extern void menu_set_return_app(int index);
 
 /* SCREENSHOT FIXTURE, compiled out by default. See apps/stubapps.c for the
  * whole argument; in one line: the menu's layout has to be judged at six and
- * twelve apps, and this firmware now declares twelve real ones outright -
- * decision 0013's own ceiling - so a twelve-app capture no longer needs a
- * stub at all (see tools/preview-menu-grid.ts). The fixture stays wired for
- * whatever comes AFTER twelve (decision 0013's "past that something has to
- * be hidden"), which is why the guard below still exists rather than being
- * deleted outright. Declared with a bare extern, the same way g_menuApp
- * above is, because runtime_core.h's contract is that this file includes
- * nothing from apps/.
+ * twelve apps, and this firmware declares eleven real ones - one under
+ * decision 0013's own ceiling, since the owner had the bubble level removed
+ * (2026-08-17) - so a twelve-app capture needs one stub again (see
+ * tools/preview-menu-grid.ts). The fixture also stays wired for whatever
+ * comes AFTER twelve (decision 0013's "past that something has to be
+ * hidden"), which is why the guard below exists rather than being deleted
+ * outright. Declared with a bare extern, the same way g_menuApp above is,
+ * because runtime_core.h's contract is that this file includes nothing from
+ * apps/.
  *
- * MENU_STUB_APPS is the TOTAL app count wanted (12 real + the rest stubs),
- * so MENU_STUB_APPS=13 appends one. Spelled out one #if per entry rather
+ * MENU_STUB_APPS is the TOTAL app count wanted (11 real + the rest stubs),
+ * so MENU_STUB_APPS=12 appends one. Spelled out one #if per entry rather
  * than generated with a macro: a static initialiser list is exactly the
  * place where clever expansion stops being readable, and a few lines that
  * say what they do cost nothing. */
@@ -71,25 +71,26 @@ extern const app_t g_stubApps[];
 
 // Appended, not inserted: index 0 is what boots (app.h) and every emulator
 // test in emulator/wasm/tests/ addresses apps by their index in this array
-// (APP_DRAW = 1 and so on), so a new app goes on the end. The bubble level
-// (firmware/apps/level.c), the clock (firmware/apps/clock.c), morpion
-// (firmware/apps/morpion.c) and the four games merged 2026-08-15 (dino,
-// bowling, tiltball, breakout) all read app_frame_t.tilt or plain touch
-// like every other app, so there is no reason for any of them to sit
-// outside this table behind a flag or a private index - see AGENTS.md's
-// "The bubble level" section for the two blockers that used to justify
-// APPS_INCLUDE_LEVEL, and runtime_core.h's git history for APP_INDEX_CLOCK,
-// the clock's own now-removed equivalent (it existed only because appending
-// to this table used to move every menu column; decision 0013's grid
-// replaced that layout, so the reason is gone). Twelve real apps, with
-// tables.c appended here, IS decision 0013's own ceiling - the grid absorbs
-// it at 112x112 cells, the smallest the grid ever gets, without narrowing
-// any target further - see tools/gate/run.ts's app-count-ceiling rule,
-// which would fail loudly on a thirteenth.
+// (APP_DRAW = 1 and so on), so a new app goes on the end. The clock
+// (firmware/apps/clock.c), morpion (firmware/apps/morpion.c) and the four
+// games merged 2026-08-15 (dino, bowling, tiltball, breakout) all read
+// app_frame_t.tilt or plain touch like every other app, so there is no
+// reason for any of them to sit outside this table behind a flag or a
+// private index - see runtime_core.h's git history for APP_INDEX_CLOCK, the
+// clock's own now-removed equivalent (it existed only because appending to
+// this table used to move every menu column; decision 0013's grid replaced
+// that layout, so the reason is gone). The bubble level (firmware/apps/
+// level.c) used to sit here too, unconditionally like the rest, until the
+// owner had it removed outright on 2026-08-17 - not gated, gone. Eleven
+// real apps, with tables.c appended here, sits one under decision 0013's
+// own twelve-app ceiling - the grid absorbs up to twelve at 112x112 cells,
+// the smallest the grid ever gets, without narrowing any target further -
+// see tools/gate/run.ts's app-count-ceiling rule, which would fail loudly
+// on a thirteenth.
 const app_t *const g_apps[] = {
-    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp, &g_levelApp, &g_clockApp, &g_morpionApp,
+    &g_chronoApp, &g_sketchApp, &g_timerApp, &g_fourApp, &g_clockApp, &g_morpionApp,
     &g_dinoApp, &g_bowlingApp, &g_tiltballApp, &g_breakoutApp, &g_tablesApp,
-#if MENU_STUB_APPS > 12
+#if MENU_STUB_APPS > 11
     &g_stubApps[0],
 #endif
 };

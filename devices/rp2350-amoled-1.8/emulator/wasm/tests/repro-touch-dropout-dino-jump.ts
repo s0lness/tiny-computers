@@ -37,7 +37,7 @@ import { TOUCHSIM_DEFAULTS } from "../../src/constants";
 import { seededRng, seedFromName } from "../../../tools/gate/touch";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
-const APP_DINO = 7; // g_apps[] = { chrono, sketch, timer, four, level, clock, morpion, dino, ... }
+const APP_DINO = 6; // g_apps[] = { chrono, sketch, timer, four, clock, morpion, dino, ... } (level removed 2026-08-17)
 const TOUCH_X = 184, TOUCH_Y = 224; // dino.c reads only touchDown - any point does
 
 let passCount = 0;

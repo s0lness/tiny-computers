@@ -4,15 +4,16 @@
 //   bun run emulator/wasm/build.ts
 //   bun run emulator/wasm/tests/repro-tiltball-residue.ts
 //
-// Same shape as repro-level-bubble-residue.ts, this app's closest sibling
-// and the file this one was written from: a moving object over a static
-// background has left residue on this device four separate times
-// (AGENTS.md), and firmware/apps/tiltball.c is exactly that shape twice
-// over - a ball rolling on a dish that never moves, AND a capture ripple
-// expanding from a hole that never moves either.
+// Same shape as the now-removed bubble level's own
+// repro-level-bubble-residue.ts, the file this one was written from: a
+// moving object over a static background has left residue on this device
+// four separate times (AGENTS.md), and firmware/apps/tiltball.c is exactly
+// that shape twice over - a ball rolling on a dish that never moves, AND a
+// capture ripple expanding from a hole that never moves either.
 //
 // THREE PROPERTIES, all measured on the framebuffer and the real push
-// windows, never on an internal - identical to the level's own three:
+// windows, never on an internal - identical to the level's own three, back
+// when it had them:
 //
 //   1. Every pixel that CHANGES during a tick lies inside a rectangle that
 //      tick pushed.
@@ -59,8 +60,8 @@ const SETTLE_HOLD_MS = 3000;
 // The ripple's own bounding box at its widest (RIPPLE_MAX_R=46,
 // tiltball.c) is roughly 100x100=10000px (~6.1%); a moving ball's own
 // bounding box rarely exceeds a few thousand more. Set with headroom over
-// both, and confirmed against the measurement this file prints - same
-// convention as repro-level-bubble-residue.ts's own MAX_FRAME_PUSH_FRACTION.
+// both, and confirmed against the measurement this file prints - the same
+// convention the now-removed bubble level's own MAX_FRAME_PUSH_FRACTION used.
 const MAX_FRAME_PUSH_FRACTION = 0.14;
 
 let passCount = 0, failCount = 0;
@@ -160,8 +161,8 @@ function auditedTick(dev: Device, t: number, g: [number, number, number], acc: {
 async function enterBall(g?: [number, number, number]): Promise<{ dev: Device; t: number }> {
   const dev = await loadDevice();
   if (g) dev.tilt(g); // primes tilt.c's shared filter before the first tick,
-                       // same reason enterLevel() in repro-level-bubble-
-                       // residue.ts does this
+                       // the same reason the now-removed bubble level's own
+                       // enterLevel() did this
   dev.tick(0);
   dev.appSwitch(APP_TILTBALL);
   dev.tick(FRAME_MS);
@@ -214,8 +215,8 @@ async function main() {
   const acc = { violations: [] as Violation[], badRowLen: 0, maxPushPx: 0, totalPushPx: 0, frames: 0, framesWithPush: 0 };
 
   // ---- motion A: a slow orbit, the ball driven in a full circle at a
-  // moderate tilt - the same shape repro-level-bubble-residue.ts uses,
-  // adapted: this sweeps the ball across a wide arc of the dish, never
+  // moderate tilt - the same shape the now-removed bubble level's own test
+  // used, adapted: this sweeps the ball across a wide arc of the dish, never
   // toward the hole (phi excludes the neighbourhood of 90) so a capture
   // does not cut the orbit short. --------------------------------------
   {

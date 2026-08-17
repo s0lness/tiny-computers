@@ -23,10 +23,11 @@
 //      separately. Both have to survive, because a column and a row name a
 //      cell, and the centre lines are the harshest place to count since the
 //      thumb sits exactly on them;
-//   3. the two bands cross on the candidate, the candidate's own disc wears
-//      a deeper wash than the bands, and a GHOST of the mark that would be
-//      made sits in it - faint, so it can never be confused with a played
-//      one;
+//   3. the two bands cross on the candidate, and the candidate's own disc
+//      wears a deeper wash than the bands - and, since the owner asked for
+//      the hover preview gone (2026-08-17), NO mark is drawn in the
+//      candidate cell before release: the cross names the cell, but not
+//      what would land in it;
 //   4. releasing draws the mark ON, stroke by stroke (caught partway
 //      through, not only once finished), in the cell the thumb was over;
 //   5. WHOSE TURN IT IS, at the instant it changes, which is the only
@@ -72,8 +73,9 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }
-const APP_MORPION = 6;
+// g_apps[] = { chrono, sketch("draw"), timer, four, clock, morpion, ... }
+// (level removed from the table 2026-08-17)
+const APP_MORPION = 5;
 const APP_ARENA_BYTES = 65536; // app.h APP_ARENA_BYTES
 
 // ---- mirrors of morpion.c's own constants, DERIVED THE SAME WAY THE
@@ -93,7 +95,12 @@ const CELL = Math.floor((SAFE_H - 2 * SLAB_PAD) / GRID);   // 110
 const BOARD_W = GRID * CELL;
 const SLAB_W = BOARD_W + 2 * SLAB_PAD;
 const SLAB_H = SLAB_W;
-const SLAB_X1 = SAFE_X1, SLAB_X0 = SLAB_X1 - SLAB_W;
+const SAFE_W = SAFE_X1 - SAFE_X0;
+// Centred in the visible area (morpion.c's SLAB_X0/SLAB_X1, 2026-08-17): it
+// used to be flush right (SLAB_X1 = SAFE_X1), all the spare width spent on
+// the tray and none on the right - repro-morpion-grid-centred.ts pins the
+// symmetry itself, measured off pixels rather than this mirror.
+const SLAB_X0 = SAFE_X0 + Math.floor((SAFE_W - SLAB_W) / 2), SLAB_X1 = SLAB_X0 + SLAB_W;
 const SLAB_Y0 = SAFE_Y0 + Math.floor((SAFE_H - SLAB_H) / 2);
 const SLAB_Y1 = SLAB_Y0 + SLAB_H;
 const BOARD_X0 = SLAB_X0 + SLAB_PAD;
@@ -306,21 +313,24 @@ function channels(p: [number, number]): [number, number, number] {
     ];
 }
 
-// TWO STRENGTHS OF PREDICATE, and the distinction is load-bearing here in a
-// way it was not for Connect Four's flat discs.
+// TWO STRENGTHS OF PREDICATE, kept even though the app no longer draws a
+// ghost (removed 2026-08-17, the owner's call - see the header comment's
+// item 3). isGhostX/isGhostO used to detect the mark-at-part-alpha preview
+// that used to sit in the candidate cell; they are kept here as a NEGATIVE
+// check - proving no such faint ink appears anywhere any more, not just
+// that it is absent from where it used to be drawn - and because
+// isSolidX/isSolidO alone (used throughout the rest of this file) still
+// need the same "is there ink here" vs "has a mark been PLAYED here" split
+// against the win strike's own partial-alpha frames.
 //
 // A PLAYED mark is opaque ink: #FF0000 or #0000FF in its interior. The
-// GHOST of a mark that has not been made yet is the same ink at alpha 118
-// over the candidate cell's own deeper wash, which comes out at #FF3D42 -
-// unmistakably red ink to a child, and it has to be, but NOT a move. So
-// "is there ink here" and "has a mark been played here" are different
-// questions and get different functions. Without the split, every assertion
-// about what is on the board would have counted the proposal as a move.
-//
-// The thresholds are solved rather than guessed: the wash under the ghost
-// is (255,109,115) and the ghost's own core is (255,61,66), so g<85
-// separates them with 24 counts of margin on each side, and solid ink's
-// (255,0,0) clears g<40 by 40.
+// alpha-118 wash the ghost used to paint over the candidate cell's own
+// deeper wash came out at #FF3D42 - unmistakably red ink to a child, which
+// is exactly why it had to go: the owner did not want a preview of the mark
+// shown before release. The thresholds below are solved rather than
+// guessed: that wash was (255,109,115) and its core was (255,61,66), so
+// g<85 separates them from solid ink with 24 counts of margin on each side,
+// and solid ink's (255,0,0) clears g<40 by 40.
 function isGhostX(p: [number, number]): boolean {
     const [r, g, b] = channels(p);
     return r > 200 && g < 85 && b < 90;
@@ -399,8 +409,9 @@ function trayInk(fb: Uint8Array, player: number): number {
 
 // Solid ink ON THE SLAB, i.e. anywhere inside the board that is NOT inside
 // one of the nine discs. A mark reaches 36px out of a 39px disc and never
-// leaves it, and a ghost lives in a disc too, so the ONLY things this app
-// can put here are the win strike and the bloom that goes with it. That
+// leaves it (and the ghost, while it existed, never left one either), so
+// the ONLY things this app can put here are the win strike and the bloom
+// that goes with it. That
 // makes this one number the difference between "somebody won" and "nobody
 // did" - which, with no words available, is exactly the distinction the
 // screen has to carry (see the draw section).
@@ -423,8 +434,9 @@ function inkOnSlab(fb: Uint8Array, player: number): number {
 
 // The whole board as a string, so two frames can be compared for "are the
 // same marks in the same places" independently of anything animating over
-// them. A cell counts as played only on SOLID ink, so a ghost never reads
-// as a move.
+// them. A cell counts as played only on SOLID ink - there is no ghost any
+// more to worry about miscounting as a move, but census() still only ever
+// looks at solid ink, which is what makes it exact.
 function census(fb: Uint8Array): string {
     let s = "";
     for (let cell = 0; cell < GRID * GRID; cell++) {
@@ -644,7 +656,7 @@ async function main() {
     check("...and the ROW band either side of it, for every one of the nine - a column and a row name a cell",
         occl.worstRow >= 60, `the worst cell kept ${occl.worstRow} px of row band on its own centre line`);
 
-    // ---- 3. the cross, the hotter candidate cell, and the ghost ---------
+    // ---- 3. the cross, the hotter candidate cell, and NO ghost ----------
     console.log("\n-- a thumb goes down on the middle-left cell (3) --");
     dev.drainLog();
     const CAND = 3;
@@ -667,17 +679,21 @@ async function main() {
     check("where the two bands cross, the cell's own disc is a DEEPER wash than the bands themselves",
         near(candDisc, C_CELL_X), `${describe(candDisc)} (the bands are ${describe(C_BAND_X)})`);
 
+    // No preview of the mark: neither a faint (ghost) nor a solid one
+    // anywhere on the board while the thumb is down and nothing has been
+    // released yet. The candidate cell is still named - by the cross and
+    // its own deeper wash, checked above - just not with a drawn X or O.
     let ghostPx = 0;
     for (let ly = cyOf(CAND) - DISC_R; ly <= cyOf(CAND) + DISC_R; ly++) {
         for (let lx = cxOf(CAND) - DISC_R; lx <= cxOf(CAND) + DISC_R; lx++) {
             if (ghostFor(P_X)(landPx(fb, lx, ly))) ghostPx++;
         }
     }
-    let elsewhere = 0;
-    for (let cell = 0; cell < GRID * GRID; cell++) if (cell !== CAND) elsewhere += markInk(fb, cell, P_X) + markInk(fb, cell, P_O);
-    check("a GHOST of the mark that would be made sits in the candidate cell, faint rather than solid, and nowhere else",
-        ghostPx > 300 && markInk(fb, CAND, P_X) === 0 && elsewhere === 0,
-        `${ghostPx} px of faint ink, ${markInk(fb, CAND, P_X)} px of solid ink in it, ${elsewhere} px anywhere else`);
+    let anyInk = 0;
+    for (let cell = 0; cell < GRID * GRID; cell++) anyInk += markInk(fb, cell, P_X) + markInk(fb, cell, P_O);
+    check("no ghost (or any other preview) of the mark is drawn in the candidate cell before release - the owner asked for the hover gone",
+        ghostPx === 0 && anyInk === 0,
+        `${ghostPx} px of faint ink, ${anyInk} px of solid ink anywhere on the board`);
 
     // ---- the thumb slides ------------------------------------------------
     console.log("\n-- the thumb slides to cell 7 (a different row AND a different column) --");
@@ -819,7 +835,7 @@ async function main() {
     t = holdCell(dev, 8, t, 190);
     fb = dev.fbSnapshot();
     await writeScreenshot("morpion-candidate.png", fb,
-        "a game in progress with the bottom-right cell shown as the candidate: both bands lit head to foot and side to side, the cell's own disc a deeper wash, a faint O waiting in it, and O's mark in the tray");
+        "a game in progress with the bottom-right cell shown as the candidate: both bands lit head to foot and side to side, the cell's own disc a deeper wash, no preview of the mark itself, and O's mark waiting in the tray");
     const midCol = landPx(fb, cellCx(2), SLAB_Y0 + 8);
     const midRow = landPx(fb, SLAB_X0 + 8, cellCy(2));
     check("mid-game, the cross still reads over a board that already has marks on it",

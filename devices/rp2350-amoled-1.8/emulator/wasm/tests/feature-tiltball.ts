@@ -4,13 +4,15 @@
 //   bun run emulator/wasm/build.ts
 //   bun run emulator/wasm/tests/feature-tiltball.ts
 //
-// Same convention as feature-level.ts, this app's closest sibling: clean
-// input, a readable statement of intent, reading at the app boundary
+// The same convention every feature-*.ts file in this directory shares:
+// clean input, a readable statement of intent, reading at the app boundary
 // (emu_tilt-adjacent state read off the FRAMEBUFFER and off emu_sound_*,
-// never an internal). The repro-* half is repro-tiltball-residue.ts, which
-// drives motion and a full capture cycle and guards the residue/push-budget
-// class of defect this device keeps paying for. There is no touch-dropout
-// partner, deliberately: this app reads no touch at all, same as the level.
+// never an internal) - a convention the now-removed bubble level's own
+// feature-level.ts established first, before this app existed. The repro-*
+// half is repro-tiltball-residue.ts, which drives motion and a full capture
+// cycle and guards the residue/push-budget class of defect this device
+// keeps paying for. There is no touch-dropout partner, deliberately: this
+// app reads no touch at all.
 //
 // HOW TILT IS DRIVEN, and which panel-axis direction reaches this app's
 // hole. emu_sensor_vector() (emu_abi.h) injects a gravity vector in PANEL
@@ -25,9 +27,10 @@
 // rule feature-tilt.ts pins.
 //
 // WHAT THIS CANNOT CHECK: the device-to-panel mapping is a HYPOTHESIS until
-// the on-board axis ritual runs (tilt.h) - same caveat feature-level.ts
-// carries, inherited unchanged since this app has no orientation code of
-// its own to get wrong (see tiltball.c's own header comment).
+// the on-board axis ritual runs (tilt.h) - the same caveat every
+// orientation-aware app's test carries, inherited unchanged since this app
+// has no orientation code of its own to get wrong (see tiltball.c's own
+// header comment).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -111,10 +114,11 @@ function grayAt(fb: Uint8Array, lx: number, ly: number): number {
 }
 const isBlack = (g: number) => g <= 24;
 
-// The ball's centre, found the same way feature-level.ts finds the dot's:
-// erode the black mask so the rim's stroke cannot pull a plain centroid off
-// target. K is smaller here (the ball itself is smaller than the level's
-// dot), so the erosion box only ever survives inside the ball's own
+// The ball's centre, found by eroding the black mask so the rim's stroke
+// cannot pull a plain centroid off target (the same technique the
+// now-removed bubble level used for its own dot). K is smaller here (the
+// ball itself is smaller than the level's dot was), so the erosion box only
+// ever survives inside the ball's own
 // interior, never inside the dish rim's 7px-thick stroke.
 //
 // UNLIKE the level, this dish has a SECOND permanent black disc - the hole
@@ -157,8 +161,8 @@ function ballCentre(fb: Uint8Array): { x: number; y: number; n: number } {
   return n === 0 ? { x: NaN, y: NaN, n: 0 } : { x: sx / n, y: sy / n, n };
 }
 
-// Same panel-axis gravity helper as feature-level.ts/repro-level-bubble-
-// residue.ts, milli-g.
+// Panel-axis gravity helper, milli-g - the same shape the now-removed
+// bubble level's own tests used.
 function gravityFor(deg: number, phiDeg: number): [number, number, number] {
   const t = (deg * Math.PI) / 180, p = (phiDeg * Math.PI) / 180;
   return [1000 * Math.sin(t) * Math.cos(p), 1000 * Math.sin(t) * Math.sin(p), 1000 * Math.cos(t)];

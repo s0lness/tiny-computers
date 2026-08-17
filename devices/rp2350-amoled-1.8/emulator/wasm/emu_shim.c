@@ -862,9 +862,10 @@ int emu_device(void) {
     // unit tilt.h publishes: g, panel axes, +z into the glass, so flat on a
     // table is (0,0,1). No magnetometer is declared because this board has
     // none - the QMI8658 is a six-axis part, and no heading exists here to
-    // hand a host or an app (see firmware/runtime/tilt.h). The bubble level
-    // (firmware/apps/level.c) reads app_frame_t.tilt like every other app
-    // and draws from this same sensor, not a private one.
+    // hand a host or an app (see firmware/runtime/tilt.h). tiltball.c
+    // (firmware/apps/tiltball.c) reads app_frame_t.tilt like every other
+    // orientation-aware app and draws from this same sensor, not a private
+    // one.
     p = json_append(p, "\"sensors\":[");
     p = json_append(p, "{\"id\":\"shake\",\"kind\":\"event\"},");
     p = json_append(p, "{\"id\":\"gravity\",\"kind\":\"gravity\",\"label\":\"tilt\",\"unit\":\"g\"}");

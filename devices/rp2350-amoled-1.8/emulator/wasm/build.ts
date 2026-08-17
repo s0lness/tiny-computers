@@ -115,13 +115,12 @@ const SOURCES = [
   join(FIRMWARE, "apps", "menu.c"),
   join(FIRMWARE, "apps", "timer.c"),
   join(FIRMWARE, "apps", "four.c"),
-  join(FIRMWARE, "apps", "level.c"),
   join(FIRMWARE, "apps", "clock.c"),
   join(FIRMWARE, "apps", "morpion.c"),
   join(FIRMWARE, "apps", "dino.c"),
   join(FIRMWARE, "apps", "bowling.c"),
   join(FIRMWARE, "apps", "tiltball.c"),
-  // breakout: same shared tilt signal as level.c above, no touch, no
+  // breakout: same shared tilt signal as tiltball.c above, no touch, no
   // hardware of its own.
   join(FIRMWARE, "apps", "breakout.c"),
   join(FIRMWARE, "apps", "tables.c"),

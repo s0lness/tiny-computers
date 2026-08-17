@@ -138,8 +138,9 @@
  * from firmware/apps/level.c's own provisional filter (as of commit
  * c00db2f) - the bubble level was the first app that needed real
  * orientation and, lacking a published signal, measured this trade and
- * built the filter this file now owns instead. The level itself carries
- * none of this any more: it reads app_tilt_t like every other app.
+ * built the filter this file now owns instead. The bubble level itself is
+ * gone from the app table (the owner had it removed outright, 2026-08-17);
+ * this file is what is left of its work.
  *
  * THE COST, STATED RATHER THAN HIDDEN: the signal still lags a deliberate
  * tip near the resting corner (roughly TILT_FC_MIN_HZ's 177ms time

@@ -128,9 +128,6 @@ target_sources(main PRIVATE
     apps/chrono.c
     apps/timer.c
     apps/four.c
-    # The bubble level. Reads no hardware directly: like every other app it
-    # takes orientation through app_frame_t.tilt (runtime/tilt.c).
-    apps/level.c
     # The clock. In g_apps[] like every other app; it too reads orientation
     # through app_frame_t.tilt rather than owning any hardware.
     apps/clock.c
@@ -139,8 +136,9 @@ target_sources(main PRIVATE
     # Four games merged 2026-08-15, each appended in the order it arrived.
     # None owns any hardware: dino reads plain touch (tap to jump) plus the
     # storage service above for its high score; bowling reads a finger-flick
-    # drag/release; tiltball and breakout read app_frame_t.tilt like level,
-    # and tiltball also plays through sound.h on capture.
+    # drag/release; tiltball and breakout read app_frame_t.tilt like every
+    # other orientation-aware app, and tiltball also plays through sound.h
+    # on capture.
     apps/dino.c
     apps/bowling.c
     apps/tiltball.c

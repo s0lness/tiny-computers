@@ -57,7 +57,7 @@ const PANEL_W = 368;
 const PANEL_H = 448;
 const LAND_W = PANEL_H; // 448
 const LAND_H = PANEL_W; // 368
-const APP_BOWLING = 8; // g_apps[] = { chrono, sketch, timer, four, level, clock, morpion, dino, bowling, ... }
+const APP_BOWLING = 7; // g_apps[] = { chrono, sketch, timer, four, clock, morpion, dino, bowling, ... } (level removed 2026-08-17)
 
 // ---- mirrors of bowling.c's own constants, derived the same way rather
 // than hand-copied, so one edit to the bezel or the layout moves both.

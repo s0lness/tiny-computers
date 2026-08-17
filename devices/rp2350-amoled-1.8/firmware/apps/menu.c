@@ -57,7 +57,6 @@ extern const app_t g_chronoApp;
 extern const app_t g_sketchApp;
 extern const app_t g_timerApp;
 extern const app_t g_fourApp;
-extern const app_t g_levelApp;
 extern const app_t g_clockApp;
 extern const app_t g_morpionApp;
 extern const app_t g_dinoApp;
@@ -1533,48 +1532,6 @@ static void draw_icon_morpion(int ox, int oy, uint16_t color) {
 }
 
 /* ---------------------------------------------------------------------
- * The LEVEL icon: a ring, and a dot off-centre inside it.
- *
- * Drawn from the app's own screen rather than borrowed: level.c's whole
- * verdict is "a black dot somewhere on the dial, and a thin grey ring
- * waiting for it in the middle" when not level, closing solid around the
- * dot when it is (see that file's own header comment). The icon freezes
- * the more legible of those two moments - dot visibly off-centre inside its
- * ring - because "closed and centred" is a state a static picture cannot
- * distinguish from "a filled circle", while "off to one side, inside a
- * ring" reads as a level even to someone who has never held one: something
- * is meant to settle in the middle and has not yet.
- *
- * NOT Lucide, for the same reason as the four-counters and morpion icons
- * beside it: decision 0009's exception covers "the case where a matching
- * Lucide source exists to convert", and Lucide has nothing shaped like a
- * bubble level. Back to that document's original rule - the float brush -
- * with the family's own weight borrowed anyway: LUCIDE_STROKE_HALF for the
- * ring, so the four Lucide conversions, the two float-brush icons already
- * beside them, and this one all read as one set rather than four-plus-two.
- *
- * SIZED LIKE ITS NEIGHBOURS, not like the level's own dial. The app's real
- * rim is most of the 368px panel; shrunk to a 96px box it would be a ring
- * with almost no room for a dot inside it, and this icon is not trying to
- * be a miniature of the app's screen - chrono's icon is not a tiny
- * stopwatch face with a real second hand's proportions either. The ring
- * sits at the same centreline as chrono's own (CHRONO_R_MID), so all the
- * ring-shaped icons in this row read as the same size at a glance.
- */
-#define LEVEL_ICON_R      29.0f   // centreline; outer edge is +LUCIDE_STROKE_HALF, same as chrono's ring
-#define LEVEL_ICON_DOT_R  13.0f   // the bubble
-#define LEVEL_ICON_DOT_DX -7.0f   // off-centre toward the upper-left corner of the box -
-#define LEVEL_ICON_DOT_DY -7.0f   // comfortably inside the ring's own inner edge (24px), not touching it
-
-static void draw_icon_level(int ox, int oy, uint16_t color) {
-    float cx = (float)ox + 48.0f, cy = (float)oy + 48.0f;
-    shapes_fill_annulus_aa_land(cx, cy, LEVEL_ICON_R + LUCIDE_STROKE_HALF,
-                                 LEVEL_ICON_R - LUCIDE_STROKE_HALF, color);
-    shapes_fill_disc_aa_land(cx + LEVEL_ICON_DOT_DX, cy + LEVEL_ICON_DOT_DY,
-                              LEVEL_ICON_DOT_R, color);
-}
-
-/* ---------------------------------------------------------------------
  * The TABLES icon: a bowed multiply mark, "x" - the one glyph that reads
  * as multiplication without a word, at any age, and the app itself IS a
  * multiplication drill, so this is the rare icon that gets to be a literal
@@ -1582,7 +1539,7 @@ static void draw_icon_level(int ox, int oy, uint16_t color) {
  * clock-face are both deliberately generic instead - see those icons' own
  * comments for why).
  *
- * NOT Lucide, for the same reason as level/clock/four/morpion beside it:
+ * NOT Lucide, for the same reason as clock/four/morpion beside it:
  * Lucide's own "x" glyph is a UI close/dismiss mark, the wrong semantic to
  * borrow just because the silhouette happens to match - decision 0009's
  * exception covers converting a Lucide source that means the same thing,
@@ -1654,7 +1611,7 @@ static void draw_icon_tables(int ox, int oy, uint16_t color) {
  * short hands, wide angle, a visible gap of white between their tips and
  * the ring on every side.
  */
-#define CLOCK_ICON_R       29.0f  // centreline; outer edge is +LUCIDE_STROKE_HALF, same family size as chrono/level
+#define CLOCK_ICON_R       29.0f  // centreline; outer edge is +LUCIDE_STROKE_HALF, same family size as chrono's ring
 // Twelve o'clock, hour hand: straight up, 11px, short. Four o'clock, minute
 // hand: 13px, angled well clear of the hour hand rather than mirroring it -
 // a symmetric pair (tried first) reads as a checkmark, not as two hands of
@@ -1862,8 +1819,6 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
 #endif
     } else if (app == &g_fourApp) {
         draw_icon_four(ox, oy, color);
-    } else if (app == &g_levelApp) {
-        draw_icon_level(ox, oy, color);
     } else if (app == &g_clockApp) {
         draw_icon_clock(ox, oy, color);
     } else if (app == &g_morpionApp) {
@@ -1879,22 +1834,22 @@ static void draw_icon_for(const app_t *app, int ox, int oy, uint16_t color) {
     } else if (app == &g_tablesApp) {
         draw_icon_tables(ox, oy, color);
     }
-    // Every real app (chrono, sketch, timer, four, level, clock, morpion,
-    // dino, bowling, tiltball, breakout, tables - twelve, the same twelve
-    // runtime_core.c's g_apps[] declares, decision 0013's own ceiling) now
-    // has a branch above; there is no silent icon gap left for a real
-    // build.
+    // Every real app (chrono, sketch, timer, four, clock, morpion, dino,
+    // bowling, tiltball, breakout, tables - eleven, the same eleven
+    // runtime_core.c's g_apps[] declares, one under decision 0013's own
+    // twelve-app ceiling) now has a branch above; there is no silent icon
+    // gap left for a real build.
 #if MENU_STUB_APPS
-    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the twelfth
-    // in a stub build borrows one of the twelve real, icon-bearing apps,
-    // cycling, so a capture past the ceiling shows the LAYOUT under real
-    // ink rather than a grid of holes - a layout is judged against what
-    // will actually sit in it. Recursion is one level deep by
-    // construction: g_apps[k % 12] is always one of the twelve real apps,
-    // which take the branches above.
+    // SCREENSHOT FIXTURE ONLY (apps/stubapps.c). Any app past the eleventh
+    // in a stub build borrows one of the eleven real, icon-bearing apps,
+    // cycling, so a capture past that shows the LAYOUT under real ink
+    // rather than a grid of holes - a layout is judged against what will
+    // actually sit in it. Recursion is one level deep by construction:
+    // g_apps[k % 11] is always one of the eleven real apps, which take the
+    // branches above.
     else {
-        for (int k = 12; k < g_appCount; k++) {
-            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 12], ox, oy, color); return; }
+        for (int k = 11; k < g_appCount; k++) {
+            if (app == g_apps[k]) { draw_icon_for(g_apps[k % 11], ox, oy, color); return; }
         }
     }
 #endif

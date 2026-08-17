@@ -103,7 +103,7 @@
  *   "sensors": [ { "id": "shake", "kind": "event" },
  *                { "id": "gravity", "kind": "gravity", "label": "tilt",
  *                  "unit": "g" } ],
- *   "apps":    [ "chrono", "draw", "timer", "four", "level" ],
+ *   "apps":    [ "chrono", "draw", "timer", "four", "clock" ],
  *   "gestures": [
  *     { "id": "menu", "label": "menu",
  *       "how": "Hold BOOT, then also hold PWR. Keep both held until PWR "

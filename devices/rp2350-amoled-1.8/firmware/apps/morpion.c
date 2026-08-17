@@ -48,20 +48,39 @@
  * the crossing at all: one visible vertical arm names the column, one
  * visible horizontal arm names the row, and a column and a row name a cell.
  *
- * Two more cues sit on top of that, both of them redundant on purpose:
+ * One more cue sits on top of that, redundant with it on purpose:
  *
  *   - THE CANDIDATE CELL'S OWN DISC is filled in a DEEPER wash than the
  *     bands, so where the arms cross is visibly hotter than the arms. This
  *     one IS under the thumb most of the time. It is here for the moment
  *     the thumb slides off, and for the adult watching over her shoulder.
- *   - THE GHOST MARK: the mark that would be made, drawn in that cell in
- *     the player's colour at part alpha. Faint means "not yet", solid means
- *     "done" - the same filled/hollow vocabulary Connect Four uses for its
- *     waiting piece, and it says WHICH mark as well as which cell.
  *
  * A cell that is already taken is said with the same vocabulary rather than
- * a new one: the bands and the cell wash GREY, and no ghost is drawn.
- * Colour means it will happen, grey means it will not. No words involved.
+ * a new one: the bands and the cell wash GREY. Colour means it will happen,
+ * grey means it will not. No words involved.
+ *
+ * NO PREVIEW OF THE MARK ITSELF. An earlier version of this file also drew
+ * a GHOST here - the mark that would be made, in the candidate cell, at
+ * part alpha, faint means "not yet" and solid means "done". The owner asked
+ * for it gone outright ("supprimer le survol du X ou du rond"), so nothing
+ * previews WHAT will be drawn any more, only WHERE. This does not make a
+ * release any more ambiguous about which cell it plays: the cross and the
+ * cell's own deeper wash already name that cell twice over, by a column and
+ * a row that only cross in one place (see above), independently of any
+ * mark ever having been drawn there. What a release ALWAYS plays is not in
+ * question either - it is whichever mark is this player's, the same shape
+ * the tray and the whole board's own tint have already been saying since
+ * her turn began (section 3) - the ghost only ever repeated that a third
+ * time, in the one place a thumb usually already is. So a MIS-TAP, meaning
+ * a release that lands on a cell she did not mean, costs exactly what it
+ * always cost: one turn, spent on a mark neither preview would have stopped
+ * her from placing, since neither preview ever existed at the moment her
+ * thumb chose the wrong cell to begin with. What she loses is only the
+ * half-second of watching a faint mark sit there before deciding to let go
+ * - a confirmation beat, not a safety net - so a careful player now checks
+ * the cross is on the cell she wants and releases, rather than checking a
+ * ghost is the mark she wants and releases; the mark itself is not a choice
+ * either way, only the cell is.
  *
  * Tracking is immediate: any accepted touch sample repaints the affected
  * strips in the same tick that saw it, never on a later frame.
@@ -317,17 +336,29 @@
  * and 110px against a child's ~75px fingertip (AGENTS.md) is a genuinely
  * forgiving target, nearly twice Connect Four's 61px column.
  *
- * THE 82px LEFT OVER ACROSS THE WIDTH IS THE TRAY, and getting it for free
- * is the piece of luck this layout is built around. SAFE_W is 428 and the
+ * THE 82px LEFT OVER ACROSS THE WIDTH IS THE TRAY. SAFE_W is 428 and the
  * board is 346 wide, so there are 82px of paper that a square board cannot
- * use. Connect Four had to BUY the band its waiting piece sits in by
- * shortening its cells; here the band already exists, on the axis that had
- * spare room, and it sits beside the board rather than above it - which is
- * why the turn cue in this app is somewhere a thumb on the board never
- * reaches. The board is pushed flush to the right of the visible area and
- * the tray takes the whole remainder on the left, rather than the board
- * being centred with 41px of dead paper on each side: 41px holds nothing,
- * 82px holds a legible mark.
+ * use, and the tray - the mark whose turn it is, outside the board, where a
+ * thumb on it never reaches (section 3) - lives in exactly that leftover,
+ * on the axis that had spare room, beside the board rather than above it.
+ * Connect Four had to BUY the band its waiting piece sits in by shortening
+ * its cells; this one is free.
+ *
+ * THE BOARD ITSELF IS CENTRED IN THE VISIBLE AREA (SLAB_X0/SLAB_X1 below),
+ * not flush to either edge - the owner asked for it explicitly ("centrer
+ * la grille"), 2026-08-17. It used to be pushed flush right, with the tray
+ * taking the WHOLE 82px on the left and none on the right: SLAB_X0 was 92,
+ * a left margin of 82px against a right margin of 0. Centred, both margins
+ * are 41px (SLAB_X0 = 51), which is what the grid symmetry now guarantees
+ * rather than merely allows - see repro-morpion-grid-centred.ts, which
+ * measures the rendered slab's own left and right edges rather than
+ * trusting this arithmetic. The trade this makes plainly: the tray's own
+ * band, which used to be the full 82px, is now only as wide as the new
+ * 41px left margin - roughly half what it was - because centring the board
+ * necessarily spends half of that leftover on a matching strip of dead
+ * paper to the board's right that the flush-right layout did not have.
+ * TRAY_SCALE below still fits the mark inside that narrower band; if a
+ * mark ever grows past it, look there first.
  * ================================================================== */
 #define GRID 3
 
@@ -348,8 +379,8 @@
 #define SLAB_W   (BOARD_W + 2 * SLAB_PAD)           // 346
 #define SLAB_H   SLAB_W                             // square, by construction
 
-#define SLAB_X1  SAFE_X1                            // flush right; see the tray
-#define SLAB_X0  (SLAB_X1 - SLAB_W)                 // 92
+#define SLAB_X0  (SAFE_X0 + (SAFE_W - SLAB_W) / 2)  // 51, centred - see above
+#define SLAB_X1  (SLAB_X0 + SLAB_W)                 // 397
 #define SLAB_Y0  (SAFE_Y0 + (SAFE_H - SLAB_H) / 2)  // 11
 #define SLAB_Y1  (SLAB_Y0 + SLAB_H)                 // 357
 
@@ -392,20 +423,22 @@
 // as a curve, nowhere near a wobble (decision 0009: "not wobble for its own
 // sake").
 #define MARK_BOW 4.0f
-// The ghost, i.e. the mark that WOULD be made, in the candidate cell. Faint
-// enough to read as a proposal, solid enough to survive the deeper wash it
-// is drawn on.
-#define GHOST_ALPHA 118
 
 /* THE TRAY: the mark whose turn it is, outside the board on the left. */
 #define TRAY_X0    SAFE_X0
 #define TRAY_X1    SLAB_X0
-#define TRAY_CX    ((TRAY_X0 + TRAY_X1) / 2.0f)     // 51
+#define TRAY_CX    ((TRAY_X0 + TRAY_X1) / 2.0f)     // 30.5
 #define TRAY_CY    ((SLAB_Y0 + SLAB_Y1) / 2.0f)     // 184, level with the middle row
-// 0.72 puts the tray mark's outer reach at 26px inside a band whose
-// half-width is 41: big enough to be the turn cue at arm's length, clearly
-// smaller than a played mark so it never reads as a tenth cell.
-#define TRAY_SCALE 0.72f
+// Centring the grid (see THE 82px LEFT OVER above) halved the tray's own
+// band, from 82px wide (half-width 41) to 41px (half-width 20.5), so the
+// scale that used to be right no longer fits: 0.72 put the mark's outer
+// reach at 26px, which would now run 5.5px into the slab's own edge. 0.5
+// puts the reach at ~18px, clear of both TRAY_X0 (the bezel-safe edge) and
+// TRAY_X1 (the slab) by about 2.5px each - big enough to be the turn cue at
+// arm's length, clearly smaller than a played mark so it never reads as a
+// tenth cell, and inside the band it actually has now rather than the one
+// it used to have.
+#define TRAY_SCALE 0.5f
 
 /* THE BANDS. Stadiums (corner radius = half-width), 3px narrower than the
  * cell either side so a hair of slab still shows and the lit lane reads as
@@ -776,7 +809,8 @@ enum {
 // ink_path_soft() for why one exists at all. 96 is the widest a mark can
 // ever be (its ink reaches 36px from the cell centre, plus a pixel of
 // feather each side), and the only strokes that are ever translucent are
-// single marks: the ghost, and a mark fading under the wipe.
+// single marks fading under the wipe (the ghost used to be the other one,
+// before the owner had it removed - see section 1).
 #define COV_MAX 96
 
 typedef struct {
@@ -1581,15 +1615,11 @@ static void render_span(morpion_state_t *s, uint32_t nowMs, int lx0, int lx1) {
         }
     }
 
-    // 7. THE GHOST: the mark that would be made, in the candidate cell, at
-    //    part alpha. Faint means not yet, solid means done. Not drawn on a
-    //    cell that is already taken - the grey wash under it has already
-    //    said so, and a ghost on top of a played mark would be two marks in
-    //    one cell.
-    if (cue >= 0 && s->phase == PH_PLAY && s->board[cue] == P_NONE) {
-        draw_mark(s, s->turn, cell_cx(cue % GRID), cell_cy(cue / GRID), 1.0f, 1.0f,
-                  col_mark(s->turn), lx0, lx1, GHOST_ALPHA);
-    }
+    // 7. (removed) THE GHOST used to sit here: the mark that would be made,
+    //    in the candidate cell, at part alpha. The owner asked for it gone
+    //    outright (section 1) - nothing previews the mark any more, only
+    //    the cross and the candidate's own deeper wash (item 3/4 above) say
+    //    which cell a release would play.
 
     // 8. THE TRAY: whose turn it is, outside the board, where a thumb on
     //    the board never goes (section 3). Absent while a mark is being

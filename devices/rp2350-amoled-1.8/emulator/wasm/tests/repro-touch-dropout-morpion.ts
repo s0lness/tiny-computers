@@ -45,8 +45,9 @@ import { seededRng, seedFromName } from "../../../tools/gate/touch";
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
 const PANEL_H = 448;
-// g_apps[] = { chrono, sketch("draw"), timer, four, level, clock, morpion }
-const APP_MORPION = 6;
+// g_apps[] = { chrono, sketch("draw"), timer, four, clock, morpion, ... }
+// (level removed from the table 2026-08-17)
+const APP_MORPION = 5;
 
 // Mirrors of morpion.c's own constants, derived the way the firmware
 // derives them (the board is laid out against the VISIBLE canvas - gfx.h's

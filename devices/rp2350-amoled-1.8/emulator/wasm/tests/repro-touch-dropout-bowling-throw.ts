@@ -33,7 +33,7 @@ import { seededRng, seedFromName } from "../../../tools/gate/touch";
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
 const PANEL_H = 448;
-const APP_BOWLING = 8; // g_apps[] = { chrono, sketch, timer, four, level, clock, morpion, dino, bowling, ... }
+const APP_BOWLING = 7; // g_apps[] = { chrono, sketch, timer, four, clock, morpion, dino, bowling, ... } (level removed 2026-08-17)
 
 // Mirrors of bowling.c's own constants, derived the same way rather than
 // hand-copied - see feature-bowling.ts's own comment on why (a change to
