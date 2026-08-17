@@ -438,14 +438,9 @@ export function checkTestAppConstants(fileName: string, src: string, appNames: s
  * seededRng from tools/gate/touch.ts as TouchSim's fourth argument).
  */
 export const UNSEEDED_BASELINE: Record<string, string> = {
-  "feature-menu-hover.ts":
-    "predates the rule; its own excursion-rate section runs 240 gestures to average the noise out. Owed a seeded rng.",
   "repro-timer-coil.ts":
     "predates the rule and documents the unseeded draw in its own comment (line ~731). Owed a seeded rng.",
-  "repro-touch-dropout-four-drop.ts": "predates the rule. Owed a seeded rng.",
   "repro-touch-dropout-palette-open.ts": "predates the rule. Owed a seeded rng.",
-  "repro-touch-dropout-stroke-start.ts":
-    "predates the rule and is the documented flake: its header says stray coverage depends on unseeded Math.random(), and one check prints '(no simulated stray actually fired this run)'. Owed a seeded rng most of all.",
 };
 
 /** Counts `new TouchSim(...)` constructions with fewer than 4 arguments

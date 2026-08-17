@@ -34,6 +34,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TouchSim, type TouchReport } from "../../src/touchsim";
 import { TOUCHSIM_DEFAULTS } from "../../src/constants";
+import { seededRng, seedFromName } from "../../../tools/gate/touch";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
@@ -168,7 +169,7 @@ async function main() {
     let totalDropouts = 0;
     for (let i = 0; i < HOLD_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`four-hold-${i}`)));
         const col = i % COLS;
         const [pxx, pyy] = landToPanel(colX(col), THUMB_LY);
         sim.setPointer(true, pxx, pyy);
@@ -215,7 +216,7 @@ async function main() {
     let correct = 0, droppedEarly = 0, missed = 0, wrongColumn = 0;
     for (let i = 0; i < SLIDE_TRIALS; i++) {
         const dev = await freshDevice();
-        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+        const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`four-slide-${i}`)));
         const from = i % COLS;
         const to = (i * 3 + 4) % COLS;
         let t = dev.startMs;
@@ -258,7 +259,22 @@ async function main() {
         `${droppedEarly} dropped early, ${missed} never dropped, ${wrongColumn} landed elsewhere`);
     check("a slide finished by a genuine lift drops exactly one piece, in the column the thumb finished on",
         rate >= 90, `${rate.toFixed(0)}% over ${SLIDE_TRIALS} trials`);
-    check("no trial dropped a piece while the thumb was still sliding", droppedEarly === 0, `${droppedEarly} early drop(s)`);
+    // FOUND AND FIXED 2026-08-17, the exact lesson scenario A's own comment
+    // already tells: "demanding 100% ... duly failed on a run that had
+    // nothing wrong with it." This check asked for it anyway - the one
+    // remaining `=== 0` in a file whose every other check is a rate, for
+    // the SAME RELEASE_GRACE_MS Bernoulli process four.c's own header calls
+    // impossible to make zero. A slide-then-settle trial holds contact for
+    // ~1220ms (SLIDE_MS+SETTLE_MS), about 40% of scenario A's 3000ms hold,
+    // so by that same table an early drop is rarer per trial than a missed
+    // hold but not absent: measured directly (150 independently seeded runs
+    // of this exact scenario, same rng this file now uses), 146 saw zero
+    // early drops, 4 saw exactly one, none saw two or more. <=1 covers every
+    // seed measured, including the two real unseeded flakes that started
+    // this investigation (both exactly one), while a state machine that
+    // actually released mid-slide as a matter of course would blow past it
+    // immediately (that failure mode is every trial, not one in dozens).
+    check("no trial dropped a piece while the thumb was still sliding", droppedEarly <= 1, `${droppedEarly} early drop(s)`);
 
     // ---- scenario D: DRUMMING ON THE GLASS WHILE THE PUCK CHANGES HANDS
     // must not place a second piece.
@@ -281,7 +297,7 @@ async function main() {
     // check makes a real gesture afterwards and requires it to work.
     console.log("");
     const devD = await freshDevice();
-    const simD = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H);
+    const simD = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName("four-drum")));
     let tD = devD.startMs;
     const [dx, dy] = landToPanel(colX(2), THUMB_LY);
     simD.setPointer(true, dx, dy);
@@ -381,7 +397,7 @@ async function main() {
     // honestly be made at.
     const strayProfile = { ...TOUCHSIM_DEFAULTS, dropoutsEnabled: false, straysEnabled: true };
     const devC2 = await freshDevice();
-    const simC2 = new TouchSim(strayProfile, PANEL_W, PANEL_H);
+    const simC2 = new TouchSim(strayProfile, PANEL_W, PANEL_H, seededRng(seedFromName("four-strays")));
     simC2.setPointer(false, 0, 0);
     let strayDrops = 0;
     let tC2 = devC2.startMs;
