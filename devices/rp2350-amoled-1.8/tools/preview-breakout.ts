@@ -121,12 +121,18 @@ async function loadDevice() {
     let heldTilt: [number, number, number] | null = null;
     return {
         now(): number { return t; },
+        // v is PANEL-space g; emu_sensor_vector() wants DEVICE axes (the
+        // same as a real IMU sample), so this undoes
+        // firmware/runtime/tilt.c's device_to_panel() on the way in
+        // ((dx,dy,dz) -> (dy,dx,-dz), commit b8c06d2, currently its own
+        // inverse) - the same fix feature-breakout.ts's own tilt() applies,
+        // for the same reason.
         setTilt(v: [number, number, number] | null) { heldTilt = v; },
         touch(down: boolean, x: number, y: number) { e.emu_touch(down ? 1 : 0, x, y); },
         step(ms: number) {
             const end2 = t + ms;
             while (t < end2) {
-                if (heldTilt) e.emu_sensor_vector(1, heldTilt[0], heldTilt[1], heldTilt[2]);
+                if (heldTilt) e.emu_sensor_vector(1, heldTilt[1], heldTilt[0], -heldTilt[2]);
                 t += FRAME_MS;
                 e.emu_tick(t);
             }

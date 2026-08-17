@@ -107,7 +107,18 @@ async function loadDevice() {
   return {
     exports: e,
     tick(nowMs: number) { e.emu_tick(nowMs); },
-    tilt(x: number, y: number, z: number) { e.emu_sensor_vector(1, x, y, z); }, // g, panel axes
+    // The argument here is PANEL-space g (every call site below reads that
+    // way), but emu_sensor_vector() hands it straight to the same
+    // tilt_submit_device_g() a real IMU sample goes through - DEVICE axes,
+    // not panel ones. firmware/runtime/tilt.c's device_to_panel() is now a
+    // real, measured mapping ((dx,dy,dz) -> (dy,dx,-dz), commit b8c06d2),
+    // not the identity, so this has to undo it on the way in - same
+    // formula feature-tilt.ts's gravity() and feature-clock.ts's own
+    // gravity() already use, repeated here rather than duplicated
+    // differently. It is currently its own inverse (swap X/Y, negate Z), so
+    // "undo" and "apply" are the same call; if device_to_panel() ever stops
+    // being self-inverse this has to become a real inverse instead.
+    tilt(x: number, y: number, z: number) { e.emu_sensor_vector(1, y, x, -z); },
     touch(down: boolean, x: number, y: number) { e.emu_touch(down ? 1 : 0, x, y); }, // panel coords
     appSwitch(i: number) { e.emu_app_switch(i); },
     appCurrent(): number { return e.emu_app_current(); },

@@ -974,46 +974,91 @@ static void ball_wall_bounce(breakout_state_t *s) {
     if (s->ballY - BALL_R < PLAY_T) { s->ballY = PLAY_T + BALL_R; if (s->ballVY < 0.0f) s->ballVY = -s->ballVY; }
 }
 
+// THE COLLISION ZONE NOW MATCHES THE DRAWING, EXACTLY, NOT A STADIUM
+// STAND-IN. This used to be a flat spine (half-width PADDLE_HALF_W) with a
+// uniform rr=BALL_R+PADDLE_THICK_HALF+1 capsule around it - a shape nobody
+// ever drew, chosen because it was cheap. Measured against the REAL drawn
+// shape (paint_rect's own band-around-an-arc intersected with a bounding
+// lens, "THE WALL IS THREE NESTED ARCS" section above), that capsule was
+// not a close approximation, it was a materially BIGGER shape in every
+// direction sampled: at the paddle's own centreline it reached +/-62px
+// against the drawn shape's +/-50px, and directly above the paddle it kept
+// catching a ball up to 16px above the ink with nothing there at all (a
+// two-year-old watching that would see the ball vanish into visibly empty
+// paper, not "miss the paddle" - decision 0010's own standard: a picture
+// has to be judged, and this one was never looked at against its hitbox).
+// Total measured area: the old capsule was 3792px^2 against the drawn
+// shape's own 1312px^2 - 2483px^2 of it was pure phantom, catching in air.
+//
+// The fix: erode paint_rect's own two signed distances (dBand, distLens -
+// see paddle_band_sdf/paddle_lens_sdf below, literally the same formulas,
+// not an approximation of them) by BALL_R, and use the tighter of the two
+// as both the hit test and the true surface normal to bounce off of -
+// exactly the "whichever ink wins" logic paint_rect already uses for
+// DRAWING, read here as "whichever constraint is binding" for PHYSICS
+// instead. A ball's own disc (radius BALL_R) now only bounces where its
+// edge would visibly touch drawn ink, never in the white paper next to it.
+typedef struct { float d, nx, ny; } paddle_sdf_t;
+
+// The band's own signed distance and outward unit normal, exactly
+// paint_rect's `distArc`/`dBand` (dx, dy relative to the paddle's centre,
+// paddleX/PADDLE_Y) - see that function's own comment for the geometry.
+// The normal is the gradient of |distArc|: radially out from the big
+// off-screen arc's own centre on the outer edge of the band (distArc>0),
+// radially IN toward it on the inner edge (distArc<0) - the band has two
+// faces and each one's own outward direction is different.
+static paddle_sdf_t paddle_band_sdf(float dx, float dy) {
+    float dyArc = dy - PADDLE_ARC_R;
+    float rArc = sqrtf(dx * dx + dyArc * dyArc);
+    if (rArc < 0.0001f) rArc = 0.0001f;
+    float distArc = rArc - PADDLE_ARC_R;
+    float sign = distArc < 0.0f ? -1.0f : 1.0f;
+    paddle_sdf_t r = { fabsf(distArc) - PADDLE_THICK_HALF, sign * dx / rArc, sign * dyArc / rArc };
+    return r;
+}
+
+// The bounding lens disc's own signed distance and outward normal, exactly
+// paint_rect's `distLens` - a plain distance-to-a-circle gradient, radially
+// out from the paddle's own centre.
+static paddle_sdf_t paddle_lens_sdf(float dx, float dy) {
+    float rLens = sqrtf(dx * dx + dy * dy);
+    if (rLens < 0.0001f) rLens = 0.0001f;
+    paddle_sdf_t r = { rLens - PADDLE_LENS_R, dx / rLens, dy / rLens };
+    return r;
+}
+
 // The paddle is a solid obstacle from either face (it now sits inside the
 // open field rather than guarding a floor - see header comment), so this
-// checks distance to its own spine and bounces off whichever side the ball
-// is approaching from, rather than assuming "from above" the way a classic
-// breakout paddle can.
+// bounces off whichever side of the drawn shape the ball is approaching
+// from, rather than assuming "from above" the way a classic breakout
+// paddle can.
 static void ball_paddle_bounce(breakout_state_t *s) {
-    float dx = s->ballX - s->paddleX;
-    float cdx = dx;
-    if (cdx < -PADDLE_HALF_W) cdx = -PADDLE_HALF_W; else if (cdx > PADDLE_HALF_W) cdx = PADDLE_HALF_W;
-    float nearX = s->paddleX + cdx;
-    float ddx = s->ballX - nearX, ddy = s->ballY - PADDLE_Y;
-    float rr = BALL_R + PADDLE_THICK_HALF + 1.0f;
-    float d2 = ddx * ddx + ddy * ddy;
-    if (d2 >= rr * rr) return;
+    float dx = s->ballX - s->paddleX, dy = s->ballY - PADDLE_Y;
+    paddle_sdf_t band = paddle_band_sdf(dx, dy);
+    paddle_sdf_t lens = paddle_lens_sdf(dx, dy);
+    // Whichever constraint is BINDING (the larger, i.e. closer to or past
+    // its own surface) is the real one here - paint_rect's own
+    // `dBand > distLens ? dBand : distLens`, read as physics instead of
+    // ink. Its gradient is the true outward normal at this point.
+    paddle_sdf_t active = band.d > lens.d ? band : lens;
+    if (active.d > BALL_R) return; // clear of the drawn shape, ball radius included
 
-    bool fromAbove = ddy <= 0.0f;
-    // Only bounce a ball moving TOWARD this face: stops a ball that is
+    // Only bounce a ball moving TOWARD this surface: stops a ball that is
     // already leaving from re-triggering on the next fixed step while it is
-    // still inside the hit radius.
-    if (fromAbove ? (s->ballVY <= 0.0f) : (s->ballVY >= 0.0f)) return;
+    // still inside BALL_R of it.
+    float dot = s->ballVX * active.nx + s->ballVY * active.ny;
+    if (dot >= 0.0f) return;
 
-    float nx, ny;
-    if (dx > -PADDLE_HALF_W && dx < PADDLE_HALF_W) {
-        // Within the paddle's own flat middle: the nearest point is
-        // straight up or down, so the normal is simply vertical - cheaper
-        // and more stable than normalising a near-zero (ddx,ddy) here.
-        nx = 0.0f; ny = fromAbove ? -1.0f : 1.0f;
-    } else {
-        float d = sqrtf(d2);
-        if (d < 0.0001f) d = 0.0001f;
-        nx = ddx / d; ny = ddy / d;
-    }
+    // Push the ball out to exactly BALL_R from the (now binding) surface,
+    // along its own normal - same idea as the old capsule's fixed push
+    // distance, just measured from the real surface instead of a
+    // spine-segment stand-in.
+    float push = BALL_R - active.d + 0.5f;
+    s->ballX += active.nx * push;
+    s->ballY += active.ny * push;
 
-    float pushDist = rr + 0.5f;
-    s->ballX = nearX + nx * pushDist;
-    s->ballY = PADDLE_Y + ny * pushDist;
-
-    float dot = s->ballVX * nx + s->ballVY * ny;
-    s->ballVX -= 2.0f * dot * nx;
-    s->ballVY -= 2.0f * dot * ny;
+    s->ballVX -= 2.0f * dot * active.nx;
+    s->ballVY -= 2.0f * dot * active.ny;
 
     float off = dx / PADDLE_HALF_W;
     if (off < -1.0f) off = -1.0f; else if (off > 1.0f) off = 1.0f;
