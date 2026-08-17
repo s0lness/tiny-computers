@@ -145,9 +145,15 @@ async function loadDevice() {
         boot(down: boolean) { exp.emu_button(0, down ? 1 : 0); },
         // Sets the pose and holds it - emu_tick() resubmits the last value
         // every tick (emu_shim.c), exactly like a hand holding the puck
-        // still. Panel-space g, per tilt.h's own convention (AGENTS.md's
-        // axis ritual): flat, screen up, is (0,0,1); top edge up is (0,1,0).
-        gravity(x: number, y: number, z: number) { exp.emu_sensor_vector(1, x, y, z); },
+        // still. The argument is Panel-space g, per tilt.h's own convention
+        // (AGENTS.md's axis ritual): flat, screen up, is (0,0,1); top edge
+        // up is (0,1,0). emu_sensor_vector() itself wants DEVICE axes (the
+        // same as a real IMU sample), so this undoes
+        // firmware/runtime/tilt.c's device_to_panel() on the way in - see
+        // feature-tilt.ts's gravity() for the fuller comment on why this
+        // repeats that formula (currently its own inverse) rather than a
+        // different one.
+        gravity(x: number, y: number, z: number) { exp.emu_sensor_vector(1, y, x, -z); },
         touch(down: boolean, x: number, y: number) { exp.emu_touch(down ? 1 : 0, Math.round(x), Math.round(y)); },
 
         // Snapshots before, ticks, then diffs the framebuffer against the

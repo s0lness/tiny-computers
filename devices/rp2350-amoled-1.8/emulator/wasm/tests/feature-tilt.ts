@@ -109,8 +109,20 @@ async function loadDevice() {
   return {
     // Sets the pose and holds it, exactly like a hand holding the puck
     // still: the value stands until it is set again (emu_abi.h).
+    //
+    // The argument here is the intended PANEL pose (every call site and
+    // assertion below reads that way: "stand it upright, top edge up" is
+    // (0,1,0)), but emu_sensor_vector() hands its argument to the same
+    // tilt_submit_device_g() a real IMU sample goes through, DEVICE axes,
+    // not panel ones - so now that firmware/runtime/tilt.c's
+    // device_to_panel() is a real, measured mapping rather than the
+    // identity, this has to undo it on the way in. device_to_panel() is
+    // currently its own inverse (swap X/Y, negate Z, a 180-degree turn), so
+    // this repeats that exact formula rather than duplicating a different
+    // one - if device_to_panel() is ever corrected to a mapping that is
+    // NOT its own inverse, this line has to become a real inverse instead.
     gravity(x: number, y: number, z: number) {
-      exp.emu_sensor_vector(1, x, y, z); // index 1 = "gravity" in emu_device()'s sensors array
+      exp.emu_sensor_vector(1, y, x, -z); // index 1 = "gravity" in emu_device()'s sensors array
     },
     tick(nowMs: number) {
       exp.emu_tick(nowMs);

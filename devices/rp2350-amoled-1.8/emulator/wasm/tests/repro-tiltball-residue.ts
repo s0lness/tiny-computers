@@ -93,7 +93,12 @@ async function loadDevice() {
   return {
     e,
     tick(nowMs: number) { e.emu_tick(nowMs); },
-    tilt(g: [number, number, number]) { e.emu_sensor_vector(1, g[0] / 1000, g[1] / 1000, g[2] / 1000); },
+    // g is milli-g in PANEL axes (this file's own gravityFor()); undo
+    // firmware/runtime/tilt.c's device_to_panel() on the way in, same as
+    // feature-tiltball.ts's tilt() - see that file's comment for why this
+    // repeats device_to_panel()'s own formula (currently self-inverse)
+    // rather than a separate one.
+    tilt(g: [number, number, number]) { e.emu_sensor_vector(1, g[1] / 1000, g[0] / 1000, -g[2] / 1000); },
     appSwitch(i: number) { e.emu_app_switch(i); },
     appCurrent(): number { return e.emu_app_current(); },
     fb(): Uint8Array { return new Uint8Array(memory.buffer, e.emu_fb(), PANEL_PX * 2).slice(); },

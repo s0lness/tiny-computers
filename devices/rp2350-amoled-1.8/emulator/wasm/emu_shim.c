@@ -430,16 +430,31 @@ void sensors_inject_erase(void) {
  * then ticks sees it settle over tilt.h's 150ms time constant, same as a
  * hand holding the board still.
  *
- * The default is (0, 0, 1): lying flat on a table, screen up. Chosen as the
- * NEUTRAL pose - no in-plane gravity, so a ball does not roll and a bubble
- * sits centred until the host actually tilts something - and it is a real
- * pose a real device is in most of the time, not an invented one.
+ * The default is chosen to PUBLISH (0, 0, 1): lying flat on a table, screen
+ * up. Chosen as the NEUTRAL pose - no in-plane gravity, so a ball does not
+ * roll and a bubble sits centred until the host actually tilts something -
+ * and it is a real pose a real device is in most of the time, not an
+ * invented one.
  *
- * These axes are the panel's own, so what arrives here is already what
- * tilt.h calls panel space. device_to_panel() inside tilt.c is therefore
- * the identity for this target BY CONSTRUCTION rather than by luck, which
- * is worth being explicit about: the emulator CANNOT be used to check the
- * board's real device-to-panel mapping. Only tilt.h's on-board ritual can.
+ * THESE ARE DEVICE AXES, THE SAME AS A REAL IMU SAMPLE - not panel ones,
+ * whatever an earlier version of this comment said. emu_sensor_vector()
+ * hands its argument straight to tilt_submit_device_g(), exactly like
+ * sensors.c's imu_poll_core1() hands it a raw QMI8658 reading, so
+ * firmware/runtime/tilt.c's device_to_panel() runs on it for real here too
+ * - that mapping was the identity when this comment was first written,
+ * which made "device axes" and "panel axes" the same numbers by accident,
+ * not by any contract this file promised. Now that device_to_panel() is a
+ * real, measured mapping (tilt.c's own header comment has the arithmetic),
+ * this default has to be device_to_panel()'s own inverse of (0,0,1), which
+ * is why it reads (0, 0, -1) below rather than (0, 0, 1): device_to_panel()
+ * is currently a 180-degree turn (swap X/Y, negate Z) and therefore its own
+ * inverse, so this repeats that formula rather than a separate one - the
+ * same reasoning every emulator test file's own gravity()/tilt() helper
+ * now carries (feature-tilt.ts's gravity() has the fuller version of this
+ * comment). A host that wants a PANEL pose still calls through one of
+ * those helpers, never emu_sensor_vector() directly; only
+ * repro-tilt-axis-mapping.ts (emulator/wasm/tests) calls this raw, on
+ * purpose, to pin device_to_panel() itself.
  *
  * QUANTISED AND CLAMPED ON THE WAY IN, which is emu_abi.h's honesty rule
  * doing real work rather than being cited. The board's QMI8658 is left at
@@ -464,7 +479,7 @@ static float accel_as_hardware_would(float g) {
     return counts * QMI8658_G_PER_LSB;
 }
 
-static float g_gravX = 0.0f, g_gravY = 0.0f, g_gravZ = 1.0f;
+static float g_gravX = 0.0f, g_gravY = 0.0f, g_gravZ = -1.0f;
 
 void emu_sensor_vector(int index, float x, float y, float z) {
     (void)index; // emu_device() declares exactly one vector sensor

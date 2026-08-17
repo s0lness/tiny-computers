@@ -15,22 +15,28 @@
 // app reads no touch at all.
 //
 // HOW TILT IS DRIVEN, and which panel-axis direction reaches this app's
-// hole. emu_sensor_vector() (emu_abi.h) injects a gravity vector in PANEL
-// axes, g, on the shared "gravity" sensor every orientation-aware app now
-// reads through (firmware/runtime/tilt.h). This app's hole sits at
-// LANDSCAPE +x (tiltball.c's HOLE_X = BALL_CX + HOLE_DIST). feature-tilt.ts
-// already established the rotation runtime_core.c's tilt_for_app() applies
-// for a landscape app (landscape gx = panel gy, landscape gy = -panel gx),
-// so panel gravity (0, sin(deg), cos(deg)) - this file's gravityFor(deg, 90)
-// - is what drives the ball toward landscape +x, i.e. toward the hole.
-// Nothing here re-derives that rotation; it is read off the same tested
-// rule feature-tilt.ts pins.
+// hole. This file's own tilt() (below) sets a gravity vector in PANEL axes,
+// g, on the shared "gravity" sensor every orientation-aware app now reads
+// through (firmware/runtime/tilt.h) - by undoing firmware/runtime/tilt.c's
+// device_to_panel() before handing it to emu_sensor_vector() (emu_abi.h),
+// which wants DEVICE axes, the same as a real IMU sample; see tilt()'s own
+// comment for why. This app's hole sits at LANDSCAPE +x (tiltball.c's
+// HOLE_X = BALL_CX + HOLE_DIST). feature-tilt.ts already established the
+// rotation runtime_core.c's tilt_for_app() applies for a landscape app
+// (landscape gx = panel gy, landscape gy = -panel gx), so panel gravity
+// (0, sin(deg), cos(deg)) - this file's gravityFor(deg, 90) - is what
+// drives the ball toward landscape +x, i.e. toward the hole. Nothing here
+// re-derives that rotation; it is read off the same tested rule
+// feature-tilt.ts pins.
 //
-// WHAT THIS CANNOT CHECK: the device-to-panel mapping is a HYPOTHESIS until
-// the on-board axis ritual runs (tilt.h) - the same caveat every
-// orientation-aware app's test carries, inherited unchanged since this app
-// has no orientation code of its own to get wrong (see tiltball.c's own
-// header comment).
+// WHAT THIS CANNOT CHECK: whether device_to_panel() itself is correct on
+// the physical board - tilt() above compensates for it exactly, by
+// construction, so this file drives PANEL poses directly and never
+// exercises that mapping at all. The same caveat every orientation-aware
+// app's test carries, inherited unchanged since this app has no
+// orientation code of its own to get wrong (see tiltball.c's own header
+// comment); repro-tilt-axis-mapping.ts is the one file that does drive raw
+// device axes, to pin device_to_panel() itself.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -88,9 +94,14 @@ async function loadDevice() {
   return {
     exports: e,
     tick(nowMs: number) { e.emu_tick(nowMs); },
-    // x/y/z here are milli-g (this file's own gravityFor() convention);
-    // emu_sensor_vector() wants g, index 1 = the shared "gravity" sensor.
-    tilt(x: number, y: number, z: number) { e.emu_sensor_vector(1, x / 1000, y / 1000, z / 1000); },
+    // x/y/z here are milli-g in PANEL axes (this file's own gravityFor()
+    // convention); emu_sensor_vector() wants g in DEVICE axes, the same as
+    // a real IMU sample, so this undoes firmware/runtime/tilt.c's
+    // device_to_panel() on the way in (currently its own inverse: swap
+    // x/y, negate z - see feature-tilt.ts's gravity() for the fuller
+    // comment on why this repeats that formula rather than a different
+    // one). index 1 = the shared "gravity" sensor.
+    tilt(x: number, y: number, z: number) { e.emu_sensor_vector(1, y / 1000, x / 1000, -z / 1000); },
     appSwitch(i: number) { e.emu_app_switch(i); },
     appCurrent(): number { return e.emu_app_current(); },
     fb(): Uint8Array { return new Uint8Array(memory.buffer, e.emu_fb(), PANEL_W * PANEL_H * 2).slice(); },

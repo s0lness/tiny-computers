@@ -166,31 +166,42 @@
  * THE AXIS RITUAL, WHICH IS THE ONLY THING THAT CAN CHECK THE MAPPING
  *
  * device_to_panel() below converts the QMI8658's own axes into the panel
- * axes described above. WHICH WAY THE PART IS MOUNTED ON THIS BOARD IS NOT
- * KNOWN TO ANY DOCUMENT IN THIS REPOSITORY: the schematic in AGENTS.md
- * gives the pins, not the footprint's rotation, and the vendor demo only
- * ever prints the numbers. The mapping below is therefore a HYPOTHESIS
- * (identity, the fewest assumptions), and no test can falsify it, because
- * no software oracle knows which way is up. Only hands do.
- *
- * So run this once, on the real board, and then this comment stops being a
- * hypothesis (about two minutes; the board must be awake and plugged in):
+ * axes described above. WHICH WAY THE PART IS MOUNTED ON THIS BOARD WAS NOT
+ * KNOWN TO ANY DOCUMENT IN THIS REPOSITORY: the schematic in AGENTS.md gives
+ * the pins, not the footprint's rotation, and the vendor demo only ever
+ * prints the numbers. RUN, 2026-08-17, on the real board (about two
+ * minutes; the board must be awake and plugged in):
  *
  *   1. bun tools/dev.ts tilt        (devlink's TILT command)
  *   2. Lie the puck flat on a table, screen up. Expect g = (0, 0, +1).
  *   3. Hold it upright, portrait, top edge up. Expect g = (0, +1, 0).
  *   4. Turn it a quarter turn so its RIGHT edge is up. Expect
- *      g = (-1, 0, 0), and up = LEFT.
+ *      g = (+1, 0, 0), and up = LEFT. (Not (-1, 0, 0): that was this
+ *      comment's own earlier guess, and it was wrong - it did not agree
+ *      with its own "up = LEFT", which the up-edge code only produces for
+ *      a POSITIVE panel X. See tilt.c's device_to_panel() for the
+ *      determinant that caught it.)
  *   5. Turn it screen down on the table. Expect g = (0, 0, -1), tilt 180.
  *
  * Every line also prints the RAW device-axis reading, so if a pose comes
  * out wrong, the correction is one edit to device_to_panel() and nothing
- * else in the tree moves. Write what was measured into that function's
- * comment, delete the word HYPOTHESIS, and the mapping is settled forever.
+ * else in the tree moves. Poses 2-4 above are what was actually measured;
+ * device_to_panel() now implements the mapping they fit (swap X and Y,
+ * negate Z - tilt.c's own comment has the raw numbers and the arithmetic).
+ * Pose 5 was not measured, only checked for self-consistency with the fit
+ * from the other three. THE MAPPING IS NOT YET VERIFIED ON THE BOARD: it
+ * was derived from readings taken against the OLD (identity) code, and the
+ * corrected function has only run in the emulator so far. If a pose ever
+ * comes out wrong again on a flashed build, this is still the first place
+ * to look.
  *
  * WHAT NO INSTRUMENT HERE CAN SEE (docs/decisions/0010's discipline: say
  * what is blind before writing the code, not after the bug):
- *   - the axis mapping, per the ritual above;
+ *   - whether the corrected device_to_panel() below is actually right on
+ *     the physical board - it has been derived from real readings and
+ *     checked for internal consistency (determinant, a fourth independent
+ *     pose, tiltDeg at rest), but never itself run on silicon; re-run the
+ *     ritual above once it is flashed;
  *   - whether the adaptive filter's constants feel right in a hand, which is
  *     a judgement no emulator can make (emu_abi.h already says timing is not
  *     real there, and the emulator's gravity is a perfectly still,

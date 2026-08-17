@@ -48,29 +48,86 @@
 
 /* ---- device axes to panel axes -------------------------------------------
  *
- * HYPOTHESIS, NOT A MEASUREMENT. Nothing in this repository records which
- * way the QMI8658 is rotated on this PCB, and no software oracle can check
- * it, because no software knows which way is up. tilt.h's "THE AXIS RITUAL"
- * is the two-minute procedure that settles it on real hardware; when it has
- * been run, correct the three lines below, write down what was measured,
- * and delete the word HYPOTHESIS.
+ * MEASURED 2026-08-17, on the real board, via tilt.h's axis ritual
+ * (`bun tools/dev.ts tilt`), several stable samples per pose. The RAW column
+ * below is what devlink's TILT command printed; the target is tilt.h's own
+ * panel convention (+x right, +y down, +z into the glass):
  *
- * Identity was chosen as the hypothesis deliberately: it is the mapping
- * with the fewest independent ways to be wrong, so the ritual either
- * confirms all of it or produces one obvious, total correction (a swap, a
- * sign, or both) instead of a subtle half-right one.
+ *   flat, screen up               raw ~= ( 0.04,  0.05, -1.01)  want (0,0,+1)
+ *   upright, top edge up          raw ~= ( 1.02,  0.03,  0.05)  want (0,+1,0)
+ *   quarter turn, right edge up   raw ~= ( 0.04,  1.05,  0.03)  want (+1,0,0)
  *
- * A wrong mapping here is the highest-consequence unverified line in this
- * change: a spirit level with a flipped axis leans the wrong way, feels
- * broken to a child in one second, and passes every automated check this
- * project can ever build. It is one function, called from one place, on
- * purpose.
+ * (The third pose is the one AGENTS.md calls "the button edge pointing at
+ * the ceiling" - screen facing the owner, BOOT above PWR, then rolled a
+ * quarter turn so that edge points at the sky.)
+ *
+ * Each pose isolates one raw axis to within noise, so the fit is direct:
+ * raw Z is what reads near +-1 when flat, raw X when upright-top-up, raw Y
+ * when on the button edge. That gives panel Z = -raw Z, panel Y = raw X,
+ * and panel X = raw Y - swap X and Y, negate Z:
+ *
+ *   *px = dy;
+ *   *py = dx;
+ *   *pz = -dz;
+ *
+ * THE Z SIGN IS THE ACCELEROMETER-VS-GRAVITY FLIP, MADE CONCRETE. An
+ * accelerometer at rest reports specific force, which points AWAY from the
+ * earth (the reaction holding the part up), not the direction gravity
+ * itself pulls. Flat, screen up, that reads -1 on the axis this part calls
+ * Z; tilt.h's own contract wants +1 there (tiltDeg must read 0 at rest, and
+ * atan2(inPlane, gz) cannot do that unless gz is positive) - so this one
+ * axis needs the flip and the fit above is where it lives, not folded in a
+ * second time anywhere else.
+ *
+ * VERIFY IT ROTATES RATHER THAN REFLECTS, because a reflection is not
+ * something any physical mounting can produce, and it is easy to derive one
+ * by accident chasing the flip above axis by axis. As a matrix (row i is
+ * the panel component pI as a function of dx, dy, dz):
+ *
+ *   | 0  1  0 |
+ *   | 1  0  0 |
+ *   | 0  0 -1 |
+ *
+ * det = 0*(0*-1 - 0*0) - 1*(1*-1 - 0*0) + 0*(1*0 - 0*0) = -1*(-1) = +1.
+ * Proper rotation: geometrically a 180-degree turn about the in-plane
+ * diagonal (1,1,0)/sqrt(2) of the chip's own X-Y plane - an entirely
+ * ordinary way to solder a six-axis part onto a board that was not laid out
+ * around it. (A naive fit straight off the ritual's OWN older wording for
+ * the third pose - "expect g = (-1, 0, 0)" - gives determinant -1, a
+ * reflection, which is how this got caught: that pose's g was written down
+ * with the wrong sign, inconsistent with its own "up = LEFT," which the
+ * up-edge code below only produces for a POSITIVE panel X. Corrected here
+ * and in tilt.h's ritual text.)
+ *
+ * CROSS-CHECKED against a fourth, independent reading: the puck tilted
+ * toward the BOOT button while running breakout (a landscape app), raw
+ * ~= (-0.86, -0.01, -0.48). This mapping turns that into panel g ~=
+ * (-0.01, -0.86, +0.48); runtime_core.c's tilt_for_app() then rotates a
+ * landscape app's gx from panel gy (see that function's own header
+ * comment), so breakout's paddle receives gx ~= -0.86 - strongly negative,
+ * i.e. LEFT, which is exactly what the owner reported the paddle should do
+ * tilting toward BOOT and what it was NOT doing under the identity mapping
+ * this replaces (which put the same gesture on gy, "front/back", instead).
+ *
+ * THE 90-DEGREE ROTATION THE OWNER NOTICED BETWEEN RAW AND WHAT THE APP
+ * RECEIVED WAS NEVER A BUG. It is runtime_core.c's own tilt_for_app(),
+ * applied because chrono and breakout are both app_t.landscape - correct,
+ * deliberate, and unrelated to this function. It was only ever visible
+ * because THIS function, until now, was the identity: every measurement in
+ * this file's history could be explained by that one rotation alone, which
+ * is what made the axis mapping below look unverified rather than simply
+ * uncorrected.
+ *
+ * UNVERIFIED ON SILICON: this correction is derived from the raw readings
+ * above, taken on the real board against the OLD (identity) code. The
+ * corrected function itself has run in the emulator and its tests, never
+ * yet on the board. The owner will verify with a flashed build.
  */
 static void TILT_NOT_IN_FLASH(device_to_panel)(float dx, float dy, float dz,
                             float *px, float *py, float *pz) {
-    *px = dx;
-    *py = dy;
-    *pz = dz;
+    *px = dy;
+    *py = dx;
+    *pz = -dz;
 }
 
 /* ---- the up-edge decision, and its hysteresis ----------------------------
