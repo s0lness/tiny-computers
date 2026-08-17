@@ -12,8 +12,17 @@ than scattered randomly.
 
 ## 1. The timer silently eats a PWR short-press when BOOT is released with it
 
+**FIXED, 2026-08-17, in commit `88cabe6` ("timer: stop a same-tick BOOT release
+from swallowing a PWR short-press").** The repro below now PASSES: after the
+combined tick the timer is running, and the two framebuffer hashes two seconds
+apart differ, which is the assertion that the countdown actually advanced.
+
+Left in place rather than deleted because a finding is worth more with its
+resolution attached than as a paragraph that quietly disappears. What follows
+is the original write-up, and everything in it was true when written.
+
 Reproduction: `bun run emulator/wasm/tests/repro-timer-swallows-pwr-short-with-boot.ts`,
-which fails today.
+which failed when this was written and passes now.
 
 `timer_tick()` opens with `if (f->bootClicked) { ...; return; }`, before it ever
 looks at `f->key & KEY_SHORT`. `sensors_key_take()` in `runtime_core.c` is
@@ -63,6 +72,17 @@ glitch and dropout thresholds.
 Reported as a substantive negative result, not as an absence of findings.
 
 ## 3. `app_frame_t.dtMs` is dead, so the 250ms clamp protects nothing
+
+**NO LONGER TRUE, checked 2026-08-17.** The field has real readers now:
+`dino.c` integrates its jump by it, `breakout.c` steps the ball by it (and its
+header argues explicitly about how), and `bowling.c` reads it in flight. All
+three arrived after this was written, with the apps the owner asked for. The
+250ms clamp therefore protects something today, which is the opposite of what
+this section concluded.
+
+Kept for the same reason as finding 1: a document that silently drops a
+paragraph teaches nobody anything, and "this was true and stopped being true"
+is itself worth reading. The original write-up follows.
 
 `runtime_core.c` writes it. No app reads it: not `chrono.c`, not `timer.c`, not
 `sketch.c`, not `menu.c`. Both apps that track elapsed time compute it from
