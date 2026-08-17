@@ -143,23 +143,70 @@
 #define CONFIRM_PX 25.0f
 
 // Stroke-start confirmation: a stroke starts only once contact has
-// persisted, not on the strength of one report. "Persisted" is satisfied by
-// EITHER of two independent signals, because they answer two different
-// things a single report cannot tell apart:
+// persisted for at least CONFIRM_MS, never on the strength of one report.
+// There used to be a SECOND, faster path here - "a second report lands at a
+// different position, so believe it immediately, no elapsed-time floor at
+// all" - on the reasoning that visible movement is obviously real. It is
+// not: this controller's stray reports are single Bernoulli draws with no
+// memory of each other, so two of them landing on report ticks close enough
+// together are, to this file, indistinguishable from a finger that touched
+// down and immediately moved - same "haveTouch, different (x,y)" shape,
+// nothing else to tell them apart on two samples alone.
+//
+// FOUND 2026-08-17, by repro-touch-dropout-stroke-start.ts's own scenario B
+// (a stray-only stream, no real touch at all): 3/60 independently seeded
+// 20-second windows produced a confirmed "stroke start" from strays alone,
+// all three via the fast "moved" path, at elapsed times of 16.7ms and
+// 33.3ms since the candidate armed (seeds 12309, 12344) - one and two
+// controller report periods later (this FT3168 reports at ~60Hz, 16.7ms
+// between reports, per this file's own measured "88977 haveTouch against
+// 1399 newReport" figure elsewhere in this comment block) - both comfortably
+// under CONFIRM_MS's already-tuned 40ms. A third seed (12289) confirmed at
+// 83.3ms, past CONFIRM_MS regardless of which path is taken - that one is
+// the DIFFERENT, already-documented risk the THE TRADE paragraph below
+// names ("a stray that happens to read nonzero on and off for the whole
+// grace window"), not this bug; fixing this one does not touch that one.
+//
+// THE FIX: "moved" no longer skips the wait. Both signals now gate on the
+// exact same CONFIRM_MS elapsed check - `persisted` below is the only test
+// left, and `newReport` survives only to say, in the printed log line,
+// WHICH thing became true (the finger visibly moved vs merely never left),
+// never to shortcut the timer. No new constant: CONFIRM_MS was already the
+// hardware-measured answer to "how long before a maybe-real touch is
+// believed", and reusing it here rather than inventing a second, smaller
+// floor is not a shortcut taken for convenience - the controller's own
+// report-tick granularity (~16.7ms) means every floor value from just above
+// 33.3ms up to 50ms rejects the exact same set of report timings (the next
+// tick after 33.3ms is 50ms; nothing lands in between), so 40ms already IS
+// the smallest floor this fix could have chosen that still closes both
+// measured seeds - a bespoke 34ms or 35ms would reject nothing more.
+//
+// THE COST: a genuinely fast stroke that starts moving on its very second
+// report used to confirm at that same report (~1 report period after touch-
+// down, ~17ms). It now waits for the first report at or after CONFIRM_MS
+// has elapsed - the third report if reports keep landing every ~16.7ms, so
+// ~33ms of ADDED latency to the first mark of the fastest strokes (measured
+// against a clean, undropped 60Hz stream: see this fix's own commit message
+// for the exact figure). Slower or stationary starts, which were already
+// waiting out CONFIRM_MS via the "persisted" path, are unaffected - this
+// only costs the strokes that used to skip the wait entirely.
+//
+// "Persisted" is satisfied by EITHER of two independent signals arriving,
+// both gated the same way now, because they answer two different things a
+// single report cannot tell apart:
 //   - a second report lands at a different position: the finger visibly
-//     moved, so this is obviously real. Confirms immediately, no latency
-//     added beyond the one report it took to see it (the original rule,
-//     unchanged).
+//     moved, so this is obviously real - "obviously" once CONFIRM_MS has
+//     also elapsed, see the fix above.
 //   - CONFIRM_MS elapses since the first report while contact keeps being
 //     seen at least once every LIFT_DEBOUNCE_MS: the finger did not move,
 //     but it also never genuinely went away, which is what a stray never
-//     manages. This is the new half.
+//     manages.
 //
-// Why the new half exists, measured on hardware 2026-08-14
-// (TOUCH_POLL_SELFTEST, a continuous real drawing session): 401 candidate
-// stroke starts (pendingStart) produced 14 confirmed strokes
+// Why the elapsed-time signal exists at all, measured on hardware
+// 2026-08-14 (TOUCH_POLL_SELFTEST, a continuous real drawing session): 401
+// candidate stroke starts (pendingStart) produced 14 confirmed strokes
 // (strokeStarted) - a 3.5 percent success rate - while dropouts=798 in the
-// same window. The old rule required the SECOND report to arrive before the
+// same window. The old rule required a SECOND report to arrive before the
 // FT3168 dropped contact even once; the instant a candidate saw a single
 // zero-finger read, sketch_tick's haveTouch==false branch threw it away as
 // a stray, with none of the grace an already-started stroke gets from its
@@ -170,12 +217,14 @@
 // stray, just after PENDING_GRACE_MS of grace instead of instantly - free,
 // since nothing is drawn until a stroke actually starts.
 //
-// THE TRADE: this believes more candidates than before. A stray that
-// happens to read nonzero on and off for the whole grace window can now be
-// confirmed where the old rule could not; TOUCH_POLL_SELFTEST's `strays`
+// THE TRADE: this believes more candidates than the pre-2026-08-14 rule did.
+// A stray that happens to read nonzero on and off for the whole grace window
+// can be confirmed where the old rule could not - seed 12289 above is
+// exactly this, two coincidental strays landing within CONFIRM_MS/
+// PENDING_GRACE_MS of each other by chance, and it confirms via `persisted`
+// alone regardless of what "moved" does. TOUCH_POLL_SELFTEST's `strays`
 // counter (read alongside `pendingStart` and `strokeStarted`) is what proves
-// whether that actually happens in practice, not reasoning about it in
-// advance.
+// how often that happens in practice, not reasoning about it in advance.
 //
 // A SKETCH_LIVE_TUNE default now (see below), not a hardcoded constant; the
 // value and the reasoning above are unchanged by that.
@@ -2383,8 +2432,16 @@ static void sketch_tick(const app_frame_t *f) {
 #endif
                 } else {
                     st->pendLastTouchMs = nowMs;
+                    // Both signals gate on the SAME elapsed floor now - see
+                    // CONFIRM_MS_DEFAULT's own comment (top of file) for why
+                    // "moved" used to skip this wait, why that was wrong
+                    // (two stray reports on nearby ticks are indistinguishable
+                    // from a finger that touched down and moved), and why
+                    // CONFIRM_MS itself, not a new smaller constant, is the
+                    // right floor for it too. newReport is kept only to say
+                    // which thing became true, for the log line below.
                     bool persisted = (nowMs - st->pendStartMs) >= CONFIRM_MS;
-                    if (newReport || persisted) {
+                    if (persisted) {
                         st->pendingStart = false;
                         st->fingerDown = true;
                         st->haveCand = false;
