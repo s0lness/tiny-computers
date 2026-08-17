@@ -912,6 +912,30 @@ async function main() {
     const slabBack = landPx(fb, colX(4), gutterY(0));
     check("and the board has gone warm again - back to red", near(slabBack, C_SLAB_RED), describe(slabBack));
 
+    // ---- the tokens are faces now, not plain discs -----------------------
+    // Two settled pieces are sitting on the board right now: red at (5,5)
+    // (the first drop, above) and blue at (1,5) (the one that just landed).
+    // draw_face() (four.c) puts two white eyes above every piece's own
+    // centre, on both colours, and gives red a wide flat mouth where blue
+    // gets a narrower round one - the same relative point (0.25*HOLE_R right
+    // of centre, just below it) sits INSIDE red's bar and OUTSIDE blue's
+    // circle, which is the shape difference section 10 of four.c's header
+    // argues for, not just a colour or a curve. A plain disc (what this
+    // probed before the faces existed) would fail every one of these four.
+    console.log("\n-- the pieces on the board are faces, not plain discs --");
+    const eyeDx = 0.30 * HOLE_R, eyeDy = 0.32 * HOLE_R;
+    const redEye = landPx(fb, colX(5) - eyeDx, rowY(5) - eyeDy);
+    const blueEye = landPx(fb, colX(1) - eyeDx, rowY(5) - eyeDy);
+    check("red's piece has a white eye above its centre", near(redEye, C_WHITE), describe(redEye));
+    check("blue's piece has a white eye above its centre", near(blueEye, C_WHITE), describe(blueEye));
+    const mouthProbeX = 0.25 * HOLE_R;
+    const redMouth = landPx(fb, colX(5) + mouthProbeX, rowY(5) + 0.40 * HOLE_R);
+    const blueMouth = landPx(fb, colX(1) + mouthProbeX, rowY(5) + 0.38 * HOLE_R);
+    check("red's mouth is a wide bar - this point, just off-centre, is inside it",
+        near(redMouth, C_WHITE), describe(redMouth));
+    check("blue's mouth is a narrower circle - the SAME relative point falls outside it, back on blue ink",
+        isBluish(blueMouth), describe(blueMouth));
+
     // ---- a real mid-game board, and the highlight ON it -----------------
     console.log("\n-- a few more moves, then the same gesture over a column that already has a stack in it --");
     const mirror = newMirror();

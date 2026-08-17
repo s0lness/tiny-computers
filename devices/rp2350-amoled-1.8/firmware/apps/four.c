@@ -1358,6 +1358,96 @@ static void fill_rrect(float cx, float cy, float halfW, float halfH, float corne
 }
 
 /* =====================================================================
+ * THE TOKENS ARE FACES, NOT PLAIN DISCS (section 10).
+ *
+ * The owner's brief, verbatim: emojis in place of the tokens. There is no
+ * emoji font on this device (nothing here renders Unicode at all), so "an
+ * emoji" means the same thing every other picture in this file already
+ * means: two shapes drawn by hand from fill_disc/fill_ring/fill_rrect, the
+ * way render_choose()'s own grey cpu face already is.
+ *
+ * THE REAL SIZE, MEASURED FIRST. A settled board piece is a disc of radius
+ * HOLE_R = 20px, i.e. a 40px-wide token - not the 64px choice-screen icon
+ * (HOLE_R*1.6), which is a different picture answering a different
+ * question. Every offset below is written as a FRACTION OF r, the piece's
+ * OWN instantaneous radius, rather than as a pixel count computed once
+ * against HOLE_R: the win pulse (PH_WIN) grows and shrinks that radius by
+ * PULSE_GROW, and the hand-off's pop and the choice screen's own pop scale
+ * a piece too. A face whose eyes stayed a fixed pixel size while its own
+ * disc breathed around them would look like it was sliding out of its own
+ * head; scaling every feature off r is what keeps proportions honest
+ * through both animations, and through a fall, which never rotates the
+ * piece at all (it only translates in y) so nothing here has to survive
+ * rotation.
+ *
+ * WHICH TWO FACES, AND WHY NOT AN EAR OR AN ANTENNA. At 40px, decision 0009
+ * still applies ("every piece... is a circle" - section 4), so the outer
+ * boundary stays a plain disc; a bump breaking that boundary was tried on
+ * paper first and rejected; not because it would not have READ (a 3-4px
+ * nub at this radius is barely a pixel of contrast either way) but because
+ * it would have put ink outside the hole it is punched from at rest, which
+ * nothing else in this file does. So both differences the task asks for -
+ * "unmistakably different, and not by expression alone" - are spent INSIDE
+ * the circle instead, on the two marks big enough to survive 40px: the
+ * mouth's own SHAPE, not its curve (a flat capsule bar vs. a round "o" is
+ * an aspect-ratio difference, which still reads under blur, unlike a smile
+ * angle a handful of pixels wide) and the eyes' SIZE. RED is "content":
+ * small round dot eyes, a wide flat mouth. BLUE is "surprised": visibly
+ * bigger round eyes, a round open mouth. Colour is the third, and it is
+ * kept, on purpose - the file's own established red/blue vocabulary
+ * (chute, wash, slab, landing ring, waiting piece) is not being replaced,
+ * and section 8's own reasoning still holds: a player who can only tell
+ * the two apart by shape still can, from the mouth alone, because the
+ * warm/cool colour was never the only cue in this app to begin with.
+ *
+ * WHY NOT THE CHOICE SCREEN TOO. render_choose()'s two discs sit almost
+ * concentric (ICON_GAP = 0.55 * ICON_R, well under the sum of their radii,
+ * on purpose - see feature-four-choice.ts's own comment about the overlap)
+ * and feature-four-choice.ts probes deep inside each one. That picture is
+ * answering "which opponent", not "whose piece is this", and the header's
+ * own section 8 argument for two PLAIN discs there (the pieces the moment
+ * before she has ever seen them played) does not need faces to work.
+ * Scoped out on purpose, not missed.
+ *
+ * WHERE THE FEATURES MAY NOT GO. Every board test in this repository that
+ * reads a piece's colour does it at one of a small number of exact points:
+ * dead centre (discRadius' start point and the win pulse's own measurement
+ * walk outward along y = the piece's own centre row); the four cardinal
+ * rim points at 0.85r used by holeAt() (feature-four.ts); and a probe
+ * offset from the choice screen's own disc centres, also on that same
+ * centre row. Every offset below keeps clear of all of them: eyes sit
+ * ABOVE centre and never reach y = centre (their nearest edge stays
+ * 0.16r-0.21r short of it, comfortably past this rasteriser's ~1px AA
+ * feather), so the WHOLE horizontal line through a piece's centre - which
+ * is every one of those probes at once - is untouched; the mouth sits
+ * BELOW centre and stays inside 0.58r from it, well short of the 0.85r rim
+ * probes. A future change to any of the fractions below should keep both
+ * clearances, or a test that has nothing to do with faces will fail for a
+ * reason that has everything to do with them.
+ * ================================================================== */
+static void draw_face(float cx, float cy, float r, uint8_t player, int clipX0, int clipX1) {
+    fill_disc(cx, cy, r, col_piece(player), clipX0, clipX1, 256);
+
+    // Eyes: two round dots, above centre, never touching it. Bigger for
+    // blue - the "surprised" half of the pair.
+    float eyeDx = r * 0.30f;
+    float eyeDy = r * 0.32f;
+    float eyeR  = (player == P_RED) ? r * 0.11f : r * 0.16f;
+    fill_disc(cx - eyeDx, cy - eyeDy, eyeR, PX_WHITE, clipX0, clipX1, 256);
+    fill_disc(cx + eyeDx, cy - eyeDy, eyeR, PX_WHITE, clipX0, clipX1, 256);
+
+    // Mouth: a flat capsule for red (content), a round "o" for blue
+    // (surprised) - a shape difference, not just a curve, so it still
+    // reads at 40px and under blur.
+    if (player == P_RED) {
+        fill_rrect(cx, cy + r * 0.40f, r * 0.32f, r * 0.10f, r * 0.10f,
+                   PX_WHITE, clipX0, clipX1, 256);
+    } else {
+        fill_disc(cx, cy + r * 0.38f, r * 0.20f, PX_WHITE, clipX0, clipX1, 256);
+    }
+}
+
+/* =====================================================================
  * Rendering.
  *
  * render_span() is a pure function of (state, time) over one full-height
@@ -1581,8 +1671,11 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
 
             if (drainOff >= 0.0f) {
                 // This column has let go: no hole is drawn at all (the chute
-                // above replaced them), only the pieces, sliding.
-                if (v != P_NONE) fill_disc(col_x(c), row_y(r) + drainOff, HOLE_R, col_piece(v), lx0, lx1, 256);
+                // above replaced them), only the pieces, sliding. Still a
+                // face, not a flat disc - the drain only ever translates a
+                // piece, never rotates it, so nothing here has to survive
+                // more than draw_face() already does for a fall.
+                if (v != P_NONE) draw_face(col_x(c), row_y(r) + drainOff, HOLE_R, v, lx0, lx1);
                 continue;
             }
 
@@ -1598,7 +1691,7 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
                     if (s->winCells[k] == (uint8_t)(r * COLS + c)) { isWin = true; break; }
                 }
             }
-            fill_disc(col_x(c), row_y(r), isWin ? HOLE_R + pulse : HOLE_R, col_piece(v), lx0, lx1, 256);
+            draw_face(col_x(c), row_y(r), isWin ? HOLE_R + pulse : HOLE_R, v, lx0, lx1);
         }
     }
 
@@ -1668,14 +1761,14 @@ static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
             fill_ring(col_x(wc), wy, HOLE_R * scale, (HOLE_R - GHOST_STROKE) * scale,
                       col_piece(wp), lx0, lx1, 256);
         } else {
-            fill_disc(col_x(wc), wy, HOLE_R * scale, col_piece(wp), lx0, lx1, 256);
+            draw_face(col_x(wc), wy, HOLE_R * scale, wp, lx0, lx1);
         }
     }
 
     // 7. the falling piece, over everything, since it is passing in front of
     //    the board's face exactly as a real one does.
     if (s->phase == PH_FALL) {
-        fill_disc(col_x(s->fallCol), s->fallY, HOLE_R, col_piece(s->fallPlayer), lx0, lx1, 256);
+        draw_face(col_x(s->fallCol), s->fallY, HOLE_R, s->fallPlayer, lx0, lx1);
     }
 }
 
