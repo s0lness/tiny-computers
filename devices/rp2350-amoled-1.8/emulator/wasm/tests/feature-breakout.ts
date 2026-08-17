@@ -4,17 +4,23 @@
 //   bun run emulator/wasm/build.ts
 //   bun run emulator/wasm/tests/feature-breakout.ts
 //
-// Breakout is in the default app table unconditionally, the same as
-// firmware/apps/level.c (docs/decisions/0012): it reads app_frame_t.tilt
-// like every other app and touches no hardware of its own, so no build flag
-// is needed - see breakout.c's own header comment for the whole argument.
+// Breakout is in the default app table unconditionally, like every real app
+// on this device (docs/decisions/0012): it reads app_frame_t.tilt like
+// every other orientation-aware app and touches no hardware of its own, so
+// no build flag is needed - see breakout.c's own header comment for the
+// whole argument.
 //
 // This is the `feature-*` half of the pair this directory's convention asks
 // for (AGENTS.md's "Regression tests"): clean input, a readable statement of
 // intent. The `repro-*` half is repro-breakout-residue.ts, which audits a
 // long continuous run for the anti-residue invariant and pins the
 // fixed-timestep clock's determinism. There is no touch-dropout partner,
-// deliberately: like level.c, this app reads no touch at all.
+// deliberately: touch is read in exactly one narrow place (the restart tap
+// from game over - see breakout.c's own header comment, "WHY THIS EXCEPTION
+// TO READS NO TOUCH IS SAFE TO MAKE NARROWLY"), and it is a single discrete
+// press-and-release with no position and no drag to get wrong, unlike the
+// press-drag-release gestures the dropout-profile tests in this directory
+// exist to stress.
 //
 // Every assertion is on the framebuffer, never on an internal, so anything
 // that fails here is something a person looking at the device could also
@@ -45,7 +51,7 @@ const LAND_H = PANEL_W; // 368
 let APP_BREAKOUT = -1;
 
 // Lifted from breakout.c's own #define block - the same convention every
-// other test in this directory uses against its app (see feature-level.ts).
+// other test in this directory uses against its app (see feature-tiltball.ts).
 const PLAY_L = 26, PLAY_R = LAND_W - 26, PLAY_T = 26, PLAY_B = LAND_H - 26;
 const BALL_R = 9;
 const PADDLE_Y = 300, PADDLE_HALF_W = 46;
@@ -54,6 +60,20 @@ const PADDLE_TRAVEL_MAX = (PLAY_R - PLAY_L) / 2 - PADDLE_HALF_W; // 152
 const PADDLE_GX_FULL = 0.4;
 const N_BRICKS = 18; // 3 rows x 6, see breakout.c's own N_ROWS/BRICKS_PER_ROW
 const BEZEL = 10; // gfx.h's PANEL_BEZEL_MARGIN_PX
+
+// Lives/game-over constants, lifted from breakout.c's own #define block the
+// same way everything above already is.
+const START_LIVES = 3;
+const LIFE_LOST_FREEZE_MS = 550;
+const LIFE_DOT_R = 6, LIFE_DOT_GAP = 18;
+const LIFE_DOT_X0 = PLAY_L + 12, LIFE_DOT_Y = PLAY_T + 12;
+const TAP_ARM_SAMPLES = 4, TAP_ARM_MS = 40;
+// The deterministic respawn point reset_ball_and_paddle() always uses -
+// ARC_CX == LAND_W/2 == PADDLE_CENTER_X, clear of the wall and the paddle
+// (see breakout.c's own header comment geometry check) - so a black pixel
+// there shortly after a respawn or a restart is a clean, position-based
+// "the ball is back" signal.
+const RESPAWN_X = PADDLE_CENTER_X, RESPAWN_Y = PADDLE_Y - 100;
 
 const FRAME_MS = 16;
 
@@ -88,6 +108,7 @@ async function loadDevice() {
     exports: e,
     tick(nowMs: number) { e.emu_tick(nowMs); },
     tilt(x: number, y: number, z: number) { e.emu_sensor_vector(1, x, y, z); }, // g, panel axes
+    touch(down: boolean, x: number, y: number) { e.emu_touch(down ? 1 : 0, x, y); }, // panel coords
     appSwitch(i: number) { e.emu_app_switch(i); },
     appCurrent(): number { return e.emu_app_current(); },
     fb(): Uint8Array { return new Uint8Array(memory.buffer, e.emu_fb(), PANEL_W * PANEL_H * 2).slice(); },
@@ -138,21 +159,6 @@ function paddleCentre(fb: Uint8Array): number | null {
   return bestLen >= 40 ? bestMid : null; // 40: comfortably wider than the ball, well under the paddle
 }
 
-// The ball's centroid, found only from black pixels CLEAR of the paddle's
-// own vertical band (|ly - PADDLE_Y| > 25) - the one place a black pixel is
-// unambiguously the ball rather than possibly the paddle.
-function ballCentreAwayFromPaddle(fb: Uint8Array): { x: number; y: number; n: number } {
-  let sx = 0, sy = 0, n = 0;
-  for (let ly = 0; ly < LAND_H; ly++) {
-    if (Math.abs(ly - PADDLE_Y) <= 25) continue;
-    for (let lx = 0; lx < LAND_W; lx++) {
-      if (!isBlack(landPixel(fb, lx, ly))) continue;
-      sx += lx; sy += ly; n++;
-    }
-  }
-  return n === 0 ? { x: NaN, y: NaN, n: 0 } : { x: sx / n, y: sy / n, n };
-}
-
 // Was "countBrickInk" over SATURATED pixels back when bricks were a
 // colour palette - a red/orange/yellow/... brick failed both isWhite and
 // isBlack by having one RGB565 channel far from the others, cleanly telling
@@ -178,6 +184,32 @@ function countWallInk(fb: Uint8Array): number {
     }
   }
   return n;
+}
+
+// Reads the lives row directly (LIFE_DOT_X0 + i*LIFE_DOT_GAP, LIFE_DOT_Y),
+// one dot centre at a time - each dot is either fully black or fully absent
+// (paper white) at its own centre pixel, so this is a clean per-dot read,
+// not a fringe-sensitive one.
+function livesShown(fb: Uint8Array): number {
+  let n = 0;
+  for (let i = 0; i < START_LIVES; i++) {
+    if (isBlack(landPixel(fb, Math.round(LIFE_DOT_X0 + i * LIFE_DOT_GAP), Math.round(LIFE_DOT_Y)))) n++;
+  }
+  return n;
+}
+
+// Is there black ink at breakout's own deterministic respawn point? A tight
+// box (not just the one centre pixel), since the ball only sits EXACTLY at
+// RESPAWN_X/Y for the very first physics step after a respawn - one frame
+// (FRAME_MS=16ms) later it has already moved a few px along its start
+// angle, so this checks a small neighbourhood rather than one exact pixel.
+function ballAtRespawn(fb: Uint8Array): boolean {
+  for (let dy = -6; dy <= 6; dy += 3) {
+    for (let dx = -6; dx <= 6; dx += 3) {
+      if (isBlack(landPixel(fb, Math.round(RESPAWN_X + dx), Math.round(RESPAWN_Y + dy)))) return true;
+    }
+  }
+  return false;
 }
 
 async function enterBreakout(): Promise<{ dev: Device; t: number }> {
@@ -227,8 +259,8 @@ async function main() {
   // space before breakout.c ever sees it: landscape gx comes from PANEL gy,
   // not panel gx (see runtime_core.c's own derivation, "dlx = dpy"). So to
   // put a given value on app_frame_t.tilt.gx, this feeds it as the panel
-  // vector's Y component - the same rotation feature-level.ts's
-  // gravityFor()/expectedBubble() pair already has to account for.
+  // vector's Y component - the same rotation feature-tiltball.ts's own
+  // gravityFor() already has to account for.
   {
     for (const wantGx of [-1.0, -0.4, -0.2, 0, 0.2, 0.4, 1.0]) {
       const { dev, t: t0 } = await enterBreakout();
@@ -264,29 +296,116 @@ async function main() {
       `before=${before?.toFixed(2)} during=${during?.toFixed(2)}`);
   }
 
-  // ---- the ball never leaves the play field: no floor to lose it through -
+  // ---- entry: three lives shown, wordlessly ------------------------------
+  {
+    const { dev } = await enterBreakout();
+    const n = livesShown(dev.fb());
+    check("three lives are shown at entry, as three solid dots", n === START_LIVES, `${n} dot(s) found`);
+  }
+
+  // ---- a lost ball costs a life, and the wall is NOT reset ---------------
+  //
+  // The floor is now a floor, not a fourth wall (the owner's own overrule -
+  // see breakout.c's header comment). Pin the paddle hard to one rail via a
+  // sustained extreme tilt so it can no longer catch a ball that ends up on
+  // the other side of the field, then just wait: left alone, the ball
+  // eventually finds the gap. This is deliberately the SAME "left entirely
+  // alone" shape the wall-clear test below already uses, just with the
+  // paddle deliberately taken out of the picture instead of centred.
+  let lostOnce: { dev: Device; t: number; inkBeforeLoss: number } | null = null;
   {
     const { dev, t: t0 } = await enterBreakout();
+    const inkAtEntry = countWallInk(dev.fb());
     let t = t0;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    let samples = 0;
-    for (let i = 0; i < 2000; i++) {
+    const stepMs = 40, ceilingMs = 120000;
+    let livesAfterFirstLoss = START_LIVES;
+    let inkJustBeforeLoss = inkAtEntry;
+    let sawLoss = false;
+    for (let elapsed = 0; elapsed < ceilingMs && !sawLoss; elapsed += stepMs) {
+      dev.tilt(0, -1, 0); // landscape gx=-1: paddle pinned to its left rail
+      t += stepMs;
+      dev.tick(t);
+      const n = livesShown(dev.fb());
+      if (n < START_LIVES) {
+        sawLoss = true;
+        livesAfterFirstLoss = n;
+      } else {
+        inkJustBeforeLoss = countWallInk(dev.fb());
+      }
+    }
+    check("left with the paddle pinned away from it, the ball is eventually lost and a life is spent",
+      sawLoss && livesAfterFirstLoss === START_LIVES - 1,
+      sawLoss ? `lives now ${livesAfterFirstLoss}` : `never lost within ${ceilingMs / 1000}s of sim time`);
+    if (sawLoss) {
+      // Give the freeze a moment to settle, then check the wall: kept, not
+      // reset - breakout.c's header comment's own "WHAT HAPPENS TO THE
+      // BRICKS ON A LIFE LOST" argument.
+      t = run(dev, t, LIFE_LOST_FREEZE_MS + 200, [0, -1, 0]);
+      const inkAfter = countWallInk(dev.fb());
+      check("...and the wall is kept exactly as it was, not reset",
+        Math.abs(inkAfter - inkJustBeforeLoss) <= inkAtEntry * 0.05,
+        `ink just before loss=${inkJustBeforeLoss}, after the freeze=${inkAfter} (entry=${inkAtEntry})`);
+      lostOnce = { dev, t, inkBeforeLoss: inkJustBeforeLoss };
+    }
+  }
+
+  // ---- zero lives reaches game over, and the table holds still -----------
+  let gameOver: { dev: Device; t: number } | null = null;
+  if (lostOnce) {
+    const { dev } = lostOnce;
+    let t = lostOnce.t;
+    const stepMs = 40, ceilingMs = 240000;
+    let reachedZero = false;
+    for (let elapsed = 0; elapsed < ceilingMs && !reachedZero; elapsed += stepMs) {
+      dev.tilt(0, -1, 0); // keep the paddle pinned away, same as above
+      t += stepMs;
+      dev.tick(t);
+      if (livesShown(dev.fb()) === 0) reachedZero = true;
+    }
+    check("kept away from the ball long enough, all three lives are eventually spent",
+      reachedZero, reachedZero ? "0 lives shown" : `never reached 0 within ${ceilingMs / 1000}s of sim time`);
+
+    if (reachedZero) {
+      // Hold well past one ordinary life-lost freeze (550ms): if this were
+      // just another respawn pause the ball would already be back by now.
+      // Sample repeatedly rather than once, so a late respawn cannot slip
+      // through between two checks.
+      let staysGone = true;
+      for (let i = 0; i < 8; i++) {
+        dev.tilt(0, -1, 0);
+        t += 400;
+        dev.tick(t);
+        if (livesShown(dev.fb()) !== 0 || ballAtRespawn(dev.fb())) { staysGone = false; break; }
+      }
+      check("...and the table then holds still - no ball, no lives - well past one ordinary freeze, waiting for a tap",
+        staysGone, staysGone ? "held for 3.2s with 0 lives and no ball" : "recovered on its own (not a real game over)");
+      gameOver = { dev, t };
+    }
+  }
+
+  // ---- a tap restarts the game -------------------------------------------
+  if (gameOver) {
+    const { dev } = gameOver;
+    let t = gameOver.t;
+    // Hold contact long enough to arm dino.c's own arming rule
+    // (TAP_ARM_SAMPLES over TAP_ARM_MS), comfortably past both.
+    for (let i = 0; i < 6; i++) {
+      dev.touch(true, 184, 224); // panel centre; breakout's restart ignores position
       t += FRAME_MS;
       dev.tick(t);
-      const b = ballCentreAwayFromPaddle(dev.fb());
-      if (b.n === 0) continue; // ball is transiently inside the paddle's own band
-      samples++;
-      if (b.x < minX) minX = b.x;
-      if (b.x > maxX) maxX = b.x;
-      if (b.y < minY) minY = b.y;
-      if (b.y > maxY) maxY = b.y;
     }
-    check("the ball's x stays within the play field across 2000 frames (no touch, no tilt)",
-      samples > 0 && minX >= PLAY_L - BALL_R - 2 && maxX <= PLAY_R + BALL_R + 2,
-      `x range [${minX.toFixed(1)}, ${maxX.toFixed(1)}], field [${PLAY_L},${PLAY_R}], ${samples} samples`);
-    check("the ball's y stays within the play field across 2000 frames, INCLUDING the bottom - there is no floor to fall through",
-      samples > 0 && minY >= PLAY_T - BALL_R - 2 && maxY <= PLAY_B + BALL_R + 2,
-      `y range [${minY.toFixed(1)}, ${maxY.toFixed(1)}], field [${PLAY_T},${PLAY_B}], ${samples} samples`);
+    dev.touch(false, 184, 224);
+    t += FRAME_MS;
+    dev.tick(t);
+    // A couple more settled frames for the fresh ball's first push to land.
+    t += FRAME_MS;
+    dev.tick(t);
+    const n = livesShown(dev.fb());
+    check("a tap from game over brings all three lives back", n === START_LIVES, `${n} dot(s) shown after the tap`);
+    check("...and drops a fresh ball in at the deterministic start position",
+      ballAtRespawn(dev.fb()), "no ink found near the respawn point");
+  } else {
+    check("a tap restarts the game", false, "skipped - never reached a confirmed game over above");
   }
 
   // ---- nothing is ever drawn inside the bezel band -----------------------
@@ -312,33 +431,73 @@ async function main() {
     check("nothing is drawn inside the bezel band, sampled across 15 settled-ish frames", worstViolation === 0, `${worstViolation} ink pixel(s) found in the band`);
   }
 
-  // ---- the wall breaks bricks, then clears and regrows -------------------
-  // No touch and no tilt: the ball is left entirely to itself, which is the
-  // whole point of "no floor to guard" (breakout.c's header comment) - it
-  // must be able to clear the wall on its own, eventually, with nobody
-  // helping it. Measured empirically at up to ~190s of simulated time for
-  // one full clear-and-regrow with these exact constants (a probe run
-  // during development); 260s is a generous ceiling, not a tuned number.
+  // ---- the wall breaks bricks, then a restart regrows it ------------------
+  //
+  // Before lives existed, this test drove an UNTOUCHED, UNTILTED device
+  // (paddle parked dead centre) for up to 260s of simulated time and always
+  // saw the wall clear and regrow on its own - that was the whole point of
+  // "no floor to guard": the toy could never stop playing itself. It cannot
+  // any more, and measuring that honestly is worth doing here rather than
+  // quietly deleting the coverage: a centred, NEVER-corrected paddle only
+  // physically catches the ball within a ~92x32px band around its own spine
+  // (ball_paddle_bounce's rr=16, half the ~180px-wide LENS SHAPE actually
+  // drawn - a pre-existing gap between the visual paddle and its hitbox,
+  // unrelated to this feature, that simply had no consequence before there
+  // was a life to spend on a miss), so three lives are spent inside about
+  // 15 SECONDS of simulated time even when a second, independent run of this
+  // same wasm was driven with an idealised controller (tilt set every tick
+  // from the ball's own tracked x, bypassing reaction time entirely, tried
+  // as a probe during development, not asserted here since it is not this
+  // file's job to grade paddle physics) - three lives is simply not enough
+  // to reach a natural full clear against this paddle's real hit zone. That
+  // is a genuine, reportable consequence of the owner's own request for a
+  // fail state, not a bug in this test or in breakout.c.
+  //
+  // So this checks the two halves of "the wall breaks, then comes back"
+  // SEPARATELY, each in the way it can actually still happen unattended:
+  // some real breakage before the three lives run out (still the ball's own
+  // doing, still no touch and no tilt), and the SAME regrow wave a mid-game
+  // clear already uses, reached this time through the restart tap instead
+  // of through a natural full clear - see breakout.c's header comment's
+  // "GAME OVER, AND HOW SHE STARTS AGAIN" on why that is the same event,
+  // reused, not a second animation.
   {
     const { dev, t: t0 } = await enterBreakout();
-    let t = t0;
     const initialInk = countWallInk(dev.fb());
+    let t = t0;
     let minInk = initialInk;
-    let sawFullWallAgain = false;
-    const stepMs = 40;
-    const ceilingMs = 260000;
-    for (let elapsed = 0; elapsed < ceilingMs; elapsed += stepMs) {
+    const stepMs = 40, ceilingMs = 60000;
+    let overAt = -1;
+    for (let elapsed = 0; elapsed < ceilingMs && overAt < 0; elapsed += stepMs) {
       t += stepMs;
       dev.tick(t);
-      if (elapsed % 2000 !== 0) continue;
+      if (elapsed % 1000 !== 0) continue;
       const ink = countWallInk(dev.fb());
       if (ink < minInk) minInk = ink;
-      if (elapsed > 5000 && ink >= initialInk * 0.95) { sawFullWallAgain = true; break; }
+      if (livesShown(dev.fb()) === 0) overAt = t;
     }
-    check("left entirely alone, the ball eventually breaks most of the wall down",
-      minInk < initialInk * 0.3, `wall ink fell from ${initialInk} to as little as ${minInk}`);
-    check("...and the wall comes back (clear, celebrate, regrow), unattended",
-      sawFullWallAgain, sawFullWallAgain ? "a full wall was seen again" : `never regrew within ${ceilingMs / 1000}s of sim time`);
+    check("left entirely alone, the ball breaks real bricks before the paddle's narrow catch zone lets all three lives go",
+      overAt >= 0 && minInk < initialInk * 0.9,
+      overAt >= 0 ? `wall ink fell from ${initialInk} to ${minInk} before game over at t=${overAt}`
+        : `never reached game over within ${ceilingMs / 1000}s`);
+
+    if (overAt >= 0) {
+      // Past the freeze, holding at game over - restart, then give the
+      // regrow wave (CELEB_TOTAL_MS, under 2s) time to finish.
+      t = run(dev, t, LIFE_LOST_FREEZE_MS + 200, null);
+      for (let i = 0; i < 6; i++) { dev.touch(true, 184, 224); t += FRAME_MS; dev.tick(t); }
+      dev.touch(false, 184, 224);
+      t = run(dev, t, 3000, null);
+      const inkAfter = countWallInk(dev.fb());
+      // 90%, not the 95% the entry-vs-regrown comparison elsewhere in this
+      // file uses: countWallInk sums grey fringe across the WHOLE frame, and
+      // the ball and paddle land at slightly different sub-pixel positions
+      // after a restart than they happened to sit at in the original entry
+      // snapshot, which shifts their own small share of that fringe - 90%
+      // is still a real, comfortable margin over "the wall came back".
+      check("...and a tap's regrow wave brings the wall back, the same way a mid-game clear's own does",
+        inkAfter >= initialInk * 0.90, `ink back to ${inkAfter} of an entry value of ${initialInk}`);
+    }
   }
 
   // ---- every push this app makes is decision-0001-legal -------------------

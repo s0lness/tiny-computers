@@ -15,25 +15,52 @@
  * Writes preview/breakout-<shot>.png, LANDSCAPE (448x368, the way this app
  * is held), the rotation applied at encode time only.
  *
- * THE SHOTS, and why these four:
+ * THE SHOTS, and why these six:
  *
  *   entry        the picture at switch-in: full eighteen-brick wall on its
  *                three nested arcs, ball mid-field, paddle centred (no
- *                tilt has been sent).
+ *                tilt has been sent), and three solid lives-dots in the
+ *                top-left corner - see breakout.c's own header comment,
+ *                "THREE LIVES, LOSING THE BALL, AND GAME OVER".
  *   midgame      some time in, untouched: a few bricks gone, the ball and
- *                paddle wherever the physics alone put them.
- *   celebrating  mid-regrow wave, shortly after the wall was fully cleared:
- *                some bricks back, some still growing, some not yet
- *                started - the travelling-wave celebration in progress.
- *   regrown      the wall complete again, unattended.
+ *                paddle wherever the physics alone put them, and by then
+ *                often already down a life or two - see "THIS TOOL NO
+ *                LONGER TRIES..." below.
+ *   life-lost    caught mid-ripple, shortly after the ball has crossed the
+ *                floor and a life has just gone: the ball is gone, a black
+ *                ring is blooming near the paddle, and the lives row is
+ *                down to two dots.
+ *   gameover     all three lives spent, the freeze long past: no ball, no
+ *                ripple, an empty lives row, the wall exactly as it was
+ *                left - a still tableau waiting for a tap, the same idiom
+ *                dino.c's own idle "waiting for a tap" screen uses.
+ *   restarted    a tap fired from gameover: lives are back to three, a
+ *                fresh ball sits at its deterministic start position, and
+ *                the wall's regrow wave (reused from the ordinary mid-game
+ *                clear celebration) is under way.
+ *   regrown      that same regrow wave finished: the wall complete again.
  *
- * The run is driven with no touch and no tilt throughout (the paddle sits
- * at its default centred rest position the whole time) - this is
- * deliberately the "nobody is holding it" case breakout.c's own header
- * comment argues has to still be worth watching. tools/preview-tiltball.ts's
- * equivalent instead varies tilt, because that IS its app's whole input;
- * this app's most interesting unattended behaviour is watching the clock
- * alone clear and regrow a wall.
+ * ENTRY AND MIDGAME are driven with no touch and no tilt (the paddle sits at
+ * its default centred rest position) - the "nobody is holding it" case
+ * breakout.c's own header comment still argues is worth watching for a
+ * short while. LIFE-LOST, GAMEOVER, RESTARTED and REGROWN pin the paddle
+ * hard to one rail (a sustained extreme tilt) so a miss - and then a game
+ * over - is reached quickly and reliably, exactly the setup
+ * emulator/wasm/tests/feature-breakout.ts's own lives tests use.
+ *
+ * THIS TOOL NO LONGER TRIES TO CAPTURE A REGROW REACHED THROUGH A NATURAL,
+ * UNATTENDED FULL CLEAR - the pre-lives version of this file did, because
+ * an untouched table played (and eventually cleared its own wall) forever.
+ * It no longer can: even an idealised controller that tracks the ball's own
+ * x every tick (tried as a probe while writing feature-breakout.ts, not
+ * kept here) spends all three lives in roughly ten to fifteen seconds of
+ * simulated play, against a paddle hit zone that is real but much narrower
+ * than its drawn lens shape - see breakout.c's header comment's closing
+ * "WHETHER THREE LIVES IS THE RIGHT NUMBER" paragraph. So REGROWN here is
+ * reached the way GAME OVER's own restart tap reaches it in play too: the
+ * regrow wave is the same event either way (breakout.c's own header,
+ * "GAME OVER, AND HOW SHE STARTS AGAIN"), so a picture of it is a picture
+ * of it regardless of which door it walked in through.
  *
  * Deliberately does NOT open a serial port or touch a physical device.
  */
@@ -87,12 +114,24 @@ async function loadDevice() {
     e.emu_tick(FRAME_MS);
     if (e.emu_app_current() !== APP_BREAKOUT) throw new Error("did not land in breakout");
     let t = FRAME_MS;
+    // While set, applied on every tick step() takes - the "sustained tilt"
+    // shots (life-lost, gameover) pin this for many frames in a row, the
+    // same way feature-breakout.ts's own lives tests re-send tilt every
+    // frame (tilt.c's filter needs a continuous signal, not one sample).
+    let heldTilt: [number, number, number] | null = null;
     return {
         now(): number { return t; },
+        setTilt(v: [number, number, number] | null) { heldTilt = v; },
+        touch(down: boolean, x: number, y: number) { e.emu_touch(down ? 1 : 0, x, y); },
         step(ms: number) {
             const end2 = t + ms;
-            while (t < end2) { t += FRAME_MS; e.emu_tick(t); }
+            while (t < end2) {
+                if (heldTilt) e.emu_sensor_vector(1, heldTilt[0], heldTilt[1], heldTilt[2]);
+                t += FRAME_MS;
+                e.emu_tick(t);
+            }
         },
+        tick(ms: number) { t += ms; e.emu_tick(t); }, // one raw step, touch() bracketed around it
         fb(): Uint8Array { return new Uint8Array(memory.buffer, e.emu_fb(), PANEL_W * PANEL_H * 2).slice(); },
     };
 }
@@ -117,6 +156,27 @@ function wallInk(fb: Uint8Array): number {
         const v = (fb[i * 2]! << 8) | fb[i * 2 + 1]!;
         const r = (v >> 11) & 0x1f, g = (v >> 5) & 0x3f, b = v & 0x1f;
         if (pixelKind(r, g, b) === "grey") n++;
+    }
+    return n;
+}
+
+// ---- lives row, read directly - same constants and technique as
+// feature-breakout.ts's own livesShown(), lifted from breakout.c's #define
+// block (LIFE_DOT_X0/Y/GAP): landscape (lx,ly) -> panel (PANEL_W-1-ly, lx).
+const PLAY_L = 26, PLAY_T = 26;
+const LIFE_DOT_X0 = PLAY_L + 12, LIFE_DOT_Y = PLAY_T + 12, LIFE_DOT_GAP = 18;
+const START_LIVES = 3;
+function landPixel565(fb: Uint8Array, lx: number, ly: number): { r: number; g: number; b: number } {
+    const px = PANEL_W - 1 - ly, py = lx;
+    const i = (py * PANEL_W + px) * 2;
+    const v = (fb[i]! << 8) | fb[i + 1]!;
+    return { r: (v >> 11) & 0x1f, g: (v >> 5) & 0x3f, b: v & 0x1f };
+}
+function isBlack565(p: { r: number; g: number; b: number }) { return p.r <= 1 && p.g <= 1 && p.b <= 1; }
+function livesShown(fb: Uint8Array): number {
+    let n = 0;
+    for (let i = 0; i < START_LIVES; i++) {
+        if (isBlack565(landPixel565(fb, Math.round(LIFE_DOT_X0 + i * LIFE_DOT_GAP), Math.round(LIFE_DOT_Y)))) n++;
     }
     return n;
 }
@@ -193,6 +253,7 @@ async function write(shot: string, fb: Uint8Array) {
 async function main() {
     const dev = await loadDevice();
     await write("entry", dev.fb());
+    console.log(`  entry: lives=${livesShown(dev.fb())}`);
 
     const initialInk = wallInk(dev.fb());
 
@@ -205,37 +266,61 @@ async function main() {
         if (ink < initialInk * 0.85) midgameShot = dev.fb();
     }
     await write("midgame", midgameShot ?? dev.fb());
+    console.log(`  midgame: lives=${livesShown(dev.fb())}`);
 
-    // Keep going until the wall fully clears (ink bottoms out near the
-    // floor left by the ball/paddle's own anti-aliased edges), then capture
-    // mid-regrow and fully-regrown. The floor moved when bricks stopped
-    // being filled discs: a ring's ink is ALL edge, so "zero bricks alive"
-    // no longer reads as "ink near zero" the way a filled wall's did - it
-    // reads as "ink near whatever the ball and paddle's own edges alone
-    // draw" (measured empirically at 18 bricks: ~7% of the entry ink, not
-    // the near-0% a solid wall left). 10% (comfortably above that floor,
-    // comfortably below "still several bricks up") is what actually detects
-    // it now; 5% never fired, because it was calibrated for a filled wall,
-    // not a ring one. Measured empirically at ~25s of simulated time for one
-    // clear; the cap below is generous, not tuned.
-    let clearedAtT: number | null = null;
-    for (let i = 0; i < 15000 && clearedAtT === null; i++) {
-        dev.step(50);
-        if (wallInk(dev.fb()) < initialInk * 0.10) clearedAtT = dev.now();
+    // ---- life-lost and gameover: a fresh device, paddle pinned hard to
+    // one rail (landscape gx=-1, fed as the panel vector's Y component -
+    // see feature-breakout.ts's own rotation comment for why) so the ball
+    // finds the gap quickly and reliably rather than however long an
+    // untouched centred paddle happens to take. -----------------------
+    const dev2 = await loadDevice();
+    dev2.setTilt([0, -1, 0]);
+    let lastLives = livesShown(dev2.fb());
+    let lostAtT: number | null = null;
+    for (let i = 0; i < 6000 && lostAtT === null; i++) {
+        dev2.step(40);
+        const n = livesShown(dev2.fb());
+        if (n < lastLives) lostAtT = dev2.now();
+        lastLives = n;
     }
-    if (clearedAtT === null) {
-        console.log("did not observe a full clear within the time budget - skipping the celebrating/regrown shots");
-        return;
-    }
+    if (lostAtT === null) throw new Error("never lost a life within the time budget - is the paddle pin still working?");
+    // A couple hundred ms into the ripple/freeze - visible, not yet faded.
+    dev2.step(200);
+    await write("life-lost", dev2.fb());
+    console.log(`  life-lost: lives=${livesShown(dev2.fb())} at t=${lostAtT}`);
 
-    dev.step(500); // partway through the travelling-wave regrow
-    await write("celebrating", dev.fb());
-
-    for (let i = 0; i < 200; i++) {
-        dev.step(50);
-        if (wallInk(dev.fb()) >= initialInk * 0.95) break;
+    let overAtLives = -1;
+    for (let i = 0; i < 12000 && overAtLives !== 0; i++) {
+        dev2.step(40);
+        overAtLives = livesShown(dev2.fb());
     }
-    await write("regrown", dev.fb());
+    if (overAtLives !== 0) throw new Error("never reached 0 lives within the time budget");
+    dev2.step(1200); // well past LIFE_LOST_FREEZE_MS (550) - a genuinely still table
+    await write("gameover", dev2.fb());
+    console.log(`  gameover: lives=${livesShown(dev2.fb())}`);
+
+    // ---- restarted and regrown: a tap from the same gameover table.
+    // TAP_ARM_SAMPLES/TAP_ARM_MS (breakout.c) need a few consecutive
+    // contact frames inside a short window; six 20ms frames comfortably
+    // covers it, the same margin feature-breakout.ts's own restart test
+    // uses. --------------------------------------------------------------
+    for (let i = 0; i < 6; i++) { dev2.touch(true, 184, 224); dev2.tick(FRAME_MS); }
+    dev2.touch(false, 184, 224);
+    dev2.tick(FRAME_MS);
+    // CELEB_PAUSE_MS (400ms) of stillness precedes the wave itself
+    // (breakout.c: "the wall goes empty for a beat... so nothing is
+    // happening in two places on screen at once"), so a shot taken right
+    // after the tap fires would show lives and the ball back but an empty
+    // wall - correct, but not the WAVE. Stepping partway into
+    // CELEB_TOTAL_MS (under 1600ms total) instead catches some rings back,
+    // some still growing, some not yet started.
+    dev2.step(900);
+    await write("restarted", dev2.fb());
+    console.log(`  restarted: lives=${livesShown(dev2.fb())}`);
+
+    dev2.step(2000); // CELEB_TOTAL_MS is under 2s from the tap - generous margin
+    await write("regrown", dev2.fb());
+    console.log(`  regrown: lives=${livesShown(dev2.fb())}, wall ink=${wallInk(dev2.fb())} (entry was ${initialInk})`);
 }
 
 main();

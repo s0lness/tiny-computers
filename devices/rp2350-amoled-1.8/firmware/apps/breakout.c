@@ -1,46 +1,68 @@
-// breakout: a ball that never dies, whacking a rainbow of round bricks it
-// bounces around by itself, with a tilted paddle for a two-year-old to bump
-// it with. "Casse brique", the owner's own name for it.
+// breakout: a tilted paddle for a two-year-old to bump a self-bouncing ball
+// with, whacking a black-and-white wall of round bricks it also bounces
+// around by itself - now with three lives, because the owner asked for them
+// after living with the no-fail-state version for a while. "Casse brique",
+// the owner's own name for it.
 //
 // =============================================================================
-// WHO THIS IS FOR, AND THE ONE DESIGN CALL EVERYTHING ELSE FOLLOWS FROM
+// WHO THIS IS FOR, THE ORIGINAL CALL, AND WHY IT IS NOW OVERRULED
 // =============================================================================
 //
-// The owner's brief named the constraint directly: a two-year-old cannot aim,
-// so a game where the ball is LOST through imprecision is abandoned inside a
-// minute. Real breakout's whole tension is exactly that failure - miss the
-// paddle, lose the ball, the game ends - which makes real breakout precisely
-// the wrong game for this hand.
+// The original brief named the constraint directly: a two-year-old cannot
+// aim, so a game where the ball is LOST through imprecision is abandoned
+// inside a minute. Real breakout's whole tension is exactly that failure -
+// miss the paddle, lose the ball, the game ends - which made real breakout
+// precisely the wrong game for this hand. So the floor used to be a WALL,
+// not a goal: all four edges of the play field bounced the ball, there was
+// no life to lose and no game over, and the paddle was "a big, friendly
+// obstacle she can slide under the ball with a tilt of her hand" rather than
+// a single point of failure. That reasoning was not wrong when it was
+// written, and it is not wrong in the abstract now either.
 //
-// So the floor is a WALL, not a goal. All four edges of the play field bounce
-// the ball, the same as the top, left and right. There is no life to lose, no
-// game over, and therefore nothing here needed a lives counter, a score, or a
-// "you lost" picture - the brief's "no text, no numbers" requirement is met
-// by having nothing that would ever need one. The paddle stops being the
-// single point of failure and becomes what it actually is fun to have it be:
-// a big, friendly obstacle she can slide under the ball with a tilt of her
-// hand, for the satisfaction of swatting it into the wall on purpose instead
-// of watching it wander there by luck. If she never touches it, the ball
-// still bounces itself around and still breaks bricks on its own, so the toy
-// is never "off" and never waiting on her.
+// IT IS OVERRULED HERE BECAUSE THE OWNER ASKED FOR IT, EXPLICITLY: three
+// lives, losing the ball costs one, zero lives is game over, and game over
+// has to be startable again. That is his call to make about his own
+// daughter's toy, and the brief this time is not "avoid a fail state" but
+// "build one, and make it read clearly." What changed in the code, plainly:
+// the bottom edge (PLAY_B) stopped being a fourth bouncing wall and became
+// the one edge that costs a life instead (see "THREE LIVES, LOSING THE
+// BALL, AND GAME OVER" below for the whole design). Nothing about the
+// original worry - a game a small child can lose through simple
+// imprecision is a game she can be shut out of - was wrong; it is simply a
+// cost the owner has decided is worth paying now, the same way real
+// breakout's own tension is worth it for an audience that can aim. The
+// paddle, the wall's three nested arcs, the black-and-white ink, and the
+// fixed-timestep clock underneath all of it are unchanged and still argued
+// for below exactly as they were.
 //
 // =============================================================================
-// CONTROL: TILT ONLY, NOT TOUCH, AND WHY
+// CONTROL: TILT FOR PLAY, AND ONE NARROW EXCEPTION FOR THE RESTART
 // =============================================================================
 //
 // The owner asked for tilt games as their own category, separate from touch
-// games, so tilt is this app's whole input surface - the same call
+// games, so tilt is this app's whole PLAY input - the same call
 // firmware/apps/level.c already made (decision 0012) for the same reason:
 // tilting the puck to move something inside it is a gesture a toddler
-// already has, and it needs no glass free to make. This app reads NO touch
-// at all, the same way level.c does; frame.touchDown/X/Y are simply never
-// looked at. A touch-driven paddle was considered and dropped: a thumb on
-// the glass while the other hand tilts the puck is an awkward, two-handed
-// ask of exactly the hand that is small here, and it would also mean this
-// app needs the measured-dropout touch-gesture testing every touch-driven
-// app on this device carries (see AGENTS.md's "A feature driven by touch
-// needs BOTH kinds of file") for a control surface that adds nothing tilt
-// does not already give for free.
+// already has, and it needs no glass free to make. While a game is actually
+// live, this app reads NO touch at all, the same way tiltball.c does;
+// frame.touchDown/X/Y are never looked at. A touch-driven paddle was
+// considered and dropped: a thumb on the glass while the other hand tilts
+// the puck is an awkward, two-handed ask of exactly the hand that is small
+// here, and it would also mean this app needs the measured-dropout
+// touch-gesture testing every touch-driven app on this device carries (see
+// AGENTS.md's "A feature driven by touch needs BOTH kinds of file") for a
+// control surface that adds nothing tilt does not already give for free.
+//
+// THE ONE EXCEPTION, added alongside the lives feature: once the game is
+// over (LP_GAMEOVER_WAIT below), a tap anywhere restarts it - see "THREE
+// LIVES" for why. That is the ONLY moment this file ever reads
+// f->touchDown, and it is guarded to that one state; a stray touch during
+// play, or during the brief freeze after a life is lost, is never
+// consulted (exactly dino.c's own "tapped is deliberately not consulted"
+// rule during its death freeze, reused here for the same reason - too soon
+// to mean anything). So the sentence above ("while a game is actually live,
+// this app reads NO touch") is still literally true; the new touch read
+// belongs to the one screen that is not a live game.
 //
 // The paddle's X position is a straight, unsmoothed map of
 // app_frame_t.tilt.gx (firmware/runtime/tilt.h) onto the play field's width,
@@ -65,7 +87,12 @@
 // she is carrying the puck, and it would then have to visibly snap back to
 // the real reading the moment trust returns - the lurch the brief explicitly
 // warns against. Freezing costs no extra code, agrees with the one shared
-// filter, and is never wrong in a way a jump could be.
+// filter, and is never wrong in a way a jump could be. The paddle keeps
+// doing exactly this - tracking tilt, freezing while coasting - straight
+// through a life-lost freeze and through the whole time the game sits over
+// at LP_GAMEOVER_WAIT: nothing about losing costs her the one piece of
+// continuous, honest feedback this device gives her, and there is no ball
+// there to hit regardless, so it does no harm.
 //
 // =============================================================================
 // THE WALL IS THREE NESTED ARCS, NOT A GRID - DECISION 0009's TARGET, HIT
@@ -106,8 +133,9 @@
 // rounded stroke rather than a bar with two shapes stuck together.
 //
 // The ball is the only shape with no arrangement to speak of: a plain,
-// SOLID disc - the one filled shape in the whole picture now (see "ONE INK"
-// below for why that, not colour, is what keeps it unmistakable).
+// SOLID disc - the one filled shape in the whole picture, except for the
+// lives markers below, which are deliberately drawn in the very same
+// vocabulary (see "ONE INK").
 //
 // =============================================================================
 // ONE INK: A RING VS A SOLID DISC, NOT A HUE
@@ -147,7 +175,12 @@
 // sketchpad's own ink is - so the picture keeps a second, orthogonal cue
 // (filled vs stroked) between what acts and what gets acted on, on top of
 // the cue (position/size) that tells the acted-on things apart from each
-// other.
+// other. The two new shapes this file draws for the lives feature keep the
+// same grammar rather than inventing a third: each life is a small SOLID
+// disc (see "THREE LIVES" below on why - it is deliberately drawn as a
+// miniature ball, the one thing she can lose), and the ripple that marks a
+// lost ball is a RING, the same annulus a brick is, because it is a mark
+// left behind by an event, not an actor.
 //
 // =============================================================================
 // THE GAME LOOP: ONE FIXED-TIMESTEP CLOCK, NOT A DTMS EULER STEP
@@ -157,11 +190,12 @@
 // it: "today's tick rate is 'as fast as the loop spins'... a game tuned in
 // the emulator plays at a different speed on the board, and at a different
 // speed depending on how much it drew last frame", and asked for "one
-// fixed-timestep accumulator helper... that all three games share." This is
+// fixed-timestep accumulator helper... that all three games share." This was
 // the first game built after that was written, so this file is where that
-// helper is built, in the shape decision 0010 asked for; nothing existed to
-// share it with yet, but nothing here is app-specific about the technique
-// either; a next game can lift `sim_step`'s calling convention wholesale.
+// helper was built, in the shape decision 0010 asked for; the lives feature
+// added below stays inside that same discipline rather than sidestepping it
+// - see "THREE LIVES" for how the freeze and the game-over wait are timed
+// off the same simMs clock as everything else, not off f->nowMs directly.
 //
 // The mechanism: `s->simMs` is the absolute simulated-time-so-far, advanced
 // in fixed FIXED_DT_MS quanta, catching up to `f->nowMs` at the START of
@@ -211,6 +245,10 @@
 // thins without ever letting the ball outrun what a two-year-old can follow
 // with her eyes, and - because it is driven by a discrete brick count rather
 // than a clock - it stays exactly as deterministic as everything else here.
+// A ball respawned after a life is lost resumes at whatever pace the
+// CURRENT brick count implies (rescale_ball_speed(s) is called again right
+// after the respawn), not reset to base - see "THREE LIVES" for why losing
+// a life is not allowed to touch the wall at all, speed included.
 //
 // Clearing the last brick is celebrated without a word: the wall goes empty
 // for a beat (CELEB_PAUSE_MS, the ball frozen so nothing is happening in two
@@ -221,32 +259,151 @@
 // celebration and the respawn are the same event: there is no separate
 // "new wall" moment to announce, because the regrow wave already reads as
 // one - the wall coming back to life is the reward, and it asks nothing of
-// her to see it.
+// her to see it. Starting a fresh game after a game over REUSES this exact
+// wave rather than inventing a second "the wall is back" moment - see
+// "THREE LIVES" below.
+//
+// =============================================================================
+// THREE LIVES, LOSING THE BALL, AND GAME OVER
+// =============================================================================
+//
+// WHAT LOSING THE BALL LOOKS LIKE. The bottom edge (PLAY_B) used to be a
+// fourth bouncing wall; it is now the one edge that does not bounce
+// (ball_wall_bounce no longer touches it at all - the check moved into
+// sim_step, right after the other three walls have had their turn). The
+// instant the ball's own bottom edge crosses it, the ball VANISHES - drawn
+// as nothing at all the next frame, not slowed, not shrunk - and a black
+// RING blooms in its place over LOST_RIPPLE_DURATION_MS (the same annulus
+// shape, the same duration, as dino.c's own record ripple and tiltball.c's
+// own capture ripple: this device already has a wordless "something just
+// happened here" mark, and losing a ball is exactly that kind of moment, so
+// it is reused rather than reinvented). The ring is anchored at a FIXED
+// screen position (RIPPLE_CX/CY, just above the paddle's own rest line),
+// not at wherever the ball actually crossed - the same call dino.c's own
+// ripple makes and argues for in its own header comment: "something just
+// happened here" is a screen-space event to mark, not a world coordinate to
+// remember, and a fixed anchor means the ring always appears where her eye
+// already is (right where the paddle lives), not off wherever the ball
+// happened to drift that particular time. The whole scene then holds still
+// for LIFE_LOST_FREEZE_MS (550ms, dino.c's own DEATH_FREEZE_MS number and
+// reasoning: a picture that was constantly moving suddenly not moving at
+// all is itself the news) before anything else happens. Both durations are
+// timed off s->simMs, the same deterministic clock every other animation in
+// this file uses (see compute_visible_brick_radii's own comment on why),
+// not off wall-clock reads.
+//
+// WHERE THE LIVES LIVE, AND HOW A CHILD WHO CANNOT READ KNOWS WHAT THEY
+// MEAN. Three small SOLID discs (LIFE_DOT_*), tucked in the top-left corner
+// at (LIFE_DOT_X0 + i*LIFE_DOT_GAP, LIFE_DOT_Y) - a region the wall's own
+// arcs never reach (the nearest brick at that height sits well past x=76,
+// see the geometry check below) and comfortably clear of
+// PANEL_BEZEL_MARGIN_PX (gfx.h). They are drawn SOLID, not as rings, on
+// purpose: the owner's own visual-over-textual taste in this repo (three
+// marks that disappear, not the text "3") is met most directly by drawing
+// each life as a miniature version of the one thing she can actually lose -
+// a tiny ball - so "one fewer mark" and "one fewer chance for the ball"
+// read as the same fact rather than an arbitrary counter that happens to
+// start at three. Losing a life erases one dot; nothing else about the
+// picture needs to change for the count to be legible, because paint_rect
+// recomputes the whole lives row from s->drawnLives every time it repaints
+// that rectangle (the same "nothing is patched, everything is recomputed"
+// discipline the ball, paddle and every brick already use), so a missing
+// dot is just paper where ink used to be, not something erased by hand.
+//
+// GEOMETRY CHECK, done once here rather than trusted by eye: row 0 (the
+// outermost, highest arc) reaches its highest point at its own centre
+// brick, (ARC_CX, ROW0_PEAK_Y) = (224, 55); its bricks move DOWN (larger y,
+// further from the lives row) as they move toward either edge, reaching
+// (ARC_CX +/- 155.7, ~105.6) at the arc's own ends. The lives row sits at
+// y=LIFE_DOT_Y=38 (PLAY_T+12), x in [32, 84] (LIFE_DOT_X0 to
+// LIFE_DOT_X0+2*LIFE_DOT_GAP, +/- the dot radius) - entirely inside the
+// triangular gap between the play field's own top-left corner and where the
+// wall's arc actually begins, with the nearest brick ink more than 40px
+// below the lowest life dot. Nothing here overlaps.
+//
+// WHAT HAPPENS TO THE BRICKS ON A LIFE LOST: KEPT, ALWAYS, EVEN THE LIFE
+// THAT ENDS THE GAME. A life lost never touches s->bricks at all - only the
+// discrete, deliberate act of starting a FRESH game (the tap from game
+// over, see below) ever resets the wall. The argument: real progress
+// against the wall is the one thing she is actually building across a
+// session, and a life lost is already announced clearly by the ring and the
+// freeze - making her rebuild the wall too, on top of that, would be a
+// second, larger punishment stacked on the first one for the same single
+// mistake, and would also fight the game's own "the toy is never off and
+// never waiting on her" ethos (a wall that keeps thinning as she plays,
+// life or no life, is what makes a whole session feel like it is going
+// somewhere). If lives remain after the freeze, reset_ball_and_paddle()
+// drops a fresh ball back in at the exact same deterministic start position
+// enter() itself uses, and rescale_ball_speed() sets its pace from
+// whatever aliveCount currently is - the wall's progress, unchanged, is
+// literally what decides how fast the next ball moves.
+//
+// GAME OVER, AND HOW SHE STARTS AGAIN. At zero lives the freeze does not
+// end in a respawn; it ends in LP_GAMEOVER_WAIT, and the picture just... sits
+// there. No ball (still invisible), a paddle that keeps gently answering her
+// tilt (see "CONTROL" above on why that is left on), and the wall exactly
+// as she left it. This follows the same idiom bowling.c's own PH_READY and
+// dino.c's own RS_DEAD_WAIT already use for "nothing is happening right
+// now, and that absence of movement IS the message" - dino.c's header
+// comment even names the mechanism directly ("a scene that was constantly
+// moving suddenly not moving at all is itself the news"). The restart
+// gesture is dino.c's own answer too, copied rather than re-derived: A TAP,
+// ANYWHERE ON THE GLASS - dino.c's tap_tick() arming/release-grace state
+// machine (TAP_ARM_SAMPLES/TAP_ARM_MS/TAP_ARM_RATE_HZ/TAP_RELEASE_GRACE_MS,
+// the same numbers, themselves copied from four.c) reused verbatim, because
+// this is the exact same hardware doing the exact same dropout-hostile
+// thing, and "one physical press, however long held through however many
+// dropouts, fires exactly one action" is not an argument this file has
+// anything to add to. No target to find, no button to locate - the device's
+// own "the target the whole panel is legible from" idiom, applied to the
+// one gesture the terminal screen needs. Firing it resets lives to
+// START_LIVES, drops a fresh ball and paddle in, and - if the wall was not
+// already whole (aliveCount < N_BRICKS, the ordinary case, since a game
+// over almost never lands exactly on a full wall) - sets s->celebrating
+// true, which is the SAME regrow wave a mid-game wall clear already
+// triggers. A "fresh game" is answered with the same "the wall comes back"
+// vocabulary a "fresh wall" already is, rather than a second animation
+// invented to say the same thing. Was BOOT considered instead, the way
+// bowling.c uses it to abandon a stuck rack? No: four.c's own header
+// comment (section 8) calls a BOOT press "an adult's" affordance, not a
+// wordless one a two-year-old is expected to find on her own - the tap is
+// the toddler-facing answer here, the same way it already is in dino.c.
+//
+// WHY THIS EXCEPTION TO "READS NO TOUCH" IS SAFE TO MAKE NARROWLY. Touch is
+// only ever consulted while s->lifePhase == LP_GAMEOVER_WAIT
+// (breakout_tick's own guard clears s->tap whenever that is not the current
+// phase, the same way four.c clears its own gesture state whenever the
+// screen it belongs to is not showing); it is never read during LP_PLAYING
+// or LP_LOST_FREEZE. So "tilt is this app's whole input while a game is
+// live" - the sentence the CONTROL section above still opens with - remains
+// literally true; the one thing that changed is that this app now HAS a
+// screen that is not a live game, and that screen behaves like every other
+// terminal screen on this device.
 //
 // =============================================================================
 // PER-FRAME COST AND RESIDUE, THE WAY EVERY OTHER APP HERE PROVES IT
 // =============================================================================
 //
-// Nothing here erases anything. Exactly like firmware/apps/level.c,
+// Nothing here erases anything. Exactly like firmware/apps/tiltball.c,
 // paint_rect() recomputes every pixel of a dirty rectangle from the CURRENT
-// model (ball, paddle, every brick's current radius) rather than patching
-// around an old shape, so an old position cannot survive a repaint of the
-// ground it stood on - residue is impossible by construction, not by
-// bookkeeping, and it is the same reason level.c gives for the same
-// technique. The dirty rectangle is the union of whatever actually changed
-// this tick (the ball's old and new box, the paddle's old and new box, and
-// each brick whose drawn radius changed), consolidated into at most six
-// pushes; if more than that changes in one tick (only reachable during the
-// wall's regrow wave, when several bricks can cross their own grow schedule
-// inside a single coarse tick) the fallback is one big union rect instead -
-// still correct, just less surgical, and still nowhere near the panel's
-// per-tick budget. Eighteen bricks (three rows of six) rather than the
-// original ten does not change this argument's shape, only the constant
-// N_BRICKS it is parametrised on - the six-pushes-or-fall-back-to-one
-// discipline never depended on how many bricks exist, only on how many
-// change in the SAME tick, which the regrow wave's own stagger still bounds
-// the same way. See "MEASURED COST" in the task report for the actual
-// numbers `bun run tools/gate/run.ts --measure` prints for this app.
+// model (ball, paddle, every brick's current radius, the lives row, the
+// ripple) rather than patching around an old shape, so an old position
+// cannot survive a repaint of the ground it stood on - residue is
+// impossible by construction, not by bookkeeping, and it is the same reason
+// tiltball.c gives for the same technique. The dirty rectangle is the union of
+// whatever actually changed this tick (the ball's old and new box - or its
+// visibility toggling off/on, which counts as a change even when the
+// position did not move -, the paddle's old and new box, each brick whose
+// drawn radius changed, the lives row whenever the count changes, and the
+// ripple whenever it is animating), consolidated into at most EIGHT pushes
+// now (was six, before the lives row and the ripple joined the list of
+// things that can change in the same tick); if more than that changes at
+// once (still only reachable during the wall's own regrow wave, when
+// several bricks can cross their own grow schedule inside a single coarse
+// tick) the fallback is one big union rect instead - still correct, just
+// less surgical, and still nowhere near the panel's per-tick budget. See
+// "MEASURED COST" in the task report for the actual numbers
+// `bun run tools/gate/run.ts --measure` prints for this app.
 //
 // =============================================================================
 // WHAT THIS FILE CANNOT VERIFY, SAID BEFORE THE CODE PER DECISION 0010
@@ -272,9 +429,25 @@
 // in this tree; the contact sheet (preview/breakout-*.png,
 // tools/preview-breakout.ts) is where that question has to be judged, by an
 // eye, the same as every icon on this device already is.
+//
+// WHETHER THREE LIVES IS THE RIGHT NUMBER, AND WHETHER A TAP READS AS
+// "TRY AGAIN" RATHER THAN AS NOTHING IN PARTICULAR. Nothing in this tree can
+// measure whether losing the ball three times in a row before a fresh start
+// is a fair, legible arc for THIS child, on THIS device, at THIS ball
+// speed - that is a feel question, decision 0003's forbidden kind, same as
+// every timing constant elsewhere in this file. Nor can anything here
+// confirm the tap-anywhere gesture is actually discovered unprompted on the
+// game-over screen the way it already has been on dino's - dino's own
+// restart reuses a gesture she is already mid-session on (the same tap that
+// jumps); this app's restart is the FIRST touch gesture this app has ever
+// asked of her, arriving only once tilt has already failed her three times.
+// Whether that is still findable, or needs a nudge (a soft pulse on the
+// paddle, say), is exactly the kind of thing only watching a real two-year-
+// old's hands can answer.
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "app.h"
 #include "gfx.h"
@@ -293,6 +466,8 @@
 // The bounce boundary applied to the BALL'S CENTRE. 26px in from every edge
 // keeps the drawn ink (a 9px ball plus ~1.5px of anti-aliasing fringe) at
 // least 15px clear of PANEL_BEZEL_MARGIN_PX (10, gfx.h) on every wall.
+// PLAY_B is no longer a bounce boundary - see header comment's "THREE
+// LIVES" section: crossing it is now how the ball is lost.
 #define PLAY_L 26.0f
 #define PLAY_R (LAND_W - 26.0f) // 422
 #define PLAY_T 26.0f
@@ -323,6 +498,48 @@
 // rescale_ball_speed() immediately after, so this only ever changes ANGLE,
 // never lets a hit speed the ball up on its own.
 #define PADDLE_ENGLISH 0.09f
+
+/* ---- lives, losing the ball, and game over - see header comment's
+ * "THREE LIVES, LOSING THE BALL, AND GAME OVER" section for the whole
+ * argument. Defined here, after PADDLE_CENTER_X/PADDLE_Y, since the
+ * ripple's fixed anchor is expressed relative to the paddle. ------------- */
+#define START_LIVES 3
+
+// The beat of stillness after a life is lost, before either a fresh ball
+// drops in or the table empties for good - dino.c's own DEATH_FREEZE_MS
+// number and reasoning, reused rather than re-derived.
+#define LIFE_LOST_FREEZE_MS 550u
+
+// The ring that blooms when a life is lost - dino.c's own record-ripple and
+// tiltball.c's own capture-ripple numbers, reused rather than re-derived
+// (nothing about "how long should a bloom read as one event" changed by
+// moving from a runner or a rolling ball to this game).
+#define LOST_RIPPLE_DURATION_MS 380u
+#define LOST_RIPPLE_MAX_R    20.0f
+#define LOST_RIPPLE_MAX_BAND  6.0f
+// A FIXED screen anchor, not the ball's actual crossing point - see header
+// comment for why (dino.c's own ripple makes the same call, for the same
+// reason). Checked clear of every edge's bezel margin: at max extent the
+// ring reaches RIPPLE_CY +/- 26 = [300, 352] and RIPPLE_CX +/- 26 =
+// [198, 250], both comfortably inside PANEL_BEZEL_MARGIN_PX of every side.
+#define RIPPLE_CX PADDLE_CENTER_X
+#define RIPPLE_CY (PADDLE_Y + 26.0f)
+
+// The lives themselves: three small SOLID discs, top-left corner, clear of
+// the wall's own arcs and the bezel - see header comment's "GEOMETRY CHECK".
+#define LIFE_DOT_R   6.0f
+#define LIFE_DOT_GAP 18.0f
+#define LIFE_DOT_X0  (PLAY_L + 12.0f) // 38
+#define LIFE_DOT_Y   (PLAY_T + 12.0f) // 38
+
+// The restart gesture's arming/release-grace numbers - dino.c's own
+// TAP_ARM_*/TAP_RELEASE_GRACE_MS, copied verbatim (itself copied from
+// four.c): the same controller, the same dropout profile, the same
+// arithmetic.
+#define TAP_ARM_SAMPLES      4
+#define TAP_ARM_MS           40u
+#define TAP_ARM_RATE_HZ      15u
+#define TAP_RELEASE_GRACE_MS 300u
 
 /* ---- the wall: eighteen rings on three concentric arcs (see the header
  * comment's "THE WALL IS THREE NESTED ARCS" section for why nesting arcs,
@@ -394,25 +611,62 @@ typedef struct {
     bool alive;       // true = fully present and collidable
 } brick_t;
 
+// The game's own life-cycle - see header comment's "THREE LIVES" section.
+// LP_PLAYING (0) is the zeroed arena's own default, so a fresh app-switch-in
+// lands in ordinary play, exactly like every other state enum in this file.
+typedef enum {
+    LP_PLAYING = 0,
+    LP_LOST_FREEZE,   // a life just went; a beat of stillness (timed off
+                       // simMs) before either a fresh ball drops in or the
+                       // table empties for good
+    LP_GAMEOVER_WAIT,  // no lives left; everything holds still, waiting for
+                        // a tap - see header comment
+} life_phase_t;
+
+// The restart gesture's own arming state - dino.c's tap_state_t/tap_tick,
+// copied verbatim (see header comment). Only ever fed touch while
+// s->lifePhase == LP_GAMEOVER_WAIT.
+typedef struct {
+    bool     everContacted;
+    bool     armed;         // this physical press has already fired
+    int      contactCount;
+    uint32_t firstContactMs;
+    uint32_t lastContactMs;
+} tap_state_t;
+
 typedef struct {
     bool     inited;
     uint32_t simMs;   // the fixed-timestep clock (header comment)
 
     float ballX, ballY, ballVX, ballVY;
     float paddleX;
+    bool  ballVisible; // false while lost - see header comment
 
     brick_t bricks[N_BRICKS];
     int     aliveCount;
 
     bool     celebrating;
-    uint32_t celebrateStartMs; // simMs at the tick the last brick broke
+    uint32_t celebrateStartMs; // simMs at the tick the last brick broke,
+                                // OR at the tick a fresh game's regrow began
+
+    int          lives;
+    life_phase_t lifePhase;
+    uint32_t     lifePhaseStartMs; // simMs at the tick lifePhase last changed
+
+    bool     rippleActive;
+    uint32_t rippleStartMs; // simMs
+
+    tap_state_t tap; // the restart gesture - read only in LP_GAMEOVER_WAIT
 
     // What is actually ON SCREEN right now. paint_rect() renders exactly
     // this, which is what makes an incrementally-updated frame identical to
     // a freshly-entered one - same argument and same technique as
     // level.c's drawn* fields.
     float drawnBallX, drawnBallY;
+    bool  drawnBallVisible;
     float drawnPaddleX;
+    int   drawnLives;
+    float drawnRippleR, drawnRippleBand; // 0 when the ripple has nothing to draw
     float drawnBrickR[N_BRICKS];
 } breakout_state_t;
 
@@ -422,9 +676,11 @@ static breakout_state_t *s_state;
  * Colour blending. Unlike level.c (grey-only, MIN composition), bricks need
  * a real colour composited under black ink, so this is a small back-to-
  * front alpha blend instead: paper white, then the best-covering brick (if
- * any), then the paddle, then the ball - each a single mix by that shape's
- * own anti-aliased coverage. Three layers, always in this order, never more
- * than three per pixel.
+ * any), then the lives row, then the ripple, then the paddle, then the
+ * ball - each a single mix by that shape's own anti-aliased coverage. Order
+ * rarely matters in practice (these shapes almost never share a pixel - see
+ * header comment's "ONE INK" addendum), but this is the fixed sequence
+ * every frame uses regardless.
  * ------------------------------------------------------------------- */
 static inline uint16_t rgb565_pack(int r, int g, int b) {
     if (r < 0) r = 0; else if (r > 31) r = 31;
@@ -521,6 +777,38 @@ static void paint_rect(const breakout_state_t *s, rect_t r) {
                 if (bestCov > 0.0f) outv = rgb565_mix(outv, RGB565_BLACK, bestCov);
             }
 
+            // The lives row: up to START_LIVES small SOLID discs - see
+            // header comment's "WHERE THE LIVES LIVE" section. Drawn from
+            // s->drawnLives, not s->lives, per the "paint only ever reads
+            // drawn state" rule every shape here follows.
+            if (s->drawnLives > 0) {
+                float bestCov = 0.0f;
+                for (int i = 0; i < s->drawnLives; i++) {
+                    float cxk = LIFE_DOT_X0 + (float)i * LIFE_DOT_GAP;
+                    float dxk = fx - cxk;
+                    if (fabsf(dxk) > LIFE_DOT_R + 1.5f) continue;
+                    float dyk = fy - LIFE_DOT_Y;
+                    if (fabsf(dyk) > LIFE_DOT_R + 1.5f) continue;
+                    float d = sqrtf(dxk * dxk + dyk * dyk) - LIFE_DOT_R;
+                    float c = coverage_from_dist(d);
+                    if (c > bestCov) bestCov = c;
+                }
+                if (bestCov > 0.0f) outv = rgb565_mix(outv, RGB565_BLACK, bestCov);
+            }
+
+            // The life-lost ripple: a ring at a fixed screen anchor - see
+            // header comment's "WHAT LOSING THE BALL LOOKS LIKE" section.
+            if (s->drawnRippleR > 0.0f) {
+                float dxk = fx - RIPPLE_CX, dyk = fy - RIPPLE_CY;
+                float dist = sqrtf(dxk * dxk + dyk * dyk);
+                float band = s->drawnRippleBand;
+                float dOuter = dist - s->drawnRippleR;
+                float dInner = dist - (s->drawnRippleR - band);
+                float d = dOuter > -dInner ? dOuter : -dInner;
+                float c = coverage_from_dist(d);
+                if (c > 0.0f) outv = rgb565_mix(outv, RGB565_BLACK, c);
+            }
+
             // The paddle: intersection of a band around a large arc (the
             // bow) and a bounding disc (rounds both ends) - see the header
             // comment's "the wall is an arc, not a grid" section.
@@ -535,8 +823,9 @@ static void paint_rect(const breakout_state_t *s, rect_t r) {
                 if (c > 0.0f) outv = rgb565_mix(outv, RGB565_BLACK, c);
             }
 
-            // The ball, always on top.
-            {
+            // The ball, always on top - drawn only while visible (see
+            // header comment: it vanishes the instant it is lost).
+            if (s->drawnBallVisible) {
                 float dyBall = fy - s->drawnBallY;
                 float d2 = dxBall * dxBall + dyBall * dyBall;
                 float rr = BALL_R + 1.5f;
@@ -621,6 +910,32 @@ static rect_t brick_rect(float cx, float cy, float r_, float band) {
     return r;
 }
 
+// The lives row's own footprint - a fixed box, not one sized to the current
+// count: a shrinking count has to clear the dot that just disappeared, not
+// just repaint whatever is still occupied, so this always covers the whole
+// row's max extent (three dots' worth), the same reasoning brick_rect's own
+// comment gives for growing by `band`.
+static rect_t lives_rect(void) {
+    rect_t r;
+    r.x0 = (int)floorf(LIFE_DOT_X0 - LIFE_DOT_R - 2.0f);
+    r.x1 = (int)ceilf(LIFE_DOT_X0 + (float)(START_LIVES - 1) * LIFE_DOT_GAP + LIFE_DOT_R + 2.0f);
+    r.y0 = (int)floorf(LIFE_DOT_Y - LIFE_DOT_R - 2.0f);
+    r.y1 = (int)ceilf(LIFE_DOT_Y + LIFE_DOT_R + 2.0f);
+    return r;
+}
+
+// The ripple's own footprint - fixed position, fixed max radius (see
+// LOST_RIPPLE_CX/CY above), so like lives_rect this is always the same box
+// regardless of the ring's current radius.
+static rect_t ripple_rect(void) {
+    rect_t r;
+    r.x0 = (int)floorf(RIPPLE_CX - LOST_RIPPLE_MAX_R - 2.0f);
+    r.x1 = (int)ceilf(RIPPLE_CX + LOST_RIPPLE_MAX_R + 2.0f);
+    r.y0 = (int)floorf(RIPPLE_CY - LOST_RIPPLE_MAX_R - 2.0f);
+    r.y1 = (int)ceilf(RIPPLE_CY + LOST_RIPPLE_MAX_R + 2.0f);
+    return r;
+}
+
 static rect_t rect_union(rect_t a, rect_t b) {
     rect_t r;
     r.x0 = a.x0 < b.x0 ? a.x0 : b.x0;
@@ -650,11 +965,13 @@ static void rescale_ball_speed(breakout_state_t *s) {
     s->ballVY *= k;
 }
 
+// L/R/T only now - the bottom is no longer a wall, see header comment's
+// "THREE LIVES" section: crossing PLAY_B is checked separately, right after
+// this call, in sim_step.
 static void ball_wall_bounce(breakout_state_t *s) {
     if (s->ballX - BALL_R < PLAY_L) { s->ballX = PLAY_L + BALL_R; if (s->ballVX < 0.0f) s->ballVX = -s->ballVX; }
     else if (s->ballX + BALL_R > PLAY_R) { s->ballX = PLAY_R - BALL_R; if (s->ballVX > 0.0f) s->ballVX = -s->ballVX; }
     if (s->ballY - BALL_R < PLAY_T) { s->ballY = PLAY_T + BALL_R; if (s->ballVY < 0.0f) s->ballVY = -s->ballVY; }
-    else if (s->ballY + BALL_R > PLAY_B) { s->ballY = PLAY_B - BALL_R; if (s->ballVY > 0.0f) s->ballVY = -s->ballVY; }
 }
 
 // The paddle is a solid obstacle from either face (it now sits inside the
@@ -738,7 +1055,73 @@ static void ball_bricks_bounce(breakout_state_t *s, uint32_t simMsNow) {
     }
 }
 
+/* ---------------------------------------------------------------------
+ * The restart gesture - dino.c's tap_tick(), copied verbatim (see header
+ * comment's "GAME OVER, AND HOW SHE STARTS AGAIN" section). Only ever
+ * called while s->lifePhase == LP_GAMEOVER_WAIT.
+ * ------------------------------------------------------------------- */
+static bool tap_tick(tap_state_t *g, const app_frame_t *f) {
+    bool fired = false;
+    if (f->touchDown) {
+        if (!g->everContacted) {
+            g->everContacted = true;
+            g->contactCount = 0;
+            g->firstContactMs = f->nowMs;
+        }
+        g->contactCount++;
+        g->lastContactMs = f->nowMs;
+        if (!g->armed) {
+            uint32_t elapsed = f->nowMs - g->firstContactMs;
+            if (g->contactCount >= TAP_ARM_SAMPLES && elapsed >= TAP_ARM_MS &&
+                (uint32_t)g->contactCount * 1000u >= TAP_ARM_RATE_HZ * elapsed) {
+                g->armed = true;
+                fired = true;
+            }
+        }
+    } else if (g->everContacted && (f->nowMs - g->lastContactMs) >= TAP_RELEASE_GRACE_MS) {
+        g->everContacted = false;
+        g->armed = false;
+        g->contactCount = 0;
+    }
+    return fired;
+}
+
+// Drops a fresh ball in at the exact deterministic start position/angle
+// enter() itself uses, and re-centres the paddle - shared by enter(), a
+// mid-game respawn after a life is lost (bricks untouched), and a full
+// restart from game over (lives also reset, by the caller). See header
+// comment's "THREE LIVES" section.
+static void reset_ball_and_paddle(breakout_state_t *s) {
+    s->ballX = ARC_CX;
+    s->ballY = PADDLE_Y - 100.0f;
+    float a = BALL_START_ANGLE_DEG * BREAKOUT_PI / 180.0f;
+    s->ballVX = BALL_SPEED_BASE * cosf(a);
+    s->ballVY = -BALL_SPEED_BASE * sinf(a);
+    s->paddleX = PADDLE_CENTER_X;
+    s->ballVisible = true;
+}
+
 static void sim_step(breakout_state_t *s, float dtMs, uint32_t simMsNow) {
+    if (s->lifePhase == LP_LOST_FREEZE) {
+        if (simMsNow - s->lifePhaseStartMs >= LIFE_LOST_FREEZE_MS) {
+            if (s->lives > 0) {
+                // Bricks untouched - a life lost never resets the wall, see
+                // header comment. rescale_ball_speed() sets the fresh
+                // ball's pace from whatever aliveCount already is.
+                reset_ball_and_paddle(s);
+                rescale_ball_speed(s);
+                s->lifePhase = LP_PLAYING;
+            } else {
+                s->lifePhase = LP_GAMEOVER_WAIT;
+                printf("breakout: game over\r\n");
+            }
+        }
+        return; // frozen throughout: no ball motion, no brick changes
+    }
+    if (s->lifePhase == LP_GAMEOVER_WAIT) {
+        return; // nothing moves; only a tap (breakout_tick) ends this
+    }
+
     if (s->celebrating) {
         uint32_t elapsed = simMsNow - s->celebrateStartMs;
         if (elapsed >= CELEB_TOTAL_MS) {
@@ -753,6 +1136,22 @@ static void sim_step(breakout_state_t *s, float dtMs, uint32_t simMsNow) {
     s->ballX += s->ballVX * dtMs;
     s->ballY += s->ballVY * dtMs;
     ball_wall_bounce(s);
+
+    if (s->ballY + BALL_R > PLAY_B) {
+        // Lost - see header comment's "WHAT LOSING THE BALL LOOKS LIKE".
+        // The ball vanishes here, this same simulated instant; the ripple
+        // and the freeze are what the next few real ticks' worth of
+        // painting will show for it.
+        s->lives--;
+        s->ballVisible = false;
+        s->rippleActive = true;
+        s->rippleStartMs = simMsNow;
+        s->lifePhase = LP_LOST_FREEZE;
+        s->lifePhaseStartMs = simMsNow;
+        printf("breakout: ball lost, %d live(s) left\r\n", s->lives);
+        return;
+    }
+
     ball_paddle_bounce(s);
     ball_bricks_bounce(s, simMsNow);
 }
@@ -792,13 +1191,9 @@ static void breakout_enter(void) {
     // the INITIAL picture depends on that first reading, unlike level.c:
     // every position below is deterministic, so there is nothing to hide
     // until a signal arrives.
-    s->ballX = ARC_CX;
-    s->ballY = PADDLE_Y - 100.0f;
-    float a = BALL_START_ANGLE_DEG * BREAKOUT_PI / 180.0f;
-    s->ballVX = BALL_SPEED_BASE * cosf(a);
-    s->ballVY = -BALL_SPEED_BASE * sinf(a);
-
-    s->paddleX = PADDLE_CENTER_X;
+    reset_ball_and_paddle(s);
+    s->lives = START_LIVES;
+    s->lifePhase = LP_PLAYING;
 
     // Three concentric arcs, one per row, sharing ARC_CX/ARC_CY - see the
     // header comment's "THE WALL IS THREE NESTED ARCS" section. Row 0 is
@@ -822,7 +1217,11 @@ static void breakout_enter(void) {
 
     s->drawnBallX = s->ballX;
     s->drawnBallY = s->ballY;
+    s->drawnBallVisible = s->ballVisible;
     s->drawnPaddleX = s->paddleX;
+    s->drawnLives = s->lives;
+    s->drawnRippleR = 0.0f;
+    s->drawnRippleBand = 0.0f;
     for (int i = 0; i < N_BRICKS; i++) s->drawnBrickR[i] = BRICK_R;
 
     // The whole field, once. enter() does not push - the runtime pushes the
@@ -843,12 +1242,43 @@ static void breakout_tick(const app_frame_t *f) {
     // header comment on why no second filter is added, and why that
     // answers the coasting question for free). Applied once per real tick,
     // before this tick's physics catch-up, so any collision below sees the
-    // freshest reading available.
+    // freshest reading available. Kept running through every lifePhase,
+    // freeze and game-over-wait included - see header comment's "CONTROL"
+    // section on why that is left on.
     {
         float gx = f->tilt.valid ? f->tilt.gx : 0.0f;
         float frac = gx / PADDLE_GX_FULL;
         if (frac < -1.0f) frac = -1.0f; else if (frac > 1.0f) frac = 1.0f;
         s->paddleX = PADDLE_CENTER_X + frac * PADDLE_TRAVEL_MAX;
+    }
+
+    // The restart gesture: read ONLY while waiting at game over - see
+    // header comment's "WHY THIS EXCEPTION TO READS NO TOUCH IS SAFE TO
+    // MAKE NARROWLY" section. Any tap starts a fresh game: full lives, a
+    // fresh ball and paddle, and the wall regrows through the exact same
+    // wave a mid-game clear already uses (reused, not reinvented) whenever
+    // the wall was not already whole.
+    if (s->lifePhase == LP_GAMEOVER_WAIT) {
+        if (tap_tick(&s->tap, f)) {
+            s->lives = START_LIVES;
+            reset_ball_and_paddle(s);
+            s->lifePhase = LP_PLAYING;
+            if (s->aliveCount < N_BRICKS) {
+                s->celebrating = true;
+                s->celebrateStartMs = s->simMs;
+            } else {
+                rescale_ball_speed(s);
+            }
+            printf("breakout: restart\r\n");
+        }
+    } else if (s->tap.everContacted || s->tap.armed) {
+        // Not waiting at game over: the restart gesture's own state never
+        // carries in from here - the same "clear the gesture state whenever
+        // its own screen is not showing" rule four.c's own choice screen
+        // gesture follows (section 8 of its header comment).
+        s->tap.everContacted = false;
+        s->tap.armed = false;
+        s->tap.contactCount = 0;
     }
 
     if (f->nowMs - s->simMs > BACKLOG_CAP_MS) s->simMs = f->nowMs - BACKLOG_CAP_MS;
@@ -857,35 +1287,58 @@ static void breakout_tick(const app_frame_t *f) {
         sim_step(s, (float)FIXED_DT_MS, s->simMs);
     }
 
+    // The ripple: purely cosmetic, computed off s->simMs exactly like the
+    // bricks' own regrow curve above - see compute_visible_brick_radii's
+    // own comment on why that is what "deterministic" requires here.
+    float curRippleR = 0.0f, curRippleBand = 0.0f;
+    if (s->rippleActive) {
+        uint32_t age = s->simMs - s->rippleStartMs;
+        if (age >= LOST_RIPPLE_DURATION_MS) {
+            s->rippleActive = false;
+        } else {
+            float u = (float)age / (float)LOST_RIPPLE_DURATION_MS;
+            curRippleR = LOST_RIPPLE_MAX_R * u;
+            curRippleBand = LOST_RIPPLE_MAX_BAND * (1.0f - u);
+        }
+    }
+
     float curR[N_BRICKS];
     compute_visible_brick_radii(s, curR);
 
     float newBallX = quantise(s->ballX), newBallY = quantise(s->ballY);
     float newPaddleX = quantise(s->paddleX);
 
-    bool ballChanged = (newBallX != s->drawnBallX) || (newBallY != s->drawnBallY);
+    bool ballChanged = (newBallX != s->drawnBallX) || (newBallY != s->drawnBallY) ||
+                        (s->ballVisible != s->drawnBallVisible);
     bool paddleChanged = (newPaddleX != s->drawnPaddleX);
+    bool livesChanged = (s->lives != s->drawnLives);
+    bool rippleChanged = (curRippleR != s->drawnRippleR) || (curRippleBand != s->drawnRippleBand);
     int changedBricks[N_BRICKS], nChangedBricks = 0;
     for (int i = 0; i < N_BRICKS; i++) {
         if (curR[i] != s->drawnBrickR[i]) changedBricks[nChangedBricks++] = i;
     }
 
-    int totalItems = (ballChanged ? 1 : 0) + (paddleChanged ? 1 : 0) + nChangedBricks;
+    int totalItems = (ballChanged ? 1 : 0) + (paddleChanged ? 1 : 0) +
+                      (livesChanged ? 1 : 0) + (rippleChanged ? 1 : 0) + nChangedBricks;
     if (totalItems == 0) return; // the same picture: no paint, no push
 
-    if (totalItems <= 6) {
-        rect_t dirty[8];
+    if (totalItems <= 8) {
+        rect_t dirty[12];
         int nd = 0;
         if (ballChanged) dirty[nd++] = rect_union(ball_rect(s->drawnBallX, s->drawnBallY), ball_rect(newBallX, newBallY));
         if (paddleChanged) dirty[nd++] = rect_union(paddle_rect(s->drawnPaddleX), paddle_rect(newPaddleX));
+        if (livesChanged) dirty[nd++] = lives_rect();
+        if (rippleChanged) dirty[nd++] = ripple_rect();
         for (int k = 0; k < nChangedBricks; k++) {
             int i = changedBricks[k];
             float maxR = curR[i] > s->drawnBrickR[i] ? curR[i] : s->drawnBrickR[i];
             dirty[nd++] = brick_rect(s->bricks[i].cx, s->bricks[i].cy, maxR, ROW_BAND_HALF[i / BRICKS_PER_ROW]);
         }
 
-        s->drawnBallX = newBallX; s->drawnBallY = newBallY;
+        s->drawnBallX = newBallX; s->drawnBallY = newBallY; s->drawnBallVisible = s->ballVisible;
         s->drawnPaddleX = newPaddleX;
+        s->drawnLives = s->lives;
+        s->drawnRippleR = curRippleR; s->drawnRippleBand = curRippleBand;
         for (int i = 0; i < N_BRICKS; i++) s->drawnBrickR[i] = curR[i];
 
         for (int i = 0; i < nd; i++) paint_and_push(s, dirty[i]);
@@ -893,17 +1346,21 @@ static void breakout_tick(const app_frame_t *f) {
         // More changed in one tick than is worth pushing separately (only
         // reachable mid-regrow-wave, when several bricks cross their own
         // stagger boundary inside one coarse tick): one bigger, safer push
-        // instead of up to N_BRICKS+2 small ones.
+        // instead of up to N_BRICKS+4 small ones.
         rect_t u = rect_union(ball_rect(s->drawnBallX, s->drawnBallY), ball_rect(newBallX, newBallY));
         u = rect_union(u, rect_union(paddle_rect(s->drawnPaddleX), paddle_rect(newPaddleX)));
+        if (livesChanged) u = rect_union(u, lives_rect());
+        if (rippleChanged) u = rect_union(u, ripple_rect());
         for (int k = 0; k < nChangedBricks; k++) {
             int i = changedBricks[k];
             float maxR = curR[i] > s->drawnBrickR[i] ? curR[i] : s->drawnBrickR[i];
             u = rect_union(u, brick_rect(s->bricks[i].cx, s->bricks[i].cy, maxR, ROW_BAND_HALF[i / BRICKS_PER_ROW]));
         }
 
-        s->drawnBallX = newBallX; s->drawnBallY = newBallY;
+        s->drawnBallX = newBallX; s->drawnBallY = newBallY; s->drawnBallVisible = s->ballVisible;
         s->drawnPaddleX = newPaddleX;
+        s->drawnLives = s->lives;
+        s->drawnRippleR = curRippleR; s->drawnRippleBand = curRippleBand;
         for (int i = 0; i < N_BRICKS; i++) s->drawnBrickR[i] = curR[i];
 
         paint_and_push(s, u);
@@ -916,9 +1373,10 @@ const app_t g_breakoutApp = {
     .tick = breakout_tick,
     .leave = NULL,
     .landscape = true,
-    // No shake: this app has nothing destructive to undo and nothing that
-    // needs a manual reset (the wall regrows itself), so shake stays the
-    // sketchpad's own gesture rather than becoming a universal verb -
-    // exactly level.c's own reasoning (decision 0002 section 5).
+    // No shake: this app has nothing destructive to undo (a life lost is
+    // already its own wordless event, and the wall never resets on its
+    // own) and nothing that needs a manual reset the restart tap does not
+    // already cover - exactly tiltball.c's own reasoning (decision 0002
+    // section 5).
     .wantsShake = false,
 };

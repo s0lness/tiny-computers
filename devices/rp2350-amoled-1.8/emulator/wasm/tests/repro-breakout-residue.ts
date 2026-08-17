@@ -37,8 +37,15 @@
 // 0003) and this device has already rebooted itself through the watchdog
 // once by redrawing too much (the sketchpad's palette). Pixels pushed is
 // the proxy a headless run can actually measure; tools/gate/run.ts
-// --measure's own line for this app (peak 3504px/tick, 0.02 panels) is
-// where the number below comes from, generously rounded up.
+// --measure's own line for this app (peak 83328px/tick, 0.51 panels, during
+// "breakout/hold top-left 1500ms" - a restart tap landing mid-wave, which
+// falls back to ONE union push covering the whole wall's own regrow burst,
+// see breakout.c's header comment's "PER-FRAME COST AND RESIDUE" section)
+// is where the number below comes from, generously rounded up. Before the
+// lives feature this app's own worst tick was 3504px/tick; the regrow
+// wave's fallback union is what a life lost now makes reachable through
+// ordinary unattended play too, not only through a deliberate touch
+// stimulus, so the new number is real, not a one-off spike.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -50,11 +57,12 @@ const PANEL_PX = PANEL_W * PANEL_H;
 let APP_BREAKOUT = -1;
 const FRAME_MS = 16;
 
-// Generous over the gate's own measured peak (3504px), since this file
-// drives longer and rougher sequences than the gate's stimulus list -
-// still two orders of magnitude under the palette-bug shape the gate's own
-// budget (3 full panels) exists to catch.
-const MAX_TICK_PUSH_PIXELS = 20000;
+// Generous over the gate's own measured peak (83328px, since the lives
+// feature - see this file's header comment above), rounded up further
+// still because this file drives longer and rougher sequences than the
+// gate's stimulus list - still comfortably under the palette-bug shape the
+// gate's own budget (3 full panels, 494592px) exists to catch.
+const MAX_TICK_PUSH_PIXELS = 120000;
 
 let passCount = 0, failCount = 0;
 function check(label: string, ok: boolean, detail?: string) {
