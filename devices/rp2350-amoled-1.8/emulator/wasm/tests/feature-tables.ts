@@ -15,14 +15,41 @@ const LAND_W = PANEL_H, LAND_H = PANEL_W; // 448 x 368
 const BEZEL = 10;
 
 // tables.c's own layout constants, lifted rather than re-derived (the
-// convention every test in this directory uses against its app).
+// convention every test in this directory uses against its app). Updated
+// 2026-08-17 for the owner's exact mockup: QROW_H grew from 64 to 80 to
+// give the new full-width rule real separation from the equation above it
+// (tables.c's QROW_H comment), recovered from the loupe (LOUPE_ZONE_H
+// 88->80) and the pad (CELL_H 49->47) - see tables.c's own LAYOUT comment
+// for the arithmetic (80+80+188=348=USABLE_H).
 const OX = 10, OY = 10;
-const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + 92;
-const CELL_W = 99, CELL_H = 64, NUMPAD_COLS = 3;
+const QROW_H = 80, LOUPE_ZONE_H = 80;
+const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H;
+const CELL_W = 95, CELL_H = 47, NUMPAD_COLS = 3;
 const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
 const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
 const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
 const digitCell = (d: number) => (d === 0 ? CELL_ZERO : d - 1);
+
+// The question band and the counters box, lifted from tables.c the same
+// way the numpad geometry above is. Updated again for the owner's exact
+// mockup (2026-08-17): the blank's own x0 now depends on whether the
+// current question's factor is one digit or two (question_slot_x0() in
+// tables.c - the fix for the "6 x    1 =" spacing hole), so a test that
+// does not yet know the first question's factor checks BOTH possible
+// cursor positions rather than assuming one.
+const QROW_CY = OY + QROW_H / 2;      // 50
+const Q_FACTOR_X0 = 142, Q_GAP = 20, QDIGIT_W = 36, QICON_BOX = 32, Q2W = 76;
+const Q_SLOT_X0_NARROW = Q_FACTOR_X0 + QDIGIT_W + Q_GAP + QICON_BOX + Q_GAP; // 250, 1-digit factor
+const Q_SLOT_X0_WIDE = Q_FACTOR_X0 + Q2W + Q_GAP + QICON_BOX + Q_GAP;        // 290, 2-digit factor ("10")
+const CURSOR_X_CANDIDATES = [Q_SLOT_X0_NARROW + 4, Q_SLOT_X0_WIDE + 4];      // tables.c's cursor_x_for_len(0)
+
+const NUMPAD_W = CELL_W * NUMPAD_COLS;
+const INFO_X0 = NUMPAD_X0 + NUMPAD_W;   // 295
+const BOX_X0 = INFO_X0 + 8, BOX_Y0 = NUMPAD_Y0 + CELL_H;         // 303, 211
+const COUNTER_ROW_X0 = BOX_X0 + 5, COUNTER_ROW_W = (428 - NUMPAD_W - 16) - 10; // 308, 117
+const COUNTERS_Y0 = BOX_Y0 + 5;          // 222
+const BOX_H = CELL_H * 4 - CELL_H - 6;   // 135, tables.c's (NUMPAD_H - CELL_H - 6)
+const COUNTER_ROW_H = (BOX_H - 10) / 2;  // 62, tables.c's (BOX_H - 2*BOX_INSET) / 2
 
 const ARM_MS = 40, COMMIT_CONFIRM_MS = 72, RELEASE_GRACE_MS = 300;
 const HOLD_MS = ARM_MS + COMMIT_CONFIRM_MS + 60;   // comfortably past both
@@ -256,6 +283,107 @@ async function main() {
     const log2 = dev2.drainLog();
     check(`a correct first-try answer (${base} x ${factor} = ${product}) logs correct`,
       log2.some((l) => l.includes("correct")), log2.join(" | "));
+  }
+
+  // ---- the answer blank carries a blinking cursor while entering --------
+  //
+  // The owner's drawing labels the blank "blink". At 0 digits typed, in
+  // PHASE_ASK, with no touch at all, the cursor should still toggle on and
+  // off on the clock alone (BLINK_PERIOD_MS=500 in tables.c) - sampling
+  // across a bit more than one full cycle should see both a lit sample
+  // (dark ink at the cursor's cell) and an unlit one (background white).
+  {
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    let sawDark = false, sawLight = false;
+    for (let i = 0; i < 1300; i += 100) {
+      clock += 100;
+      dev.tick(clock);
+      const fb = dev.fb();
+      // The cursor's x depends on this question's factor width (1 or 2
+      // digits) - check both candidate positions, see this file's own
+      // comment on Q_SLOT_X0_NARROW/WIDE above.
+      const dark = CURSOR_X_CANDIDATES.some((cx) => grayAt(fb, cx, QROW_CY) < 180);
+      if (dark) sawDark = true; else sawLight = true;
+    }
+    check("the answer blank's cursor blinks while entering (both a lit and an unlit sample seen)",
+      sawDark && sawLight, `sawDark=${sawDark} sawLight=${sawLight}`);
+  }
+
+  // ---- the wrong counter only counts a FINAL give-up, not every question
+  // resolution - a correct answer must not touch it -----------------------
+  //
+  // The owner's drawing shows two explicit lines, a check and a cross;
+  // this app now counts them as "correct" and "wrong" rather than the
+  // earlier "attempted" (which incremented on EVERY resolution, right or
+  // wrong). Comparing the WRONG row's own pixels before and after a
+  // correct answer is a direct check of that semantic: byte-identical
+  // means a correct answer never touched it.
+  function rectUnchanged(a: Uint8Array, b: Uint8Array, x0: number, y0: number, w: number, h: number): boolean {
+    for (let ly = y0; ly < y0 + h; ly++) {
+      for (let lx = x0; lx < x0 + w; lx++) {
+        if (grayAt(a, lx, ly) !== grayAt(b, lx, ly)) return false;
+      }
+    }
+    return true;
+  }
+  {
+    const probe = await loadDevice();
+    await enterTables(probe, APP_TABLES);
+    typeDigits(probe, [9, 9]);
+    pressCell(probe, CELL_CHECK);
+    typeDigits(probe, [9, 9]);
+    pressCell(probe, CELL_CHECK);
+    const log = probe.drainLog();
+    const m = log.join("\n").match(/tables: (\d+) x (\d+) = (\d+), gave up/);
+    check("could read the product off the probe for the counter-row test", !!m, log.join(" | "));
+    if (m) {
+      const product = Number(m[3]);
+      const digits = product < 10 ? [product] : [Math.floor(product / 10), product % 10];
+
+      const dev = await loadDevice();
+      await enterTables(dev, APP_TABLES);
+      const before = dev.fb();
+      typeDigits(dev, digits);
+      pressCell(dev, CELL_CHECK);
+      const after = dev.fb();
+      const wrongRowUnchanged = rectUnchanged(before, after, COUNTER_ROW_X0, COUNTERS_Y0, COUNTER_ROW_W, COUNTER_ROW_H);
+      check("a correct answer leaves the WRONG counter row's pixels untouched", wrongRowUnchanged);
+      const correctRowChanged = !rectUnchanged(before, after, COUNTER_ROW_X0, COUNTERS_Y0 + COUNTER_ROW_H, COUNTER_ROW_W, COUNTER_ROW_H);
+      check("a correct answer DOES change the CORRECT counter row's pixels", correctRowChanged);
+    }
+  }
+
+  // ---- questions never repeat back to back --------------------------------
+  //
+  // The owner's own instruction: "randomize the numbers" - genuinely
+  // unpredictable to a child who has seen the previous few. tables.c's
+  // pick_next_fact() now draws uniformly over every fact except the one
+  // just asked, which makes an immediate repeat impossible BY CONSTRUCTION,
+  // not just unlikely - this drives a real run of questions (always typing
+  // "99" twice to force the "gave up" reveal line, which is deterministic
+  // regardless of what the actual product is) and checks the (base,factor)
+  // pair named in that line never repeats from one question to the next.
+  {
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    const seen: string[] = [];
+    const REVEAL_MS = 1600; // tables.c's REVEAL_MS - touch is ignored until this elapses
+    for (let i = 0; i < 14; i++) {
+      typeDigits(dev, [9, 9]);
+      pressCell(dev, CELL_CHECK);
+      typeDigits(dev, [9, 9]);
+      pressCell(dev, CELL_CHECK);
+      const log = dev.drainLog();
+      const m = log.join("\n").match(/tables: (\d+) x (\d+) = \d+, gave up/);
+      if (m) seen.push(`${m[1]}x${m[2]}`);
+      step(dev, REVEAL_MS + 100); // let PHASE_WRONG_REVEAL finish before the next question's input
+    }
+    check("drove enough questions to check for a repeat", seen.length >= 10, `${seen.length} questions read`);
+    let repeat = -1;
+    for (let i = 1; i < seen.length; i++) if (seen[i] === seen[i - 1]) { repeat = i; break; }
+    check("no two consecutive questions are the same fact", repeat === -1,
+      repeat >= 0 ? `repeat at index ${repeat}: ${seen.join(", ")}` : seen.join(", "));
   }
 
   // ---- every pushed window's row length is a multiple of 8 --------------

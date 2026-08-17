@@ -16,10 +16,11 @@
  *
  * Writes preview/tables-<shot>.png, LANDSCAPE (448x368).
  *
- * THE SHOTS, and why these six:
+ * THE SHOTS, and why these seven:
  *
- *   rest         fresh entry - the question, an empty answer, all three
- *                counters at zero.
+ *   rest         fresh entry - the question band, the rule under it, an
+ *                empty answer blank with its caret, the boxed counters
+ *                both at zero.
  *   mid-drag     a finger held on a numpad digit - the LOUPE, mid-gesture.
  *                A still PNG cannot show a gesture moving, but it can show
  *                the one frame that matters: the bubble open, showing the
@@ -34,6 +35,12 @@
  *                cleared, same question still showing (PHASE_WRONG_RETRY).
  *   reveal       immediately after a second wrong submit - the correct
  *                product shown in the answer cell (PHASE_WRONG_REVEAL).
+ *   realistic    the owner's own brief for judging a layout: a question
+ *                posed, two digits typed into the answer (not yet
+ *                submitted), and both counters non-zero (one right, one
+ *                wrong) - the state a few minutes into real practice
+ *                actually looks like, rather than any single fresh or
+ *                freshly-resolved frame.
  *
  * Touch is injected through emu_touch (emu_abi.h), panel coordinates, the
  * same ABI the tests use - not a script re-implementing tables.c's own
@@ -53,10 +60,13 @@ const LAND_W = PANEL_H, LAND_H = PANEL_W; // 448 x 368
 const FRAME_MS = 16;
 
 // tables.c's own layout constants, lifted (see this file's header on why
-// that is the right discipline rather than re-deriving them).
+// that is the right discipline rather than re-deriving them). Updated
+// 2026-08-17 for the owner's exact mockup - see tables.c's own LAYOUT
+// comment for the 80+80+188=348 arithmetic behind these numbers.
 const OX = 10, OY = 10;
-const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + 92;
-const CELL_W = 99, CELL_H = 64, NUMPAD_COLS = 3;
+const QROW_H = 80, LOUPE_ZONE_H = 80;
+const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H;
+const CELL_W = 95, CELL_H = 47, NUMPAD_COLS = 3;
 const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
 const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
 const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
@@ -251,6 +261,38 @@ async function main() {
         typeDigits(dev, [9, 9]);
         dev.tapCell(CELL_CHECK);
         await write("reveal", dev.fb());
+    }
+    {
+        // A few minutes into real practice: one correct answer (bumps the
+        // check-counter), one given-up-on wrong answer (bumps the cross-
+        // counter), then two digits typed toward the NEXT question and
+        // left unsubmitted - the state real practice actually looks like,
+        // not a single fresh or freshly-resolved frame.
+        const probe = await loadDevice();
+        typeDigits(probe, [9, 9]);
+        probe.tapCell(CELL_CHECK);
+        typeDigits(probe, [9, 9]);
+        probe.tapCell(CELL_CHECK);
+        const log = probe.drainLog();
+        const m = log.join("\n").match(/tables: (\d+) x (\d+) = (\d+), gave up/);
+        if (!m) throw new Error("could not read the product off the probe device: " + log.join(" | "));
+        const firstProduct = Number(m[3]);
+        const firstDigits = firstProduct < 10 ? [firstProduct] : [Math.floor(firstProduct / 10), firstProduct % 10];
+
+        const dev = await loadDevice();
+        // First question: answered correctly.
+        typeDigits(dev, firstDigits);
+        dev.tapCell(CELL_CHECK);
+        dev.tick(700); // clear PHASE_RIGHT's own pause before the next question is live
+        // Second question: given up on after two wrong tries.
+        typeDigits(dev, [9, 9]);
+        dev.tapCell(CELL_CHECK);
+        typeDigits(dev, [9, 9]);
+        dev.tapCell(CELL_CHECK);
+        dev.tick(1700); // clear PHASE_WRONG_REVEAL's own pause
+        // Third question: two digits typed, not yet submitted.
+        typeDigits(dev, [4, 2]);
+        await write("realistic", dev.fb());
     }
 }
 
