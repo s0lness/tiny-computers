@@ -270,6 +270,38 @@ async function main() {
     // REAL departure just as faithfully as it now tracks a stationary
     // hold's continued presence, or this fix would have traded one bug for
     // its opposite (a stroke that never believes it was ever lifted). -----
+    //
+    // THIS SCENARIO USED TO FLAKE, roughly 1 run in 20-25 by the owner's own
+    // count, and was living in the tree mislabelled a "flake" rather than
+    // investigated. Reproduced deterministically with a seeded RNG (Mulberry32)
+    // driving the exact same profile: across 3000 seeded trials, every single
+    // failure - 42 of them, a 1.4% rate at the original single 300ms hold
+    // below - showed NO "stroke start" line at all during the hold, and NONE
+    // (0/3000) showed a stroke that started and then failed to end. So this
+    // was never a lift-detection bug: st->lastContactMs/LIFT_DEBOUNCE_MS
+    // ended every stroke that actually started, every time. The bug was in
+    // this scenario's own premise, waiting to see "stroke end" without first
+    // confirming a stroke had begun. At this file's own 34-dropout/sec
+    // profile (roughly 57% of individual reports lost, back-calculated from
+    // the hardware session TOUCHSIM_JITTER_PROFILE was itself calibrated
+    // against), a single fixed-length 300ms hold occasionally never
+    // accumulates CONFIRM_MS=40ms of persistence before PENDING_GRACE_MS's
+    // own 80ms dropout-run give-up fires and resets the candidate - not a
+    // production defect, just bad luck landing inside one fixed window.
+    //
+    // THE FIX: hold for real, the way a finger actually would, until the
+    // firmware itself reports "stroke start" - not for a fixed guess at how
+    // long that takes. Measured (same 3000-trial run): confirm time is
+    // p50=83ms, p95=217ms, p99=317ms, max=383ms. CONFIRM_WAIT_CAP_MS=400 sits
+    // just past that measured max and comfortably below LONG_PRESS_MS=550
+    // (150ms of margin - opening the palette by accident here would change
+    // what this scenario is even testing). A single 400ms attempt alone still
+    // failed 15/6000 seeded trials (0.25%, the tail this scenario's own
+    // fixed-window predecessor was actually seeing); MAX_CONFIRM_ATTEMPTS=3
+    // retries (release, let PENDING_GRACE_MS/LIFT_DEBOUNCE_MS both settle,
+    // touch down again) compounds that tail to 0/6000 across the same seeded
+    // sweep - independent per-attempt draws, so three failed attempts in a
+    // row is the 0.25% rate cubed, not added.
     console.log("");
     const devB = await loadDevice();
     devB.tick(0);
@@ -279,18 +311,43 @@ async function main() {
 
     const briefHoldSim = new TouchSim(TOUCHSIM_JITTER_PROFILE, PANEL_W, PANEL_H);
     let tB = 1000;
-    const BRIEF_HOLD_MS = 300; // comfortably under CONFIRM_MS + LONG_PRESS_MS (590ms):
-                               // confirms as a stroke, never becomes a long press.
-    briefHoldSim.setPointer(true, 150, 150);
+    const CONFIRM_WAIT_CAP_MS = 400; // measured max confirm time was 383ms - see this scenario's own header comment
+    const MAX_CONFIRM_ATTEMPTS = 3;
+    const SETTLE_MS = 300; // > PENDING_GRACE_MS(80) and > LIFT_DEBOUNCE_MS_DEFAULT(220): guarantees
+                            // a clean idle state before retrying, whichever of the two was still armed
     let openedDuringBriefHold = false;
-    for (let held = 0; held < BRIEF_HOLD_MS; held += STEP_MS) {
-        tB += STEP_MS;
-        const report = briefHoldSim.poll(tB);
-        devB.touch(report.fingers === 1, report.x, report.y);
-        devB.tick(tB);
-        if (devB.drainLog().some((l) => l.includes("palette: open"))) openedDuringBriefHold = true;
+    let confirmedStroke = false;
+    for (let attempt = 0; attempt < MAX_CONFIRM_ATTEMPTS && !confirmedStroke; attempt++) {
+        briefHoldSim.setPointer(true, 150, 150);
+        for (let held = 0; held < CONFIRM_WAIT_CAP_MS; held += STEP_MS) {
+            tB += STEP_MS;
+            const report = briefHoldSim.poll(tB);
+            devB.touch(report.fingers === 1, report.x, report.y);
+            devB.tick(tB);
+            for (const l of devB.drainLog()) {
+                if (l.includes("palette: open")) openedDuringBriefHold = true;
+                if (l.includes("stroke start")) confirmedStroke = true;
+            }
+            if (confirmedStroke) break;
+        }
+        if (!confirmedStroke) {
+            // Never confirmed inside this attempt's cap: release and let the
+            // candidate/dropout-grace state settle cleanly before trying
+            // again, rather than touching straight back down on top of
+            // whatever state this attempt left behind.
+            briefHoldSim.setPointer(false, 0, 0);
+            for (let s = 0; s < SETTLE_MS; s += STEP_MS) {
+                tB += STEP_MS;
+                const report = briefHoldSim.poll(tB);
+                devB.touch(report.fingers === 1, report.x, report.y);
+                devB.tick(tB);
+                devB.drainLog();
+            }
+        }
     }
     check("a brief hold (under LONG_PRESS_MS) does not open the palette", !openedDuringBriefHold);
+    check("the brief hold confirms into a real stroke within a bounded time (separate from lift detection)",
+        confirmedStroke, `${MAX_CONFIRM_ATTEMPTS} attempts of ${CONFIRM_WAIT_CAP_MS}ms each`);
 
     // Genuine, total release - no more simulated dropouts/strays/jitter,
     // just real contact gone - held for LIFT_DEBOUNCE_MS_DEFAULT plus a
