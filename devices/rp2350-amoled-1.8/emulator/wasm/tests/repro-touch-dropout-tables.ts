@@ -26,22 +26,23 @@ import { join } from "node:path";
 import { TouchSim, type TouchReport } from "../../src/touchsim";
 import { TOUCHSIM_DEFAULTS } from "../../src/constants";
 import { seededRng, seedFromName } from "../../../tools/gate/touch";
+import {
+  PANEL_W, PANEL_H,
+  NUMPAD_X0, NUMPAD_Y0, NUMPAD_W, NUMPAD_H, NUMPAD_COLS, NUMPAD_ROWS, CELL_W, CELL_H,
+  CELL_ZERO, cellCx, cellCy, cellValueName, landToPanel,
+} from "../../../tools/tables-layout";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
-const PANEL_W = 368, PANEL_H = 448;
-const LAND_W = PANEL_H, LAND_H = PANEL_W;
 
-// tables.c's own layout, lifted rather than re-derived (this directory's
-// standing convention).
-const OX = 10, OY = 10;
-const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + 92;
-const CELL_W = 99, CELL_H = 64, NUMPAD_COLS = 3, NUMPAD_ROWS = 4;
-const NUMPAD_W = CELL_W * NUMPAD_COLS, NUMPAD_H = CELL_H * NUMPAD_ROWS;
-const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
-const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
-const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
-const digitCell = (d: number) => (d === 0 ? CELL_ZERO : d - 1);
-const cellValueName = (c: number) => (c === CELL_BACK ? "back" : c === CELL_CHECK ? "check" : c === CELL_ZERO ? "0" : String(c + 1));
+// tables.c's own layout, read from tools/tables-layout.ts (this directory's
+// standing convention: lift the app's own constants rather than re-derive
+// them) - see that file's own header for why this is now ONE shared copy
+// rather than one hand-copied into this file, feature-tables.ts,
+// preview-tables.ts and sweep-tables-grace.ts separately. This file's own
+// stale copy (CELL_W=99, CELL_H=64, NUMPAD_Y0=OY+92 - the pre-2026-08-17
+// layout) went unnoticed for a full redesign cycle: it did not fail, it
+// just hit-tested the wrong rectangle and stopped proving anything -
+// exactly the failure mode a shared import is meant to close off.
 
 const RELEASE_GRACE_MS = 300;
 
@@ -89,10 +90,6 @@ async function freshDevice() {
     feed(r: TouchReport, nowMs: number) { exp.emu_touch(r.fingers === 1 ? 1 : 0, r.x, r.y); exp.emu_tick(nowMs); },
     drainLog(): string[] { const o = fwLog.slice(); fwLog.length = 0; return o; },
   };
-}
-
-function landToPanel(lx: number, ly: number): [number, number] {
-  return [PANEL_W - 1 - Math.round(ly), Math.round(lx)];
 }
 
 const dropoutHeavy = { ...TOUCHSIM_DEFAULTS, dropoutsEnabled: true, dropoutsPerSec: 34, straysEnabled: false };

@@ -63,22 +63,20 @@ import { join } from "node:path";
 import { TouchSim } from "../emulator/src/touchsim";
 import { TOUCHSIM_HARDWARE_MEASURED } from "../emulator/src/constants";
 import { seededRng, seedFromName } from "./gate/touch";
+import { PANEL_W, PANEL_H, CELL_ZERO, cellCx, cellCy, landToPanel } from "./tables-layout";
 
 const ROOT = join(import.meta.dir, "..");
 const BUILD_TS = join(ROOT, "emulator", "wasm", "build.ts");
 const WASM_PATH = join(ROOT, "emulator", "wasm", "dist", "emu.wasm");
 
-const PANEL_W = 368, PANEL_H = 448;
-
-// tables.c's own layout constants, lifted rather than re-derived - the
+// tables.c's own layout constants, read from ./tables-layout.ts - the
 // convention every test/tool under this directory uses against its app
-// (see feature-tables.ts, repro-touch-dropout-tables.ts).
-const OX = 10, OY = 10;
-const NUMPAD_X0 = OX, NUMPAD_Y0 = OY + 92;
-const CELL_W = 99, CELL_H = 64, NUMPAD_COLS = 3;
-const CELL_ZERO = 10;
-const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
-const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
+// (see feature-tables.ts, repro-touch-dropout-tables.ts, preview-tables.ts)
+// - rather than the hand-copied `CELL_W=99, CELL_H=64, NUMPAD_Y0=OY+92`
+// this file carried until 2026-08-17, which was still the layout FROM
+// BEFORE that day's redesign: silently hit-testing the wrong rectangle
+// rather than failing, the exact hollow-test failure mode tables-layout.ts's
+// own header argues against.
 
 // COMMIT_CONFIRM_MS is held fixed at its own measured value throughout this
 // sweep - this file is about RELEASE_GRACE_MS only, one constant at a time,
@@ -92,10 +90,6 @@ function argVal(name: string, dflt: string): string {
 }
 const CANDIDATES = argVal("values", "80,120,160,200,250,300").split(",").map(Number);
 const TRIALS = Number(argVal("trials", "200"));
-
-function landToPanel(lx: number, ly: number): [number, number] {
-  return [PANEL_W - 1 - Math.round(ly), Math.round(lx)];
-}
 
 function buildWith(graceMs: number): void {
   const env = { ...process.env, EMU_EXTRA_DEFINES: `-DRELEASE_GRACE_MS=${graceMs}` };

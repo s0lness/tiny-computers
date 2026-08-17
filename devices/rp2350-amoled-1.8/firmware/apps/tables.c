@@ -343,7 +343,7 @@ static uint16_t tint_wrong(void) { return rgb565(250, 232, 196); } // pale amber
 // fact_factor(), both declared later in the file than this constants block.
 
 #define Q_SLOT_W    Q2W                                // 76 - up to two digits, always reserved
-#define Q_UNDERLINE_Y (QROW_CY + QDIGIT_H / 2 + 2)    // 66 - just below the digit baseline
+#define Q_UNDERLINE_Y (QROW_CY + QDIGIT_H / 2 + 2)    // 74 - just below the digit baseline
 #define Q_UNDERLINE_R 2.0f
 
 // The answer box: what redraw_answer() erases and redraws wholesale on
@@ -354,17 +354,36 @@ static uint16_t tint_wrong(void) { return rgb565(250, 232, 196); } // pale amber
 // inside this same box rather than needing its own separate erase rect.
 // Its X0 moves with question_slot_x0() (the factor's width shifts it), its
 // WIDTH does not.
+//
+// ANSWER_BOX_H stops right at the underline's own bottom edge (76) rather
+// than filling the rest of QROW_H down to RULE_Y: the first version of
+// this box was QROW_H tall, which meant every keystroke's own white/tint
+// fill repainted straight through the rule's row and erased the MIDDLE of
+// it (wherever the answer box happened to sit that question) without ever
+// redrawing it - a full-width line that ran in from the left, stopped
+// under the blank, and resumed on the right, which read as one broken
+// line rather than "a blank, and a separator below it". Found by looking
+// at the rendered PNG, not by inspection. Keeping the box's own bottom
+// edge clear of RULE_Y (see that constant's own comment) is what makes
+// the rule untouchable by anything redraw_answer() does, ever - not a
+// tighter erase-and-redraw discipline, just never overlapping in the
+// first place.
 #define Q_CURSOR_CLEARANCE 16
 #define ANSWER_BOX_W  (Q_SLOT_W + Q_CURSOR_CLEARANCE) // 92
 #define ANSWER_BOX_Y0 QROW_Y0
-#define ANSWER_BOX_H  QROW_H
+#define ANSWER_BOX_H  ((int)(Q_UNDERLINE_Y + Q_UNDERLINE_R) - QROW_Y0) // 66 (ends at y=76)
 
 // A full-width rule directly under the question band, separating it from
 // everything below (the owner's exact mockup adds this) - drawn ONCE, in
 // tables_enter(), because it never changes: nothing else in this band ever
-// draws this far down (QDIGIT_H's own digits end well above it, see
-// Q_UNDERLINE_Y), so there is nothing to erase around it, ever.
-#define RULE_Y (OY + QROW_H - 4) // 70, still inside the question band's own row
+// draws this far down. Given REAL clearance from the answer's own
+// underline: RULE_Y - RULE_R sits 8px below ANSWER_BOX_H's own bottom edge
+// (76), empty white between them, so the two read as two separate
+// objects, not one smudge - the owner's own complaint about the first
+// version of this line, which sat close enough under the underline to
+// look like a broken continuation of it rather than its own element.
+#define RULE_Y (OY + QROW_H - 4) // 86 (ink 84-88), 2px clear of the band's own bottom edge (90);
+                                  // 8px of empty white above it, back to ANSWER_BOX_H's bottom edge (76)
 #define RULE_R 2.0f
 
 /* ---- THE COUNTERS PANEL ---------------------------------------------------

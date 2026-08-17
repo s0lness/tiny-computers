@@ -42,6 +42,7 @@ const Q_FACTOR_X0 = 142, Q_GAP = 20, QDIGIT_W = 36, QICON_BOX = 32, Q2W = 76;
 const Q_SLOT_X0_NARROW = Q_FACTOR_X0 + QDIGIT_W + Q_GAP + QICON_BOX + Q_GAP; // 250, 1-digit factor
 const Q_SLOT_X0_WIDE = Q_FACTOR_X0 + Q2W + Q_GAP + QICON_BOX + Q_GAP;        // 290, 2-digit factor ("10")
 const CURSOR_X_CANDIDATES = [Q_SLOT_X0_NARROW + 4, Q_SLOT_X0_WIDE + 4];      // tables.c's cursor_x_for_len(0)
+const RULE_Y = OY + QROW_H - 4; // 86, tables.c's RULE_Y
 
 const NUMPAD_W = CELL_W * NUMPAD_COLS;
 const INFO_X0 = NUMPAD_X0 + NUMPAD_W;   // 295
@@ -308,6 +309,37 @@ async function main() {
     }
     check("the answer blank's cursor blinks while entering (both a lit and an unlit sample seen)",
       sawDark && sawLight, `sawDark=${sawDark} sawLight=${sawLight}`);
+  }
+
+  // ---- the full-width rule under the question band stays UNBROKEN, even
+  // after a keystroke redraws the answer box on top of the same row -------
+  //
+  // The rule and the answer box used to share a row (ANSWER_BOX_H was
+  // QROW_H, the full band height): every keystroke's own white/tint fill
+  // repainted straight through the rule's y-coordinate wherever the answer
+  // box happened to sit, erasing the MIDDLE of the rule without ever
+  // redrawing it - a line that ran in from the left, stopped under the
+  // blank, and resumed on the right. Found by looking at the rendered PNG,
+  // not by inspection: it reads as one interrupted line, not "a blank with
+  // a separator below it". ANSWER_BOX_H now stops at the underline's own
+  // bottom edge, clear of RULE_Y, so nothing redraw_answer() does can ever
+  // touch the rule's row again - checked here both at rest and after an
+  // actual keystroke, which is exactly the sequence that broke it before.
+  {
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    function ruleGapAt(fb: Uint8Array): number {
+      for (let lx = 20; lx < LAND_W - 20; lx++) {
+        if (grayAt(fb, lx, RULE_Y) >= 180) return lx;
+      }
+      return -1;
+    }
+    const gapBefore = ruleGapAt(dev.fb());
+    check("the full-width rule is unbroken right after entry", gapBefore === -1, `first gap at x=${gapBefore}`);
+    typeDigits(dev, [4, 2]);
+    const gapAfter = ruleGapAt(dev.fb());
+    check("the rule stays unbroken after typing into the answer (the answer box redraw does not erase it)",
+      gapAfter === -1, `first gap at x=${gapAfter}`);
   }
 
   // ---- the wrong counter only counts a FINAL give-up, not every question
