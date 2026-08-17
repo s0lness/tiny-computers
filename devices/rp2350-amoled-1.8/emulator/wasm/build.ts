@@ -64,6 +64,22 @@ const OUT_TMP = `${OUT}.tmp-${process.pid}`;
 
 const ZIG = process.env.ZIG_EXE ?? "C:\\Users\\sylve\\tools\\zig\\zig.exe";
 
+// Every zig cc invocation below gets its OWN cache, inside THIS worktree's
+// own dist/ (already gitignored, see the repo root .gitignore's `dist/`
+// line) rather than zig's machine-wide default. Why, and what this costs,
+// is measured and recorded on the retry loop's own comment further down -
+// this is the fix that comment's diagnosis pointed at. `ZIG_GLOBAL_CACHE_DIR`
+// is zig's own name for this (confirmed against the installed 0.16.0 with
+// `zig env`, which echoes it straight into `global_cache_dir`), reused
+// rather than wrapped in a project-specific name so a caller who already
+// knows zig's own flag can still override it. `ZIG_LOCAL_CACHE_DIR` is
+// deliberately not set: a real `zig cc` invocation here (watched by
+// inspecting the directory tree a build actually writes to) only ever
+// touches h/, o/ and tmp/ under the GLOBAL cache dir, never creates a
+// separate local one, because that variable belongs to `zig build`'s
+// incremental cache, not the `cc` frontend this file drives.
+const ZIG_GLOBAL_CACHE_DIR = process.env.ZIG_GLOBAL_CACHE_DIR ?? join(DIST, "zig-cache");
+
 // Every symbol emu_abi.h declares. Exported explicitly (see the header
 // comment above on why --export-dynamic was dropped) rather than derived by
 // parsing emu_abi.h, so a symbol added there and forgotten here fails loudly
@@ -227,11 +243,61 @@ console.log(`${ZIG} ${args.join(" ")}`);
 // So: retry, and let a genuine error (which does print diagnostics, and
 // fails identically every time) survive all the attempts and be reported
 // as itself.
-const MAX_ATTEMPTS = 20;
-let result = Bun.spawnSync([ZIG, ...args], { stdout: "inherit", stderr: "inherit" });
+//
+// MEASURED 2026-08-17, because "points at" is not proof, and 240 retries
+// of this loop in one day (104 in a single agent) is what that hedge
+// actually costs at the scale this repo is now worked at. A harness
+// outside this repo replayed this exact command - same sources, same
+// flags - six at a time, pointed at one shared global cache directory
+// (a stand-in for the old machine-wide default) versus six each given
+// their own. Shared: 11 failures in 24 completed attempts (45.8%), one of
+// them carrying a diagnostic this bug otherwise never gives -
+// `wasm-ld: error: cannot open shared-cache\o\09cbff1a83d58711b02cae65cd36a399\emu_shim.o:
+// No such file or directory` - two processes racing to populate the
+// identical cache-hash directory for identical inputs, exactly the
+// mechanism this comment's diagnosis named. Worse than the failure count:
+// two of five attempted rounds produced a genuine HANG, a `zig cc` that
+// never exits at all (the same shape as AGENTS.md's "zig.exe hangs"
+// gotcha, reproduced here on purpose) - which no retry loop can recover
+// from, since `Bun.spawnSync` simply never returns control to it. Both
+// hangs cleared the instant the wedged process was killed by PID, never
+// on their own.
+//
+// Isolated caches: zero hangs. The plain crash-and-retry rate (33.3%, 6 of
+// 18) came back close to a SOLO baseline measured with no concurrency at
+// all and no cache sharing (30.8%, 8 of 26) - so a real, separate
+// flakiness in this zig/lld build on this toolchain survives the fix
+// below untouched, and this retry loop is still doing genuine work, just
+// no longer the part that could also wedge a build shut. The
+// shared-cache hypothesis is therefore CONFIRMED for the failures it
+// claimed (the file races, and especially the hangs) and WRONG if read as
+// the sole explanation for every "zig cc exited 5" - roughly a third of
+// attempts fail for a reason this fix does not touch.
+//
+// Cost of the isolation: a cold cache (this worktree's first build, or
+// any build after dist/ is cleared) measured 923-1005ms per successful
+// build; the same build warm (cache already populated by an earlier
+// build in this worktree) measured 73-494ms - a shared cache's only real
+// advantage, and it survives here too, because the cache lives in this
+// worktree's own dist/ and outlives any single build.ts run rather than
+// being thrown away per process.
+//
+// MAX_ATTEMPTS drops from 20 to 8. What used to need headroom for BURSTY,
+// contention-driven pileups (the header comment's "twelve consecutive
+// failures") only needs headroom for the residual independent ~33% flake
+// now: at that rate eight attempts fail together about 1 time in 23,000
+// (0.33^8). If this loop ever exhausts eight attempts, that is no longer
+// routine - it is a signal something changed, and it should be loud.
+const MAX_ATTEMPTS = 8;
+const spawnOpts = {
+  stdout: "inherit" as const,
+  stderr: "inherit" as const,
+  env: { ...process.env, ZIG_GLOBAL_CACHE_DIR },
+};
+let result = Bun.spawnSync([ZIG, ...args], spawnOpts);
 for (let attempt = 2; !result.success && attempt <= MAX_ATTEMPTS; attempt++) {
   console.error(`zig cc exited ${result.exitCode}; retrying (attempt ${attempt}/${MAX_ATTEMPTS})`);
-  result = Bun.spawnSync([ZIG, ...args], { stdout: "inherit", stderr: "inherit" });
+  result = Bun.spawnSync([ZIG, ...args], spawnOpts);
 }
 
 if (!result.success) {
