@@ -2301,6 +2301,19 @@ static void render_cell(int i, bool hovered) {
         // Capture the icon's ink alone - see menu_icon_capture()'s own
         // comment for why this has to happen before the halo below.
         menu_icon_capture(app, cx, cy, PX_BLACK);
+        // ERASE THE NATIVE RENDER. menu_icon_capture() just drew a real
+        // 96px icon straight onto gfx_fb to read it back, and composition
+        // is MIN everywhere (shapes.h's own rule) - which only ever
+        // darkens. Left in place, that native render is a second, smaller
+        // copy of the icon sitting UNDER the resampled one, offset from it
+        // for any shape whose own features are not centred on the icon
+        // box's centre (four.c's icon is exactly this: four sub-circles
+        // each off-centre, so the native and resampled rings land at
+        // different positions and their holes only partly overlap - a
+        // crescent, not a ring). Painting the native footprint back to
+        // white removes that ghost before anything else composites onto
+        // it, so the ONLY ink here ends up being menu_icon_blit()'s own.
+        gfx_fill_rect_land(cx - ICON_W / 2, cy - ICON_H / 2, ICON_W, ICON_H, PX_WHITE);
     }
 
     if (hovered) {
