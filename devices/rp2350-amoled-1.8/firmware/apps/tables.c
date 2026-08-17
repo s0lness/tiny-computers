@@ -462,10 +462,66 @@ typedef enum {
 // dropout extending that episode's effective lifetime - the same
 // arithmetic menu.c's own comment names as a lower bound before it
 // overshoots it for its own, different reasons.
+//
+// THE FIRST HOVER OF A GESTURE IS SHOWN WITH NO CONFIRM DELAY AT ALL. The
+// table above already argues 72ms is a CHANGE-filtering window, chosen
+// against jitter between two cells the loupe has already shown her at least
+// one of. On the very first armed sample of a gesture hoverCell is still -1:
+// nothing is on screen yet to filter against, and nothing commits on a
+// hover in the first place (a release does, re-reading hoverCell then - see
+// this file's header, "WHAT COMMITS IS WHAT THE LOUPE SHOWED"). So the
+// tick's own armed branch below shows the first cell the instant it arms
+// (~40-67ms in, per ARM_SAMPLES/ARM_MS/ARM_RATE_HZ) rather than waiting
+// another COMMIT_CONFIRM_MS on top - the owner's own complaint after
+// testing in the emulator ("i have to press for a fairly long time for a
+// touch to register") was exactly this stacked ~112ms floor before anything
+// lit up. Found and fixed 2026-08-17.
+//
+// RELEASE_GRACE_MS was copied verbatim from menu.c/four.c, per the note
+// above, but MEASURED here too rather than left on that citation alone
+// (tools/sweep-tables-grace.ts: rebuilds emu.wasm at each candidate with
+// EMU_EXTRA_DEFINES=-DRELEASE_GRACE_MS=<n>, drives 600 held/dragged/tapped
+// trials per value under TOUCHSIM_HARDWARE_MEASURED's 34 dropouts/sec -
+// this project's own measured worst case, not an assumption; see that
+// file's header for the "does the emulator even model dropouts" check this
+// was verified against before trusting any of it). What it found was NOT
+// what shrinking a copied 300ms number was expected to find:
+//
+//     grace(ms)  premature commits (of 200-400 trials, held-still / drag)
+//            80        94%  /  83%
+//           120      34.5%  /  18%
+//           160        17%  /  9.5%
+//           200       3.5%  /  0.5%
+//           250         1%  /  1%
+//           260      0.75%  /  0%
+//           270         0%  /  0.25%
+//           280      0.25%  /  0.25%
+//           290         0%  /  0%
+//           300         0%  /  0%    <- shipped value
+//           320         0%  /  0%
+//           350         0%  /  0%
+//
+// A REAL FLOOR, not a conservative guess with room to spare. Premature
+// commits (a dropout run outlasting the grace window while a real finger is
+// still down, read as a genuine lift - the exact failure this window
+// exists to bridge) fall off a cliff between 80ms and 200ms, then sit in a
+// noisy near-zero tail from 250-280ms (0-1%, consistent with a true rate
+// too small for a few hundred trials to pin down exactly) before going
+// cleanly and repeatably to zero at 290ms and up. 300ms is not "menu.c's
+// number, probably fine here too" - it is inside the first band this
+// sweep found with a clean zero AND margin either side of it (290 and 320
+// both clean too), which is exactly the "smallest value with real margin"
+// bar COMMIT_CONFIRM_MS's own table above was chosen against. Shrinking it
+// would trade a real, measured safety margin for a delay that Task 1's own
+// fix (immediate first hover) already removed from what the owner actually
+// felt - RELEASE_GRACE_MS only ever gates the instant AFTER a genuine
+// lift, not how fast a key lights up. Left at 300.
 #define ARM_SAMPLES        4
 #define ARM_MS            40
 #define ARM_RATE_HZ       15u
+#ifndef RELEASE_GRACE_MS
 #define RELEASE_GRACE_MS 300
+#endif
 #ifndef COMMIT_CONFIRM_MS
 #define COMMIT_CONFIRM_MS 72
 #endif
@@ -883,7 +939,21 @@ static void tables_tick(const app_frame_t *f) {
             int lx, ly;
             panel_to_land(f->touchX, f->touchY, &lx, &ly);
             int cell = numpad_hit(lx, ly);
-            if (cell == s->pendingCell) {
+            if (s->hoverCell < 0) {
+                // The FIRST cell of this gesture. COMMIT_CONFIRM_MS exists to
+                // filter jitter against an already-shown cell (see THE
+                // GESTURE above); there is nothing shown yet to filter
+                // against, hoverCell is still -1, and nothing commits on a
+                // hover (only a release does, re-reading hoverCell at that
+                // point - "WHAT COMMITS IS WHAT THE LOUPE SHOWED", this
+                // file's header). So showing the first cell the instant the
+                // gesture arms is free: it cannot let a commit happen on a
+                // cell the loupe never displayed, because the loupe is about
+                // to display exactly this one.
+                set_hover(s, cell);
+                s->pendingCell = cell;
+                s->pendingSinceMs = f->nowMs;
+            } else if (cell == s->pendingCell) {
                 if (cell != s->hoverCell && (f->nowMs - s->pendingSinceMs) >= COMMIT_CONFIRM_MS) {
                     set_hover(s, cell);
                 }

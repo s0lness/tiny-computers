@@ -106,9 +106,16 @@ function step(dev: Device, ms: number) {
 // idiom every other feature-*.ts in this directory uses for a press-drag-
 // release app (see feature-tiltball.ts's own hold()/tap() equivalents).
 function pressCell(dev: Device, cell: number) {
+  pressCellFor(dev, cell, HOLD_MS);
+}
+
+// Same idiom as pressCell, but with the hold duration named explicitly -
+// what the "first hover is immediate" test below uses to drive a hold
+// shorter than the old ARM_MS+COMMIT_CONFIRM_MS=112ms floor.
+function pressCellFor(dev: Device, cell: number, holdMs: number) {
   const [px, py] = landToPanel(cellCx(cell), cellCy(cell));
   let t = clock;
-  const end = t + HOLD_MS;
+  const end = t + holdMs;
   while (t < end) { t += STEP_MS; dev.touch(true, px, py); dev.tick(t); }
   dev.touch(false, 0, 0);
   const end2 = t + RELEASE_WAIT_MS;
@@ -159,6 +166,33 @@ async function main() {
     pressCell(dev, CELL_BACK);
     log = dev.drainLog();
     check("backspace logs", log.some((l) => l.includes("tables: backspace")), log.join(" | "));
+  }
+
+  // ---- a short tap, shorter than the old 112ms arm+confirm floor, still
+  // lights the key and commits its digit ----------------------------------
+  //
+  // Before the loupe showed its first cell of a gesture immediately on
+  // arming, tables_tick() required BOTH the arm window (ARM_SAMPLES=4,
+  // ARM_MS=40, ~40-67ms of contact) AND then COMMIT_CONFIRM_MS=72ms more of
+  // that same cell holding steady before hoverCell ever left -1 - a ~112ms
+  // floor before anything lit up, matching the owner's own complaint after
+  // testing this app ("i have to press for a fairly long time for a touch
+  // to register"). A tap held only long enough to arm (about 90ms here,
+  // comfortably under that 112ms floor) used to release with hoverCell
+  // still -1, i.e. cancelled: nothing lit, nothing typed. The fix shows the
+  // very first armed cell with no confirm delay (hoverCell starts at -1,
+  // and nothing commits on a hover in the first place - only a release
+  // does), so this same short tap should now light the key and type it.
+  {
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    const SHORT_HOLD_MS = 90; // < ARM_MS + COMMIT_CONFIRM_MS (112)
+    check("the short tap is actually below the old arm+confirm floor",
+      SHORT_HOLD_MS < ARM_MS + COMMIT_CONFIRM_MS, `${SHORT_HOLD_MS}ms vs ${ARM_MS + COMMIT_CONFIRM_MS}ms`);
+    pressCellFor(dev, digitCell(7), SHORT_HOLD_MS);
+    const log = dev.drainLog();
+    check("a short tap (shorter than the old 112ms floor) still lights the key and logs its digit",
+      log.some((l) => l.includes("tables: digit 7")), log.join(" | ") || "(nothing logged)");
   }
 
   // ---- releasing outside the numpad commits nothing ----------------------
