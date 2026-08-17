@@ -113,6 +113,20 @@ function grayAt(fb: Uint8Array, lx: number, ly: number): number {
   return ((v >> 5) & 0x3f) << 2;
 }
 
+// Byte-identical over a rect, at the grayscale resolution grayAt reads -
+// used both to prove a redraw left a region untouched and (the wrong-count
+// worked example below) to prove two DIFFERENT sequences that should land
+// on the same displayed value actually render pixel-for-pixel the same,
+// without needing to OCR a rendered digit.
+function rectUnchanged(a: Uint8Array, b: Uint8Array, x0: number, y0: number, w: number, h: number): boolean {
+  for (let ly = y0; ly < y0 + h; ly++) {
+    for (let lx = x0; lx < x0 + w; lx++) {
+      if (grayAt(a, lx, ly) !== grayAt(b, lx, ly)) return false;
+    }
+  }
+  return true;
+}
+
 const STEP_MS = 16; // matches app.h's dtMs convention used elsewhere in this suite
 let clock = 0;
 
@@ -311,6 +325,105 @@ async function main() {
       sawDark && sawLight, `sawDark=${sawDark} sawLight=${sawLight}`);
   }
 
+  // ---- after ONE digit, the caret sits clearly right of the digit's own
+  // ink, not inside it -------------------------------------------------------
+  //
+  // The owner's bug report: "the blinking cursor doesn't move when I type
+  // some numbers". It DID move (cursor_x_for_len(1) is a real x, distinct
+  // from cursor_x_for_len(0)) - it just landed inside the single typed
+  // digit's own centred ink, so nothing looked different. Candidate x's
+  // mirror CURSOR_X_CANDIDATES above (narrow/wide factor), computed the
+  // same way cursor_x_for_len(1) now is: question_slot_cx() + QDIGIT_W/2 + 6.
+  {
+    const CURSOR_X_LEN1_CANDIDATES = [
+      Q_SLOT_X0_NARROW + Q2W / 2 + QDIGIT_W / 2 + 6,
+      Q_SLOT_X0_WIDE + Q2W / 2 + QDIGIT_W / 2 + 6,
+    ];
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    pressCell(dev, digitCell(4));
+    let sawCursor = false;
+    for (let i = 0; i < 40; i++) {
+      clock += 16;
+      dev.tick(clock);
+      const fb = dev.fb();
+      for (const cx of CURSOR_X_LEN1_CANDIDATES) {
+        for (let ly = QROW_CY - 17; ly < QROW_CY + 17; ly++) {
+          if (grayAt(fb, cx, ly) < 180) sawCursor = true;
+        }
+      }
+    }
+    check("after one digit, the caret is visible clearly right of the digit's own ink", sawCursor,
+      `checked x in [${CURSOR_X_LEN1_CANDIDATES.join(",")}]`);
+  }
+
+  // ---- a resolved answer's highlight is actually centred on the digit ----
+  //
+  // The owner's bug report: "the highlighting of a correct answer reveals
+  // it's not centred properly". Measured before this fix: the tint wash
+  // spanned the full ANSWER_BOX_W (92px, x0..x0+91, centre x0+45.5) while
+  // the digit centred on the narrower Q_SLOT_W (76px) reference (centre
+  // x0+37.5) - an 8px bias. Sampling a wash-only row (above the digit's own
+  // ink) and the digit's own ink row and comparing their midpoints is a
+  // direct measurement of that bias, not just "some tint appeared".
+  {
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    typeDigits(dev, [6]); // the deterministic first question is 6 x 1 = 6
+    pressCell(dev, CELL_CHECK);
+    const fb = dev.fb();
+    function span(pred: (x: number) => boolean, xMin: number, xMax: number): [number, number] {
+      let first = -1, last = -1;
+      for (let lx = xMin; lx < xMax; lx++) { if (pred(lx)) { if (first < 0) first = lx; last = lx; } }
+      return [first, last];
+    }
+    const inkRow = QROW_CY;
+    const washRow = QROW_CY - 18; // above the digit's own ink, still inside the tinted box
+    const [inkL, inkR] = span((lx) => grayAt(fb, lx, inkRow) < 20, 200, 400);
+    const [washL, washR] = span((lx) => grayAt(fb, lx, washRow) < 248, 200, 400);
+    check("the resolved digit's own ink was found", inkL >= 0, `span [${inkL},${inkR}]`);
+    check("the tint wash was found", washL >= 0, `span [${washL},${washR}]`);
+    if (inkL >= 0 && washL >= 0) {
+      const inkMid = (inkL + inkR) / 2, washMid = (washL + washR) / 2;
+      const offset = Math.abs(inkMid - washMid);
+      check("the tint wash is centred on the digit it highlights (within 2px)", offset <= 2,
+        `ink centre ${inkMid}, wash centre ${washMid}, offset ${offset}px`);
+    }
+  }
+
+  // ---- worked example: the wrong counter counts every wrong SUBMISSION,
+  // not just the final give-up -----------------------------------------------
+  //
+  // The owner's bug report: "the count of wrong is not correct (doesn't add
+  // up)". Worked example, before this fix: type wrong (retry state) -
+  // wrongCount stays 0, no redraw. Type wrong again (gives up) - wrongCount
+  // becomes 1. Two actual wrong submissions, counter reads 1 - an asymmetry
+  // against correctCount, which already increments on every successful
+  // submission regardless of which attempt it lands on. After this fix:
+  // wrongCount becomes 1 on the FIRST wrong submission already (checked by
+  // comparing the counter row's own pixels right after entry against right
+  // after that first wrong submission - they must differ, which they did
+  // not before), then 2 on the second (same comparison against the
+  // first-wrong state).
+  {
+    const dev = await loadDevice();
+    await enterTables(dev, APP_TABLES);
+    const atEntry = dev.fb(); // wrong counter reads 0
+    typeDigits(dev, [9, 9]);
+    pressCell(dev, CELL_CHECK); // FIRST wrong attempt -> PHASE_WRONG_RETRY, not a give-up
+    const afterFirstWrong = dev.fb();
+    const changedAfterFirst = !rectUnchanged(atEntry, afterFirstWrong, COUNTER_ROW_X0, COUNTERS_Y0, COUNTER_ROW_W, COUNTER_ROW_H);
+    check("the wrong counter changes on the FIRST wrong attempt already, not only on the final give-up",
+      changedAfterFirst);
+
+    typeDigits(dev, [9, 9]);
+    pressCell(dev, CELL_CHECK); // SECOND wrong attempt -> gives up
+    const afterSecondWrong = dev.fb();
+    const changedAfterSecond = !rectUnchanged(afterFirstWrong, afterSecondWrong, COUNTER_ROW_X0, COUNTERS_Y0, COUNTER_ROW_W, COUNTER_ROW_H);
+    check("the wrong counter changes AGAIN on the second (give-up) attempt - two wrong submissions, two increments",
+      changedAfterSecond);
+  }
+
   // ---- the full-width rule under the question band stays UNBROKEN, even
   // after a keystroke redraws the answer box on top of the same row -------
   //
@@ -342,23 +455,13 @@ async function main() {
       gapAfter === -1, `first gap at x=${gapAfter}`);
   }
 
-  // ---- the wrong counter only counts a FINAL give-up, not every question
-  // resolution - a correct answer must not touch it -----------------------
+  // ---- a CORRECT answer never touches the wrong counter -------------------
   //
-  // The owner's drawing shows two explicit lines, a check and a cross;
-  // this app now counts them as "correct" and "wrong" rather than the
-  // earlier "attempted" (which incremented on EVERY resolution, right or
-  // wrong). Comparing the WRONG row's own pixels before and after a
-  // correct answer is a direct check of that semantic: byte-identical
-  // means a correct answer never touched it.
-  function rectUnchanged(a: Uint8Array, b: Uint8Array, x0: number, y0: number, w: number, h: number): boolean {
-    for (let ly = y0; ly < y0 + h; ly++) {
-      for (let lx = x0; lx < x0 + w; lx++) {
-        if (grayAt(a, lx, ly) !== grayAt(b, lx, ly)) return false;
-      }
-    }
-    return true;
-  }
+  // The owner's drawing shows two explicit lines, a check and a cross; this
+  // app counts them as "correct" and "wrong". A correct submission must
+  // never increment or redraw the wrong row, whichever attempt it lands
+  // on - comparing the WRONG row's own pixels before and after a correct
+  // answer is a direct check of that: byte-identical means untouched.
   {
     const probe = await loadDevice();
     await enterTables(probe, APP_TABLES);

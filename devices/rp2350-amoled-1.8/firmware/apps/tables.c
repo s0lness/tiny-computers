@@ -444,6 +444,18 @@ static uint16_t tint_wrong(void) { return rgb565(250, 232, 196); } // pale amber
 // at. W/T at or above 3 here keeps clear of it.
 #define COUNTER_ICON_CX_OFF 20
 #define COUNTER_ICON_R 15.0f
+// The cross needs its OWN reach, not COUNTER_ICON_R: draw_icon_multiply and
+// draw_icon_check both take a "reach" parameter, but it means a different
+// fraction of each glyph's own bounding box, so the SAME reach does not
+// produce the SAME apparent size. At reach=15, the check's own stroke
+// bounding box (including its t=0.26*reach thickness) is about 32x27px;
+// the cross's is a symmetric X whose bounding box (2*reach + 2*t, t =
+// 0.32*reach) is about 40x40px at the same reach - visibly bigger, exactly
+// the "the X and check aren't the same size" bug report. COUNTER_CROSS_R
+// is solved from the cross's own bounding-box formula for the width the
+// check already has at COUNTER_ICON_R (2*reach*1.32 = 31.8 => reach ~
+// 12.0), not copied from the check's reach.
+#define COUNTER_CROSS_R 12.0f
 #define COUNTER_NUM_CX_OFF 73
 #define COUNTER_DIGIT_W 30
 #define COUNTER_DIGIT_H 38
@@ -931,7 +943,19 @@ static void redraw_question(tables_state_t *s) {
 // which is correct for ink but would silently discard an actual tint.
 static void redraw_answer(tables_state_t *s, uint16_t tint, bool showCorrectValue) {
     int x0 = question_slot_x0(s), cx = question_slot_cx(s);
-    gfx_fill_rect_land(x0, ANSWER_BOX_Y0, ANSWER_BOX_W, ANSWER_BOX_H, tint);
+    // Tint only the visible slot (Q_SLOT_W, the same 76px reference every
+    // digit centres on below) - the extra Q_CURSOR_CLEARANCE strip past it
+    // is erase margin for the caret's own rightmost rest position, never
+    // part of the "answer box" a child reads, so it always stays plain
+    // white regardless of tint. Painting the whole ANSWER_BOX_W (92) with
+    // the tint made the wash's own visual centre sit 8px right of where
+    // every digit actually centres - measured on a resolved "6": wash
+    // spanned [x0, x0+91] (centre x0+45.5), the digit inked [x0+21,x0+54]
+    // (centre x0+37.5). That 8px bias is what "the highlight reveals it's
+    // not centred" was seeing - the underlying centring (on Q_SLOT_W) was
+    // always right, only the wash disagreed with it.
+    gfx_fill_rect_land(x0, ANSWER_BOX_Y0, Q_SLOT_W, ANSWER_BOX_H, tint);
+    gfx_fill_rect_land(x0 + Q_SLOT_W, ANSWER_BOX_Y0, ANSWER_BOX_W - Q_SLOT_W, ANSWER_BOX_H, PX_WHITE);
     if (showCorrectValue) {
         draw_number_lr(cx, QROW_CY, QDIGIT_W, QDIGIT_H, QDIGIT_T, fact_product(s->factIndex), false, PX_BLACK);
     } else if (s->answerLen > 0) {
@@ -975,7 +999,18 @@ static void redraw_answer(tables_state_t *s, uint16_t tint, bool showCorrectValu
 static int cursor_x_for_len(tables_state_t *s) {
     int x0 = question_slot_x0(s);
     if (s->answerLen <= 0) return x0 + 4;
-    if (s->answerLen == 1) return x0 + QDIGIT_W + 6;
+    if (s->answerLen == 1) {
+        // A single digit renders CENTRED in the whole slot (the same
+        // question_slot_cx() redraw_answer() draws it at), not left-aligned
+        // against x0 - the caret has to follow the digit's ACTUAL right
+        // edge or it lands inside the digit's own ink. Measured (owner's
+        // bug report, "the cursor doesn't move when I type some numbers"):
+        // a centred "4" inks [x0+21, x0+54]; the old x0+QDIGIT_W+6 (x0+42)
+        // sat squarely inside that span - the caret WAS moving, but into a
+        // spot the digit's own stroke covered, so nothing looked different.
+        int singleCx = x0 + Q2W / 2; // == question_slot_cx(s)
+        return singleCx + QDIGIT_W / 2 + 6;
+    }
     return x0 + Q_SLOT_W + 6;
 }
 
@@ -1042,7 +1077,7 @@ static void redraw_counter_row(int row, int iconKind, int value, bool padTo2) {
     int y = COUNTERS_Y0 + row * COUNTER_ROW_H;
     gfx_fill_rect_land(COUNTER_ROW_X0, y, COUNTER_ROW_W, COUNTER_ROW_H, PX_WHITE);
     int iconCx = COUNTER_ROW_X0 + COUNTER_ICON_CX_OFF, iconCy = y + COUNTER_ROW_H / 2;
-    if (iconKind == 0) draw_icon_cross(iconCx, iconCy, COUNTER_ICON_R, PX_BLACK);
+    if (iconKind == 0) draw_icon_cross(iconCx, iconCy, COUNTER_CROSS_R, PX_BLACK);
     else draw_icon_check(iconCx, iconCy, COUNTER_ICON_R, PX_BLACK);
     draw_number_lr(COUNTER_ROW_X0 + COUNTER_NUM_CX_OFF, iconCy, COUNTER_DIGIT_W, COUNTER_DIGIT_H,
                     COUNTER_DIGIT_T, value, padTo2, PX_BLACK);
@@ -1112,6 +1147,20 @@ static void resume_same_question(tables_state_t *s) {
 // a new question replaces it on screen. Getting it right on the retry
 // counts as correct: the point is recall, and a corrected recall is still
 // recall.
+//
+// THE WRONG COUNTER counts every wrong SUBMISSION now, not just the final
+// give-up - a real logic bug, not a display one, and an asymmetric one:
+// correctCount already incremented on every successful CHECK press,
+// whichever attempt it landed on, but wrongCount only incremented on the
+// SECOND wrong attempt, silently dropping the first. Worked example: wrong,
+// then wrong again (gives up) used to read wrongCount=1 for two actual
+// wrong submissions; wrong, then right on the retry used to read
+// correctCount=1, wrongCount=0 for one wrong submission and one right one -
+// two different counting units on the two counters is exactly what "the
+// count of wrong doesn't add up" was seeing. Both submissions increment
+// wrongCount now (redraw_wrong() called immediately on the retry too, not
+// only on give-up), so wrongCount+correctCount always equals the number of
+// CHECK presses that carried a digit, the same unit on both sides.
 static void resolve_answer(tables_state_t *s, uint32_t nowMs, bool correct) {
     s->attemptsOnQuestion++;
     if (correct) {
@@ -1123,6 +1172,8 @@ static void resolve_answer(tables_state_t *s, uint32_t nowMs, bool correct) {
         printf("tables: %d x %d = %d correct\r\n", fact_base(s->factIndex), fact_factor(s->factIndex), fact_product(s->factIndex));
         return;
     }
+    s->wrongCount++;
+    redraw_wrong(s);
     if (s->attemptsOnQuestion < 2) {
         redraw_answer(s, tint_wrong(), false); // her own wrong digits, on amber
         s->phase = PHASE_WRONG_RETRY;
@@ -1130,11 +1181,9 @@ static void resolve_answer(tables_state_t *s, uint32_t nowMs, bool correct) {
         printf("tables: wrong, retry\r\n");
         return;
     }
-    s->wrongCount++;
     redraw_answer(s, tint_wrong(), true); // reveal the correct product, still amber
     s->phase = PHASE_WRONG_REVEAL;
     s->phaseDeadlineMs = nowMs + REVEAL_MS;
-    redraw_wrong(s);
     printf("tables: %d x %d = %d, gave up after 2 tries\r\n", fact_base(s->factIndex), fact_factor(s->factIndex), fact_product(s->factIndex));
 }
 
