@@ -700,6 +700,29 @@ board booted from, does the sector-number decode actually land on
 `0x100000`/`0x800000` - has not been flashed. The owner will verify that on
 the board himself.
 
+## The emulator cannot see the panel, and once that cost a day
+
+`docs/findings-panel-streaks.md` is the write-up and it is short. The summary:
+colour cells on the sketchpad's palette trailed streaks along the panel's
+rows; three software explanations were proposed, pursued properly, and each
+killed by a measurement; the cause was signal integrity on the QSPI wire at
+75MHz, fixed by halving `clkdiv` in `firmware/lib/QSPI_PIO/qspi.pio`.
+
+The two habits worth stealing from it, before you spend a day the same way:
+
+- **Ask which instrument can see the defect at all, before fixing anything.**
+  The gate, the invariants and all 34 test files were green for the entire
+  period this defect was on the glass. They were never going to be otherwise:
+  the emulator has no panel and models no timing (decision 0003).
+- **Compare framebuffer against glass at the same instant.** `bun
+  tools/dev.ts shot` while a human holds the state open on the device settles
+  "is this drawn wrong or transferred wrong" in one measurement. That question
+  went unasked for three fixes.
+
+And write down what each outcome will look like BEFORE you look. "Is it
+better?" against a phone photo of thin coloured lines can be answered yes
+three times while nothing improves.
+
 ## Gotchas that bite
 
 - **`zig.exe` hangs, and it looks exactly like a broken toolchain.** Builds

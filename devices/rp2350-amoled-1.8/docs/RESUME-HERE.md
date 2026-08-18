@@ -132,6 +132,14 @@ All of it verifiable without a board, and all of it pushed.
   of a tick's pushed rectangles, in any app. That is the class of bug that
   looks right in the emulator and is broken on the panel, and it is absent.
   Recorded as a result, not as silence.
+- **And then a bug of exactly that shape turned up anyway, one layer lower.**
+  The palette's cells streaked along the panel's rows while the framebuffer
+  was provably clean - captured over devlink while the owner held the palette
+  open on the glass. It was signal integrity on the QSPI wire at 75MHz, fixed
+  by halving `clkdiv`. Three software fixes were shipped first, and every test
+  in this tree was green throughout. Write-up in
+  `docs/findings-panel-streaks.md`; read it before trusting a green suite
+  about anything the panel does.
 - **The invariant checker is built and wired into the build.** It fails on
   `e11fafc` and passes on `4869d00`, so it would have caught the core1 death
   the day it was introduced. Mutation testing caught a real bug in the checker
