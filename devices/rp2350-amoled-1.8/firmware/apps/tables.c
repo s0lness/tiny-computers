@@ -303,6 +303,16 @@ static bool cell_is_digit(int cell) { return (cell >= 0 && cell <= 8) || cell ==
 static int  cell_digit_value(int cell) { return cell == CELL_ZERO ? 0 : cell + 1; }
 
 static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
+    // The zero owns the whole bottom row, so its rect is three cells wide -
+    // see numpad_hit(). Everything downstream (the hover disc, the glyph, the
+    // push) reads this one function, so the wide key is one place, not four.
+    if (cell == CELL_ZERO) {
+        *bx = NUMPAD_X0;
+        *by = NUMPAD_Y0 + (NUMPAD_ROWS - 1) * CELL_H;
+        *bw = NUMPAD_W;
+        *bh = CELL_H;
+        return;
+    }
     int row = cell / NUMPAD_COLS, col = cell % NUMPAD_COLS;
     *bx = NUMPAD_X0 + col * CELL_W;
     *by = NUMPAD_Y0 + row * CELL_H;
@@ -321,6 +331,12 @@ static int numpad_hit(int lx, int ly) {
     int row = (ly - NUMPAD_Y0) / CELL_H;
     if (col >= NUMPAD_COLS) col = NUMPAD_COLS - 1;
     if (row >= NUMPAD_ROWS) row = NUMPAD_ROWS - 1;
+    // The bottom row is ONE key, the zero, three cells wide. Backspace and
+    // check both left with the check key (see TABLE_BASES above), and two
+    // dead cells either side of a lone zero would be a keypad with holes in
+    // it. A triple-width zero is instead the easiest target on the pad,
+    // which suits the digit a child reaches for last and least confidently.
+    if (row == NUMPAD_ROWS - 1) return CELL_ZERO;
     return row * NUMPAD_COLS + col;
 }
 
@@ -718,13 +734,27 @@ static void draw_number_lr(int cx, int cy, int digitW, int digitH, int t,
  * tables is ever wanted, TABLE_BASES below is the one array that grows;
  * nothing else in this file assumes there are three.
  */
-#define TABLE_COUNT 3
-static const int TABLE_BASES[TABLE_COUNT] = { 6, 7, 8 };
+// NINES ADDED, AND THE ONES DROPPED, and the second half is the load-bearing
+// change. The owner watched his niece use this and reported that she typed
+// 42, then waited: the check key is not in her model of what answering is.
+// The fix is to judge the moment the answer is complete, which needs the app
+// to know how many digits "complete" means - and dropping x1 makes that one
+// number for every question in the deck. 6x2 through 9x10 is 12 to 90:
+// EVERY product is exactly two digits. Nothing else in this file has to ask.
+//
+// The ones were the cheapest thing to give up for that: x1 is the fact a
+// child already has before she needs a drill, and it was the only source of
+// a one-digit answer.
+#define TABLE_COUNT 4
+static const int TABLE_BASES[TABLE_COUNT] = { 6, 7, 8, 9 };
+#define FACTOR_MIN 2
 #define FACTOR_MAX 10
-#define FACT_COUNT (TABLE_COUNT * FACTOR_MAX) // 30
+#define FACTOR_COUNT (FACTOR_MAX - FACTOR_MIN + 1)  // 9
+#define FACT_COUNT (TABLE_COUNT * FACTOR_COUNT)     // 36
+#define ANSWER_DIGITS 2                             // true of all 36, see above
 
-static int fact_base(int f)    { return TABLE_BASES[f / FACTOR_MAX]; }
-static int fact_factor(int f)  { return (f % FACTOR_MAX) + 1; }
+static int fact_base(int f)    { return TABLE_BASES[f / FACTOR_COUNT]; }
+static int fact_factor(int f)  { return (f % FACTOR_COUNT) + FACTOR_MIN; }
 static int fact_product(int f) { return fact_base(f) * fact_factor(f); }
 
 static uint32_t rng_next(uint32_t *state) {
@@ -931,11 +961,9 @@ static void render_cell(int cell, bool hovered) {
     int cx = bx + bw / 2, cy = by + bh / 2;
     if (cell_is_digit(cell)) {
         draw_number_lr(cx, cy, 24, 32, 7, cell_digit_value(cell), false, PX_BLACK);
-    } else if (cell == CELL_BACK) {
-        draw_icon_back(cx, cy, 12.0f, PX_BLACK);
-    } else { // CELL_CHECK
-        draw_icon_check(cx, cy, 12.0f, PX_BLACK);
     }
+    // No other kind of cell exists any more: the pad is ten digits and
+    // nothing else.
 }
 
 static void push_cell(int cell) {
@@ -956,10 +984,6 @@ static void draw_loupe_at(int bx, int by, int bw, int bh, int cell) {
     shapes_fill_disc_aa((float)cx, (float)cy, r, loupe_bubble_color());
     if (cell_is_digit(cell)) {
         draw_number_lr(cx, cy, 30, 48, 10, cell_digit_value(cell), false, PX_BLACK);
-    } else if (cell == CELL_BACK) {
-        draw_icon_back(cx, cy, 20.0f, PX_BLACK);
-    } else if (cell == CELL_CHECK) {
-        draw_icon_check(cx, cy, 20.0f, PX_BLACK);
     }
 }
 
@@ -1132,84 +1156,24 @@ static void redraw_answer(tables_state_t *s, uint16_t tint, bool showCorrectValu
     s->cursorDrawn = false;
 }
 
-/* ---- THE BLINKING CURSOR ---------------------------------------------------
+/* ---- there is no cursor any more -------------------------------------------
  *
- * The owner's drawing labels the blank "blink": it carries a caret while
- * she is entering an answer, the iOS-keyboard convention for "this is
- * where typing lands" applied to a single two-digit field. Purely a
- * function of the clock and s->answerLen - no stored "when did it last
- * toggle" base - so PHASE_ASK can start, stop and restart (a wrong retry
- * clears the answer and returns to PHASE_ASK) without ever needing to
- * resync a phase: the picture at any given tick is fully determined by
- * (nowMs, answerLen, active), the same "settles to what the state alone
- * would draw" bar the gate holds every animation on this device to.
- * s->cursorDrawn/s->cursorX are bookkeeping only, so a tick where nothing
- * changed does not re-push a rectangle unchanged from the tick before.
+ * The owner's mockup labelled the answer blank "blink" and it carried a
+ * caret for a while. Two things then removed the need for it, in order.
+ *
+ * First the check key went (see action_digit): the answer is judged the
+ * moment its second digit lands, so the caret's whole job - "this is where
+ * the next thing you type will go, keep going" - now lasts exactly one
+ * keystroke. Second, on the real panel the owner read it as a defect
+ * rather than as a hint: "le curseur de saisie de texte est pixellise, je
+ * pense qu'on devrait l'enlever". A 4px capsule is anti-aliased and still
+ * reads as a stair on a 322ppi panel held at reading distance.
+ *
+ * What is left says the same thing without a moving part: the underline
+ * shows where the answer goes, and the digits appear on it as she taps.
+ * BLINK_PERIOD_MS survives because the wrong-answer reveal still uses it.
  */
 #define BLINK_PERIOD_MS 500u
-#define Q_CURSOR_H 34
-#define Q_CURSOR_R 2.0f
-
-// Caret x for 0, 1 or 2 digits typed - just after the last digit's own
-// box, or at the slot's own left edge when empty (the owner's mockup:
-// "= |___", the caret sitting at the LEFT of the underline before she has
-// typed anything). Reads question_slot_x0(s), so the caret tracks the
-// same per-question shift the factor's own width causes.
-static int cursor_x_for_len(tables_state_t *s) {
-    int x0 = question_slot_x0(s);
-    if (s->answerLen <= 0) return x0 + 4;
-    if (s->answerLen == 1) {
-        // A single digit renders CENTRED in the whole slot (the same
-        // question_slot_cx() redraw_answer() draws it at), not left-aligned
-        // against x0 - the caret has to follow the digit's ACTUAL right
-        // edge or it lands inside the digit's own ink. Measured (owner's
-        // bug report, "the cursor doesn't move when I type some numbers"):
-        // a centred digit sits squarely inside the span a naive fixed
-        // offset would have used - the caret WAS moving, but into a spot
-        // the digit's own stroke covered, so nothing looked different.
-        int singleCx = x0 + Q2W / 2; // == question_slot_cx(s)
-        return singleCx + QDIGIT_W / 2 + 6;
-    }
-    return x0 + Q_SLOT_W + 6;
-}
-
-// The gate's app-fuzzing pass caught this one: a capsule's round CAP
-// extends a full RADIUS past the endpoint it is given, not "+1" - the
-// original version of this rect under-covered the cursor's own ink by
-// several pixels at the top and bottom, a real decision-0001-shaped bug
-// (correct in the emulator's framebuffer, would have gone stale on the
-// board). `rr` (radius, rounded up, plus one for AA falloff) is added on
-// every side, matching what shapes_fill_capsule_aa actually paints.
-static void cursor_rect(int cx, int *bx, int *by, int *bw, int *bh) {
-    int rr = (int)Q_CURSOR_R + 1;
-    int half = Q_CURSOR_H / 2;
-    *bx = cx - rr;
-    *by = QROW_CY - half - rr;
-    *bw = 2 * rr;
-    *bh = 2 * (half + rr);
-}
-
-static void update_cursor(tables_state_t *s, uint32_t nowMs, bool active) {
-    bool want = active && (((nowMs / BLINK_PERIOD_MS) % 2u) == 0u);
-    int cx = cursor_x_for_len(s);
-    int bx, by, bw, bh;
-
-    if (s->cursorDrawn && (!want || cx != s->cursorX)) {
-        cursor_rect(s->cursorX, &bx, &by, &bw, &bh);
-        gfx_fill_rect(bx, by, bw, bh, PX_WHITE);
-        gfx_push_wh(bx, by, bw, bh);
-        s->cursorDrawn = false;
-    }
-    if (want && !s->cursorDrawn) {
-        float half = (float)Q_CURSOR_H / 2.0f;
-        shapes_fill_capsule_aa((float)cx, (float)QROW_CY - half, Q_CURSOR_R,
-                                (float)cx, (float)QROW_CY + half, Q_CURSOR_R, PX_BLACK);
-        cursor_rect(cx, &bx, &by, &bw, &bh);
-        gfx_push_wh(bx, by, bw, bh);
-        s->cursorDrawn = true;
-        s->cursorX = cx;
-    }
-}
 
 /* ---- the counter pills --------------------------------------------------
  *
@@ -1365,22 +1329,30 @@ static void resolve_answer(tables_state_t *s, uint32_t nowMs, bool correct) {
 /* =========================================================================
  * INPUT ACTIONS
  * ========================================================================= */
-static void action_digit(tables_state_t *s, int digit) {
-    if (s->answerLen >= 2) return; // no product in these tables exceeds two digits
+// THE ANSWER JUDGES ITSELF, there is no submit. The owner, after watching
+// his niece: "6x7 elle a marqué 42 et elle attendait. Après elle se
+// rappelait qu'il fallait qu'elle appuie sur rentrer." Pressing a key to say
+// "I have finished answering" is a convention she has no reason to hold; the
+// answer being finished is a fact the app can see for itself, because every
+// product in this deck is ANSWER_DIGITS long (see TABLE_BASES).
+//
+// A slip is therefore marked wrong rather than corrected, since backspace
+// went with the check key. That is deliberate and it is the one real cost
+// here: PHASE_WRONG_RETRY already puts the SAME question straight back, so a
+// fat finger costs one red mark and an immediate second go, and there is
+// nothing left on the pad a child has to be taught. If the false-wrong rate
+// turns out to bother her in use, backspace comes back - that is a smaller
+// change than teaching a key nobody presses.
+static void action_digit(tables_state_t *s, int digit, uint32_t nowMs) {
+    if (s->answerLen >= ANSWER_DIGITS) return;
     s->answerDigits[s->answerLen++] = digit;
     redraw_answer(s, PX_WHITE, false);
     printf("tables: digit %d\r\n", digit); // observable by the regression tests, same
                                             // convention as morpion.c's "mark cell=" line
-}
-static void action_backspace(tables_state_t *s) {
-    if (s->answerLen > 0) s->answerLen--;
-    redraw_answer(s, PX_WHITE, false);
-    printf("tables: backspace\r\n");
-}
-static void action_submit(tables_state_t *s, uint32_t nowMs) {
-    if (s->answerLen == 0) return;
-    int value = s->answerDigits[0];
-    if (s->answerLen == 2) value = s->answerDigits[0] * 10 + s->answerDigits[1];
+    if (s->answerLen < ANSWER_DIGITS) return;
+
+    int value = 0;
+    for (int i = 0; i < s->answerLen; i++) value = value * 10 + s->answerDigits[i];
     resolve_answer(s, nowMs, value == fact_product(s->factIndex));
 }
 
@@ -1410,7 +1382,6 @@ static void tables_tick(const app_frame_t *f) {
         s->enterMs = f->nowMs;
         s->enterMsSet = true;
     }
-    update_cursor(s, f->nowMs, s->phase == PHASE_ASK);
 
     if (s->phase != PHASE_ASK) {
         if (f->nowMs >= s->phaseDeadlineMs) {
@@ -1482,9 +1453,7 @@ static void tables_tick(const app_frame_t *f) {
 
     if (!wasArmed || cell < 0) return; // cancelled - see this file's header
 
-    if (cell_is_digit(cell)) action_digit(s, cell_digit_value(cell));
-    else if (cell == CELL_BACK) action_backspace(s);
-    else action_submit(s, f->nowMs);
+    if (cell_is_digit(cell)) action_digit(s, cell_digit_value(cell), f->nowMs);
 }
 
 const app_t g_tablesApp = {

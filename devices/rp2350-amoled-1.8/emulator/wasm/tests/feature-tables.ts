@@ -236,16 +236,29 @@ async function main() {
       `worst offender (0,0)=none else (${worst.x},${worst.y})`);
   }
 
-  // ---- a digit tap appends to the answer, backspace removes it ----------
+  // ---- a digit tap appends, and the whole bottom row is one zero --------
+  //
+  // Backspace and the check key are both gone (the answer judges itself the
+  // moment its second digit lands), so the bottom row is a single
+  // triple-width zero. This used to assert that the bottom-left cell logged
+  // a backspace; it now asserts that the SAME two positions, either end of
+  // that row, both land on the zero. Rewritten rather than deleted: the row
+  // still has to do something, and what it does changed.
   {
     const dev = await loadDevice();
     await enterTables(dev, APP_TABLES);
     pressCell(dev, digitCell(4));
     let log = dev.drainLog();
     check("a digit tap logs the digit it appended", log.some((l) => l.includes("tables: digit 4")), log.join(" | "));
-    pressCell(dev, CELL_BACK);
-    log = dev.drainLog();
-    check("backspace logs", log.some((l) => l.includes("tables: backspace")), log.join(" | "));
+
+    for (const [name, cell] of [["left", CELL_BACK], ["right", CELL_CHECK]] as const) {
+      const d2 = await loadDevice();
+      await enterTables(d2, APP_TABLES);
+      pressCell(d2, cell);
+      const l2 = d2.drainLog();
+      check(`the bottom row's ${name} end is the zero key`,
+        l2.some((l) => l.includes("tables: digit 0")), l2.join(" | "));
+    }
   }
 
   // ---- a short tap, shorter than the old 112ms arm+confirm floor, still
@@ -348,19 +361,22 @@ async function main() {
   {
     const dev = await loadDevice();
     await enterTables(dev, APP_TABLES);
-    let sawDark = false, sawLight = false;
+    // INVERTED, on purpose. This used to require that a caret blink here.
+    // The owner asked for it gone ("le curseur de saisie de texte est
+    // pixellise, je pense qu'on devrait l'enlever"), and with the answer
+    // judging itself it had a job lasting one keystroke. So the assertion
+    // now pins the ABSENCE: nothing may ever darken those pixels while she
+    // is entering, across more than two full blink periods. Kept rather
+    // than deleted because "no caret" is a real, checkable promise, and a
+    // caret creeping back in is exactly the kind of thing nobody notices.
+    let sawDark = false;
     for (let i = 0; i < 1300; i += 100) {
       clock += 100;
       dev.tick(clock);
       const fb = dev.fb();
-      // The cursor's x depends on this question's factor width (1 or 2
-      // digits) - check both candidate positions, see this file's own
-      // comment on Q_SLOT_X0_NARROW/WIDE above.
-      const dark = CURSOR_X_CANDIDATES.some((cx) => grayAt(fb, cx, QROW_CY) < 180);
-      if (dark) sawDark = true; else sawLight = true;
+      if (CURSOR_X_CANDIDATES.some((cx) => grayAt(fb, cx, QROW_CY) < 180)) sawDark = true;
     }
-    check("the answer blank's cursor blinks while entering (both a lit and an unlit sample seen)",
-      sawDark && sawLight, `sawDark=${sawDark} sawLight=${sawLight}`);
+    check("no caret ever blinks in the answer blank", !sawDark, `sawDark=${sawDark}`);
   }
 
   // ---- after ONE digit, the caret sits clearly right of the digit's own
@@ -391,7 +407,7 @@ async function main() {
         }
       }
     }
-    check("after one digit, the caret is visible clearly right of the digit's own ink", sawCursor,
+    check("after one digit, nothing is drawn right of the digit's own ink", !sawCursor,
       `checked x in [${CURSOR_X_LEN1_CANDIDATES.join(",")}]`);
   }
 
