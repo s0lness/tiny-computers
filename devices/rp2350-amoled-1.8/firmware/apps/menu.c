@@ -2443,7 +2443,30 @@ static void menu_tick(const app_frame_t *f) {
             // always what a lift will launch. While a new cell is being
             // confirmed the previous one stays lit, which is the right
             // answer either way: it is the one the child is looking at.
-            if (cell == s->pendingCell) {
+            //
+            // EXCEPT FOR THE FIRST CELL OF A GESTURE, which lights at once.
+            // The owner: "il faut appuyer vraiment fort pour selectionner une
+            // app, tu peux utiliser la meme sensibilite que le numpad de
+            // tables". Nothing was reading pressure - what he felt was 190ms
+            // of nothing (MENU_ARM_MS plus this confirm) before the halo
+            // appeared, against 40ms on the numpad, which had exactly this
+            // shape until tables.c's own fix.
+            //
+            // Free for the same reason it was free there: with nothing lit
+            // yet there is no previous cell for jitter to drag the halo away
+            // from, and the confirm still governs every CHANGE between cells,
+            // which is where the 80-250px bad reports actually do damage. The
+            // trade that IS real and is accepted deliberately: a jitter burst
+            // landing in the first 40ms can light a neighbour, and a lift
+            // that fast would launch it. The arm already demands four reports
+            // over 40ms at 15Hz before any of this, so that is a finger
+            // genuinely down and steadily reported, and a wrong launch costs
+            // the BOOT+PWR chord rather than anything unrecoverable.
+            if (s->hoverCell < 0) {
+                menu_set_hover(cell);
+                s->pendingCell = cell;
+                s->pendingSinceMs = f->nowMs;
+            } else if (cell == s->pendingCell) {
                 if (cell != s->hoverCell &&
                     (f->nowMs - s->pendingSinceMs) >= MENU_HOVER_CONFIRM_MS) {
                     menu_set_hover(cell);

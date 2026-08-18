@@ -415,6 +415,34 @@ async function main() {
         !!launch && launch.includes(`-> app ${targetApp}`) && dev.appCurrent() === targetApp,
         `${launch?.trim() ?? "(no launch line)"}, app_current()=${dev.appCurrent()}`);
 
+    /* ---- 3b. a SHORT press lights and launches ------------------------- */
+    //
+    // The owner: "il faut appuyer vraiment fort pour selectionner une app".
+    // Nothing reads pressure - what he felt was the old 190ms floor
+    // (MENU_ARM_MS plus MENU_HOVER_CONFIRM_MS) before the halo appeared. The
+    // first cell of a gesture now lights as soon as the gesture arms, the
+    // same rule tables.c's numpad took. 120ms is comfortably under the old
+    // floor and comfortably over the arm window, so this fails against the
+    // previous code and passes against this one.
+    {
+        const devQ = await loadDevice();
+        devQ.tickChecked(0);
+        devQ.openMenu(100);
+        devQ.tickChecked(200);
+        const nq = devQ.menuAppCount();
+        const cellQ = 1;
+        const { bx, by, bw, bh } = cellRect(nq, cellQ);
+        const cx = bx + Math.floor(bw / 2), cy = by + Math.floor(bh / 2);
+        let tq = hold(devQ, cx, cy, 200, 120);
+        check("a 120ms press lights its cell, well under the old 190ms floor",
+            litCell(devQ, nq) === cellQ, `lit=${litCell(devQ, nq)}`);
+        const appQ = devQ.menuAppIndex(cellQ);
+        devQ.drainLog();
+        tq = release(devQ, tq, MENU_RELEASE_GRACE_MS + 200);
+        check("and lifting after that short press launches it",
+            devQ.appCurrent() === appQ, `app_current()=${devQ.appCurrent()}, wanted ${appQ}`);
+    }
+
     /* ---- 4. cancel ---------------------------------------------------- */
     console.log("\n-- back in the menu: drag down into the dead band below the grid and let go --");
     const dev2 = await loadDevice();
