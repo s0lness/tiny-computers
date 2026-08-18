@@ -746,10 +746,17 @@ async function main() {
     console.log("\n-- the dots pulse on a working face --");
     const pulseLevels = new Set<number>();
     const dotsProbeX = L_DOTS_X + L_DOTS_W / 2, dotsProbeY = L_Y0 + L_DIGIT_H / 3;
-    for (let i = 0; i < 40; i++) {
-        t += 125;
+    // 50ms, not 125: the wink is now only 750ms of the two-second cycle (see
+    // DOTS_PULSE_CURVE) and a coarse probe walks straight over it, reporting a
+    // fade as if it were a switch.
+    let litSamples = 0, totalSamples = 0;
+    for (let i = 0; i < 80; i++) {
+        t += 50;
         dev.tick(t);
-        pulseLevels.add(landGray(dev.fbSnapshot(), dotsProbeX, dotsProbeY));
+        const g = landGray(dev.fbSnapshot(), dotsProbeX, dotsProbeY);
+        pulseLevels.add(g);
+        totalSamples++;
+        if (g <= 16) litSamples++;   // gray 0 is ink: fully lit
     }
     // Was "exactly two levels", which pinned the hard blink this started as.
     // The owner then asked for a fade ("j'aimerais un fondu plus doux comme
@@ -759,9 +766,14 @@ async function main() {
     // comfortable grey - a fade that never fully arrives reads as a smudge.
     const sorted = [...pulseLevels].sort((a, b) => a - b);
     const lo = sorted[0] ?? 255, hi = sorted[sorted.length - 1] ?? 0;
-    check("the dots fade rather than switch, and the sweep reaches both fully lit and fully gone",
-        pulseLevels.size >= 8 && lo <= 16 && hi >= 244,
-        `${pulseLevels.size} distinct ink levels over 5s, ${lo}..${hi}: ${sorted.join(", ")}`);
+    const litShare = litSamples / totalSamples;
+    // Three properties, and the third is the one the owner actually asked for
+    // ("j'aimerais que ce soit visible plus longtemps"): it must SPEND most of
+    // its time visible, not half. A symmetric blink would sit near 0.5 here
+    // and pass the first two checks happily.
+    check("the dots fade rather than switch, reach both ends, and are visible for most of the cycle",
+        pulseLevels.size >= 5 && lo <= 16 && hi >= 244 && litShare >= 0.55,
+        `${pulseLevels.size} levels ${lo}..${hi}, fully lit for ${(litShare * 100).toFixed(0)}% of samples`);
 
     // ---- 6. all four TURN edges, checked against the panel itself -----------
     console.log("\n-- the four TURN edges: top/bottom portrait, right/left long-ways --");

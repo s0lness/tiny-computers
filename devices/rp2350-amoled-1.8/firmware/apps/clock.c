@@ -386,19 +386,31 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 // breathing.
 #define DOTS_PULSE_STEPS  32u
 
-// A RAISED COSINE, not a straight ramp, and that is half of why the first
-// attempt read as jerky. A linear fade spends as long crossing the greys
-// nobody can tell apart as it does crossing the ones they can, and it turns
-// around at each end with a corner; a cosine slows into both ends and moves
-// fastest through the middle, which is what "a soft pulse" actually means to
-// an eye. Precomputed rather than called: no float, no libm, the same value
-// every run, and it is sixteen bytes.
+// THE CURVE, and it is asymmetric on purpose. Searched for a standard rather
+// than guessing: the RATE is universal - 1Hz, and its whole job is to be a
+// "visual heartbeat" saying the clock is still counting - but there is NO
+// standard duty cycle, and manufacturers do not publish one. So how long the
+// separator stays visible is a free parameter, and the owner's "j'aimerais
+// que ce soit visible plus longtemps" is a preference, not a deviation.
 //
-// Read as "how lit", 0 gone through 255 fully lit, for the half-cycle; the
-// other half is this mirrored.
-static const uint8_t DOTS_PULSE_CURVE[16] = {
-      0,   3,  11,  24,  42,  64,  88, 114,
-    141, 167, 191, 213, 231, 244, 252, 255
+// Lit and steady for the first 1.25s of the two-second cycle, then one soft
+// wink over the remaining 0.75s: down to gone and back, on a cosine so it
+// slows into both ends rather than turning a corner. Reads as a clock that is
+// on, that blinks, rather than as one that spends half its life switched off.
+//
+// It is also CHEAPER than the symmetric fade it replaces: twenty of the
+// thirty-two steps hold the same value, and paint_dots() only repaints the
+// cell when the level actually changes, so the plateau costs nothing at all.
+// Twelve changing steps per cycle is six repaints a second, roughly 40,000
+// px/sec - back under a quarter of one full-panel repaint per second.
+//
+// Precomputed rather than called: no float, no libm, identical every run, and
+// it is thirty-two bytes. Read as "how lit", 0 gone through 255 fully lit.
+static const uint8_t DOTS_PULSE_CURVE[32] = {
+    255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 238, 191, 128,
+     64,  17,   0,  17,  64, 127, 191, 238
 };
 
 // ---- the setting gesture's chevrons: four small marks, one per direction,
@@ -893,10 +905,8 @@ static uint8_t dots_pulse_ink(uint32_t nowMs) {
     // discovered later.
     uint32_t cycle = DOTS_PULSE_HALF_MS * 2u;
     uint32_t phase = nowMs % cycle;
-    uint32_t step = (phase * DOTS_PULSE_STEPS) / cycle;   // 0..STEPS-1
-    uint32_t half = DOTS_PULSE_STEPS / 2u;
-    uint32_t i = (step < half) ? step : (DOTS_PULSE_STEPS - 1u - step);
-    if (i >= half) i = half - 1u;
+    uint32_t i = (phase * DOTS_PULSE_STEPS) / cycle;   // 0..STEPS-1
+    if (i >= DOTS_PULSE_STEPS) i = DOTS_PULSE_STEPS - 1u;
     // The table is "how lit", 0 gone and 255 fully lit; the ink level this
     // function returns runs the other way (INK_LIT is 0, black).
     return (uint8_t)(DOTS_PULSE_FAINT - DOTS_PULSE_CURVE[i]);
