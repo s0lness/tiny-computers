@@ -164,8 +164,26 @@ let pointerIdDown: number | null = null;
 // mapClientPoint to undo - see rotate.ts), so turning is what you SEE and
 // tilting is what you READ, in tiltReadout() below; both are what the
 // firmware GETS, through sendGravity().
+//
+// DEFAULT IS 90, NOT 0 (owner request 2026-08-18: turning the emulator must
+// actually turn the device). At tilt=0, gravityFromPose() collapses to
+// (0,0,+-1) for every TURN - flat gravity has no in-plane component, so it
+// cannot say which edge is up (puckpose.ts) - so with the old 0 default,
+// clicking TOP/RIGHT/BOTTOM/LEFT rotated only the picture and left the
+// firmware's up-edge exactly where it was: the same hole the owner asked to
+// close, still open even after sendGravity() existed. It also could not
+// agree with the picture from the very first frame: tilt.c's own s_up
+// starts at TILT_UP_TOP before any sample with real in-plane gravity ever
+// arrives, which would only match the default LEFT-highlighted #rotQuick
+// button by coincidence. 90 (on edge) makes every TURN decisive on its own
+// - the whole point of a button labelled "which edge points up" - and,
+// since the first sample lands on tilt.c's filter whole rather than fading
+// in (tilt_submit_device_g()'s own comment), the firmware's up matches the
+// highlighted button from tick one, not after the first click. 0 is still
+// one drag of the slider away, for testing the near-flat,
+// hysteresis-holds-the-old-answer case tilt.c's own header describes.
 let quickDeg = -90;
-let tiltDeg = 0;
+let tiltDeg = 90;
 
 // ---- gravity: the one place the puck's own turn/tilt state becomes the
 // ABI call that feeds the firmware, per firmware/runtime/tilt.h and
@@ -532,8 +550,10 @@ function updateTiltAvailability(): void {
   input.title = has
     ? "tilt: 0° flat, 90° on edge, 180° screen down - the same vector every app's f->tilt reads (firmware/runtime/tilt.h). " +
       "Feeds emu_sensor_vector(); the firmware's own tilt.c does the filtering and decides which edge is \"up\" - this control only " +
-      "says which way gravity points. The device-to-panel axis mapping tilt.c uses is a HYPOTHESIS (identity), never measured on real " +
-      "hardware; if that is ever corrected, this control follows automatically after the next wasm rebuild - see tilt.c's own header."
+      "says which way gravity points. tilt.c's device-to-panel axis mapping was MEASURED on real hardware 2026-08-17 (swap X/Y, negate " +
+      "Z, no longer the identity it used to be assumed as); puckpose.ts's gravityFromPose() undoes that mapping explicitly before " +
+      "calling emu_sensor_vector() - see its own header for why that is a real conversion this file has to keep in step with, not " +
+      "something that follows automatically."
     : "this build does not declare a \"gravity\" sensor (or predates emu_sensor_vector)";
 }
 

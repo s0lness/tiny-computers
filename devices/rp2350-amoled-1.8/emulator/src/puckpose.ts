@@ -31,33 +31,49 @@
 // emu.wasm - never here. Callers hand the result straight to
 // emu_sensor_vector() and read everything else back through emu_tilt().
 //
-// THE HONEST PART, stated once here rather than re-derived at every call
-// site: what this function returns is fed to emu_sensor_vector() exactly as
-// emu_shim.c's own header comment describes it - already in panel space,
-// which is only the same thing as the QMI8658's own device space because
-// tilt.c's device_to_panel() is CURRENTLY an identity hypothesis, not a
-// measurement (tilt.c's "THE AXIS RITUAL"). This file cannot know any
-// better than that hypothesis does - no software here has ever seen which
-// way the part is actually soldered to this board. If the ritual is ever
-// run on real hardware and device_to_panel() is corrected, this file does
-// NOT need to change: the same vectors flow through the same
-// tilt_submit_device_g() -> device_to_panel() pipeline (shared C, both
-// targets), so the emulator's four-edge buttons automatically start
-// reporting whatever the corrected mapping says, the next time emu.wasm is
-// rebuilt. That is the whole point of never computing "up" here - see the
-// task's report for what a user sees while the hypothesis is still wrong.
+// DEVICE AXES, NOT PANEL ONES - stated once here rather than re-derived at
+// every call site. emu_sensor_vector() hands its argument straight to
+// tilt_submit_device_g() (emu_shim.c's own header comment), exactly like a
+// real QMI8658 sample, so firmware/runtime/tilt.c's device_to_panel() runs
+// on whatever this function returns, for real. That mapping was MEASURED on
+// real hardware 2026-08-17 (tilt.c's own header has the arithmetic: swap
+// X/Y, negate Z) and is no longer the identity this file used to assume by
+// accident - under the identity, "panel space" and "device space" were the
+// same numbers, which is what let an earlier version of this function build
+// the panel pose directly and hand it straight to emu_sensor_vector(). That
+// stopped being correct the moment device_to_panel() became a real,
+// non-identity mapping.
+//
+// So this function now does two steps, not one: first it builds the PANEL
+// pose TURN/TILT describe, in the plain sense tilt.h itself uses (turn=0,
+// tilt=90 -> (0,1,0) "upright, top edge up"; turn=90 -> (-1,0,0) "right
+// edge up"; turn=180 -> (0,-1,0) "bottom edge up"; turn=-90 -> (1,0,0) "left
+// edge up"; tilt=0 or 180 collapse to (0,0,+-1) regardless of turn, since
+// turning a flat or face-down puck cannot change which way gravity points).
+// Then it runs that pose through device_to_panel()'s own INVERSE to recover
+// the device axes emu_sensor_vector() actually wants - the same conversion
+// every regression test's own gravity()/tilt() helper applies (e.g.
+// feature-tilt.ts's gravity(), feature-tiltball.ts's tilt()). Deciding "up"
+// itself is still never done here (that is still all tilt.c, compiled into
+// this same emu.wasm) - only which axes carry which number changed.
+//
+// device_to_panel() is currently ITS OWN INVERSE (swap X/Y, negate Z is an
+// involution: applying it twice is the identity), so the line below repeats
+// that exact formula rather than a second, independent one. THIS IS NOT
+// AUTOMATIC: if device_to_panel() is ever corrected to a mapping that is
+// not its own inverse, this function has to change to a real inverse, or it
+// will silently start reporting the wrong up-edge again - there is no
+// shared-C shortcut here the way there is for filtering or the up-edge
+// decision, because turning a "which way is down" vector into device axes
+// is exactly the one piece of the pipeline this file is trusted to do.
 export function gravityFromPose(turnDeg: number, tiltDeg: number): [number, number, number] {
   const turn = (turnDeg * Math.PI) / 180;
   const tilt = (tiltDeg * Math.PI) / 180;
   const inPlane = Math.sin(tilt);
-  // Verified against firmware/runtime/tilt.h's own axis ritual and
-  // emulator/wasm/tests/feature-tilt.ts's assertions (both read PANEL
-  // space): turn=0,tilt=90 -> (0,1,0) "upright, top edge up"; turn=90 ->
-  // (-1,0,0) "quarter turn, right edge up"; turn=180 -> (0,-1,0) "upside
-  // down, bottom edge up"; turn=-90 -> (1,0,0) "left edge up". tilt=0 or 180
-  // collapse to (0,0,+-1) regardless of turn, which is the point: turning a
-  // flat or face-down puck cannot change which way gravity points.
-  return [-Math.sin(turn) * inPlane, Math.cos(turn) * inPlane, Math.cos(tilt)];
+  const px = -Math.sin(turn) * inPlane;
+  const py = Math.cos(turn) * inPlane;
+  const pz = Math.cos(tilt);
+  return [py, px, -pz]; // device_to_panel()'s inverse, which is itself - see header comment
 }
 
 // A label for the edge TURN currently raises - for the diagnostics strip and
