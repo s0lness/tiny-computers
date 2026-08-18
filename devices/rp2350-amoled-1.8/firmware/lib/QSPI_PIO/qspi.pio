@@ -16,6 +16,45 @@
     nop                side 1                   
 .wrap 
 
+/* THE CLOCK BELOW IS HALF THE VENDOR'S, BECAUSE THE SIGNAL DOES NOT SURVIVE
+ * THE OTHER HALF. Both program inits use clkdiv 2.0f, not the 1.0f this
+ * driver shipped with.
+ *
+ * Symptom, photographed twice hours apart on different firmware: with the
+ * sketchpad's colour palette open, every cell trailed thin streaks of its
+ * own colour into the white gutter beside it, along the panel's rows.
+ *
+ * Three software explanations were proposed and all three were killed by
+ * evidence, which is the only reason this number is trusted:
+ *
+ *   1. The palette's push geometry. Traced by hand and driven through the
+ *      emulator across the pop-in, the edge column, and the measured
+ *      dropout profile: every push obeyed decision 0001's row-length rule
+ *      and covered its own ink. Zero violations.
+ *   2. Push frequency. A throttle was added on that theory. The owner
+ *      photographed the panel afterwards and the streaks were unchanged.
+ *   3. The framebuffer itself. Captured over devlink WHILE the owner held
+ *      the palette open on the glass: the gutters were uniformly white.
+ *      Correct in memory, striped on the panel.
+ *
+ * That left the wire. Halving the clock, changing nothing else, and
+ * photographing again: no streaks. So this is signal integrity at 75MHz on
+ * this board, and no amount of waiting in software could ever have fixed
+ * it - which is exactly why three careful software fixes did not.
+ *
+ * COST, measured on the board, same app either side: 158k main-loop
+ * iterations/second at 1.0 against 122k at 2.0, about 22% fewer. Small
+ * because the loop is not dominated by the panel push. That is the price of
+ * a clean picture.
+ *
+ * If a future board revision changes the electrical picture, this is the
+ * one number to try moving, and the test is A PHOTOGRAPH OF THE PALETTE,
+ * not a passing test suite: nothing in this repository can see this defect
+ * (decision 0003 - the emulator has no panel and models no timing at all).
+ *
+ * qspi.pio.h is the generated copy and carries the same value; both are in
+ * the tree, so both were changed.
+ */
 % c-sdk {
 
 #include "hardware/clocks.h"
@@ -38,7 +77,7 @@ static inline void qspi_4wire_data_program_init(PIO pio, uint sm, uint offset, u
     pio_sm_set_consecutive_pindirs(pio, sm, out_base, out_pin_num, true);
 
     // PIO CLK
-    sm_config_set_clkdiv( &c, 1.0f);
+    sm_config_set_clkdiv( &c, 2.0f);
 
     // INIT
     pio_sm_init( pio, sm, offset, &c );
@@ -63,7 +102,7 @@ static inline void qspi_1write_cmd_program_init(PIO pio, uint sm, uint offset, u
     pio_sm_set_consecutive_pindirs(pio, sm, out_base, out_pin_num, true);
 
     // PIO CLK
-    sm_config_set_clkdiv( &c, 1.0f);
+    sm_config_set_clkdiv( &c, 2.0f);
 
     // INIT
     pio_sm_init( pio, sm, offset, &c );

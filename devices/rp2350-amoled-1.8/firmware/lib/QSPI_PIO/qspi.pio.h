@@ -97,7 +97,7 @@ static inline void qspi_4wire_data_program_init(PIO pio, uint sm, uint offset, u
     }
     pio_sm_set_consecutive_pindirs(pio, sm, out_base, out_pin_num, true);
     // PIO CLK
-    sm_config_set_clkdiv( &c, 1.0f);
+    sm_config_set_clkdiv( &c, 2.0f);
     // INIT
     pio_sm_init( pio, sm, offset, &c );
     pio_sm_clear_fifos( pio , sm);
@@ -117,7 +117,7 @@ static inline void qspi_1write_cmd_program_init(PIO pio, uint sm, uint offset, u
     }
     pio_sm_set_consecutive_pindirs(pio, sm, out_base, out_pin_num, true);
     // PIO CLK
-    sm_config_set_clkdiv( &c, 1.0f);
+    sm_config_set_clkdiv( &c, 2.0f);
     // INIT
     pio_sm_init( pio, sm, offset, &c );
     pio_sm_clear_fifos( pio , sm);

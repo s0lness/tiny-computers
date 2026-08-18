@@ -60,8 +60,8 @@ static void AMOLED_1IN8_WaitShiftOut(void)
     while (!pio_sm_is_tx_fifo_empty(qspi.pio, qspi.sm)) {
         tight_loop_contents();
     }
-    // The FIFO being empty still leaves the OSR mid-shift. At clkdiv 1.0 the
-    // 4-wire program emits a byte every 4 cycles, so a few hundred nanoseconds
+    // The FIFO being empty still leaves the OSR mid-shift. At clkdiv 2.0 the
+    // 4-wire program emits a byte every 8 cycles, so a few hundred nanoseconds
     // covers the shifter; 2us is a cheap margin against a 27us push.
     busy_wait_us(2);
 }
@@ -328,6 +328,16 @@ void AMOLED_1IN8_DisplayWindows(uint32_t Xstart, uint32_t Ystart, uint32_t Xend,
         // the whole window. Cost is small (busy_wait_us(2) per row, the same
         // margin already paid once per push) against a frame budget in the
         // milliseconds.
+        //
+        // HONESTY, since this was added chasing a bug it did not fix: the
+        // streaks along the palette's rows that prompted this were NOT this
+        // race. The owner photographed the panel with this fence in place
+        // and they were unchanged; halving the QSPI clock removed them (see
+        // firmware/lib/QSPI_PIO/qspi.pio). This guard is kept because the
+        // gap it closes is real on its own terms - re-arming a channel
+        // whose previous row may still be shifting is wrong whatever else
+        // is true - but nothing observed on this board has ever been traced
+        // to it, so do not cite it as load-bearing.
         AMOLED_1IN8_WaitShiftOut();
     }
 
