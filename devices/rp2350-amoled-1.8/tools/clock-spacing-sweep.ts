@@ -3,6 +3,19 @@
 // against the REAL compiled firmware (decision 0003) - not a re-implemented
 // model of digits.c's geometry.
 //
+// READ THIS BEFORE ACTING ON WHAT IT PRINTS. This tool measures the OUTER
+// MARGIN - paper between the face's edge and the outermost ink - and nothing
+// else. That is a narrow reading point, and once it drove a wrong decision:
+// minimising it selected a rule where a "1" hugs the outer rail, scoring a
+// perfect 0.00px across all 1440 times while opening a full cell of air as
+// one visible HOLE between "0" and "1". The owner saw it on the panel
+// immediately; this sweep called it flawless. clock.c's one_style_for() now
+// carries the full account.
+//
+// So: a low number here is NOT a verdict, and a high one is not a defect.
+// The previews this writes exist precisely so someone LOOKS. If a change is
+// judged on this tool's output alone, that is the failure repeating.
+//
 // THE COMPLAINT this answers, the owner's own words: "c'est surtout quand
 // les chiffres changent que parfois ça bouge. fais une simulation sur
 // toutes les positions heures/minutes qu'on peut avoir pour avoir toujours

@@ -1163,31 +1163,40 @@ static void cell_push(const cell_t *c) {
     else gfx_push_land(c->x, c->y, c->w, c->h);
 }
 
-// WHICH WAY A "1" HUGS ITS OWN CELL, per digit slot - see digits_one_style_t
-// (digits.h) for the shape of the fix and clock-spacing-sweep.ts
-// (tools/clock-spacing-sweep.ts) for the measurement that motivated it: a
-// centred "1" halves, but does not remove, the face's own outer margin
-// moving whenever a "1" lands in the cell that IS that margin. Measured
-// there, before this function existed: long-ways swung the outer margin by
-// 26px 43.3% of the 1440 possible times; upright swung a ROW's own outer
-// margin by 39px 45.8% (hours) / 23.3% (minutes) of the time, invisible to a
-// whole-face bounding box because the two rows can mask each other.
+// A "1" IS CENTRED IN ITS OWN CELL, always, in both layouts.
 //
-//   long-ways: only cell 0 (hours' tens) and cell 3 (minutes' units) touch a
-//   canvas margin at all (L_DIGIT_X = {16, 112, 256, 352} - 1 and 2 sit
-//   against the dots instead, never the bezel). Hug cell 0 LEFT, cell 3
-//   RIGHT, so their outer edge matches a full digit's own inset exactly;
-//   leave the two inner cells centred, since nothing about them ever
-//   touches an edge for a "1" to disturb.
+// THE CONSTRAINT THAT DECIDES THIS. The four cells are a FIXED grid
+// (L_DIGIT_X = {16, 112, 256, 352} long-ways, P_DIGIT_X = {P_X0, P_X1, P_X0,
+// P_X1} upright). That is what makes the owner's original complaint - "c'est
+// surtout quand les chiffres changent que parfois ça bouge" - structurally
+// impossible: a cell never moves, so no digit can shift when the minute
+// rolls. The price of a fixed grid is that a "1", a thin stroke in a cell
+// sized for an "8", carries air. The only real question is WHERE that air
+// goes, and there is no arrangement that removes it.
 //
-//   upright: P_DIGIT_X is {P_X0, P_X1, P_X0, P_X1} - only two columns exist
-//   at all, so EVERY cell touches one of the face's own two outer margins
-//   (there is no inner cell the way long-ways has). Even indices sit at
-//   P_X0 (hug left), odd indices at P_X1 (hug right).
+// WHAT WAS TRIED FIRST, AND WHY IT WAS WRONG. This function used to hug: a
+// "1" in a cell that forms the face's outer margin was pushed flat against
+// the rail, so the outer margin never moved. tools/clock-spacing-sweep.ts
+// measured that as perfect - 0.00px across all 1440 times, both layouts -
+// against the alternative's 26px (long-ways) and 39px (upright). Both numbers
+// are true and both are beside the point: the metric measured the OUTER
+// MARGIN, and hugging pays for a still outer margin by opening the entire
+// cell's worth of air as ONE HOLE inside the number, between "0" and "1".
+// The owner, looking at the panel rather than at the sweep: "j'ai
+// l'impression qu'il n'y a rien qui a changé là sur l'horloge". Rendering
+// 00:01 both ways settled it in one look. A hole inside a number reads; an
+// asymmetric outer margin on a 448px face does not.
+//
+// So: centred, which is also what every seven-segment clock and every
+// tabular-figure typeface does with a "1" - fixed advance, glyph centred in
+// it, the air accepted. digits_one_style_t (digits.h) keeps HUG_LEFT and
+// HUG_RIGHT because they are a real capability of the glyph renderer and
+// cheap to keep; nothing asks for them today.
+//
+// The lesson this cost, which is decision 0010's again: the defect was one
+// step downstream of where the instrument was reading.
 static digits_one_style_t one_style_for(bool upright, int i) {
-    if (upright) return (i % 2 == 0) ? DIGITS_ONE_HUG_LEFT : DIGITS_ONE_HUG_RIGHT;
-    if (i == 0) return DIGITS_ONE_HUG_LEFT;
-    if (i == 3) return DIGITS_ONE_HUG_RIGHT;
+    (void)upright; (void)i;
     return DIGITS_ONE_CENTER;
 }
 
