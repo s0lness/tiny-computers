@@ -90,20 +90,56 @@ export const NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H; // 154
 
 // THE HITBOX IS NOT THE DRAWING, and callers that tap by cell should know how
 // far apart the two now are. tables.c's TOUCH_THUMB_BIAS_Y_DEFAULT shifts every
-// zone DOWN by half a key, so a finger on the top half of the "5" gives the "8"
-// - the owner's own rule, "limite ça devrait être 50% du chiffre d'en dessous".
-//
-// The knife edge worth knowing before raising it again: cellCy() below returns
-// a cell's DRAWN centre, CELL_H/2 = 28.5 into the key, which the tests round to
-// 29 and the bias then takes back to exactly the key's top edge. It still names
-// the right key, by one pixel. At a bias of 30 every by-cell tap in the suite
-// would land one row up, and the failures would read like a firmware bug rather
-// than like taps aimed at drawings instead of zones.
-export const TOUCH_THUMB_BIAS_Y = 29;
+// zone DOWN by this many pixels, so a finger on the top part of the "5" gives
+// the "8" - the owner's own rule, "limite ça devrait être 50% du chiffre
+// d'en dessous". At 40px, more than half of CELL_H (57), this is no longer a
+// one-pixel nudge: cellCy() below is the cell's DRAWN centre and is NOT where
+// a finger lands. Tapping cellCy() directly now biases UP into the row above
+// and names the wrong key. Every tap site must use cellTouchCy() instead -
+// see it just below.
+export const TOUCH_THUMB_BIAS_Y = 40;
 
 export const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
 export const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
+// cellCy(): the cell's DRAWN centre. Correct for READING/MEASURING the
+// drawing itself (framebuffer probes, ink bounding boxes, highlight-centre
+// assertions) - NOT where a finger lands, so never feed this straight to a
+// touch/press call.
 export const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
+// cellTouchCy(): where a FINGER lands to hit cell `c` - the drawn centre plus
+// the thumb bias. Every tap site (emu_touch / setPointer / a press helper)
+// must use this, not cellCy().
+export const cellTouchCy = (c: number) => cellCy(c) + TOUCH_THUMB_BIAS_Y;
+
+// cellFromTouch(): which key a touch at (x, y) actually presses - the inverse
+// of cellTouchCy(), and a mirror of tables.c's numpad_hit() including its two
+// ASYMMETRIC edges. Lives here because a test that needs to answer "which key
+// did the controller just report?" was hand-rolling the grid arithmetic from
+// NUMPAD_X0/Y0/CELL_W/CELL_H, without the bias, and so named a row one lower
+// than the firmware hit-tested: with taps at cellTouchCy(), cell 0 (the drawn
+// "1") classified as cell 3 (the drawn "4"). The test then failed for a reason
+// that lived entirely inside the test - the exact "silently-hollow mirror"
+// failure this file's own header was written about, reappearing as a private
+// copy of the ONE function the mirror had not yet covered.
+//
+// The two edges, and why they differ (tables.c's numpad_hit() carries the
+// full argument): the TOP gate reads the RAW y then clamps into the first row,
+// so the top row keeps every pixel it draws instead of biasing off the pad;
+// the BOTTOM gate reads the BIASED y, so the zero row keeps reaching a
+// bias-worth below the pad into the counters' band.
+export function cellFromTouch(x: number, y: number): number {
+  const biased = y - TOUCH_THUMB_BIAS_Y;
+  if (x < NUMPAD_X0 || x >= NUMPAD_X0 + NUMPAD_W) return -1;
+  if (y < NUMPAD_Y0 || biased >= NUMPAD_Y0 + NUMPAD_H) return -1;
+  const ly = biased < NUMPAD_Y0 ? NUMPAD_Y0 : biased;
+  let col = Math.floor((x - NUMPAD_X0) / CELL_W);
+  let row = Math.floor((ly - NUMPAD_Y0) / CELL_H);
+  if (col >= NUMPAD_COLS) col = NUMPAD_COLS - 1;
+  if (row >= NUMPAD_ROWS) row = NUMPAD_ROWS - 1;
+  // The bottom row is ONE key, the zero, three cells wide - tables.c says why.
+  if (row === NUMPAD_ROWS - 1) return CELL_ZERO;
+  return row * NUMPAD_COLS + col;
+}
 export const digitCell = (d: number) => (d === 0 ? CELL_ZERO : d - 1);
 export const cellValueName = (c: number) =>
   c === CELL_BACK ? "back" : c === CELL_CHECK ? "check" : c === CELL_ZERO ? "0" : String(c + 1);

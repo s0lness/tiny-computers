@@ -29,7 +29,7 @@ import { seededRng, seedFromName } from "../../../tools/gate/touch";
 import {
   PANEL_W, PANEL_H,
   NUMPAD_X0, NUMPAD_Y0, NUMPAD_W, NUMPAD_H, NUMPAD_COLS, NUMPAD_ROWS, CELL_W, CELL_H,
-  CELL_ZERO, cellCx, cellCy, cellValueName, panelPoint,
+  CELL_ZERO, cellCx, cellTouchCy, cellFromTouch, cellValueName, panelPoint,
 } from "../../../tools/tables-layout";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
@@ -108,7 +108,7 @@ async function main() {
     const dev = await freshDevice();
     const sim = new TouchSim(dropoutHeavy, PANEL_W, PANEL_H, seededRng(seedFromName(`tables-hold-${i}`)));
     const cell = i % 9;
-    const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
+    const [px, py] = panelPoint(cellCx(cell), cellTouchCy(cell));
     sim.setPointer(true, px, py);
     let t = 1000;
     for (let held = 0; held < HOLD_MS; held += STEP_MS) {
@@ -137,12 +137,12 @@ async function main() {
       const u = e / DRAG_MS;
       const [px, py] = panelPoint(
         cellCx(from) + (cellCx(to) - cellCx(from)) * u,
-        cellCy(from) + (cellCy(to) - cellCy(from)) * u);
+        cellTouchCy(from) + (cellTouchCy(to) - cellTouchCy(from)) * u);
       sim.setPointer(true, px, py);
       t += STEP_MS;
       dev.feed(sim.poll(t), t);
     }
-    const [tx, ty] = panelPoint(cellCx(to), cellCy(to));
+    const [tx, ty] = panelPoint(cellCx(to), cellTouchCy(to));
     sim.setPointer(true, tx, ty);
     for (let e = 0; e < SETTLE_MS; e += STEP_MS) { t += STEP_MS; dev.feed(sim.poll(t), t); }
 
@@ -179,7 +179,7 @@ async function main() {
     for (const count of [1, 2, 3]) {
       const dev = await freshDevice();
       let t = 1000;
-      const [sx, sy] = panelPoint(cellCx(4), cellCy(4));
+      const [sx, sy] = panelPoint(cellCx(4), cellTouchCy(4));
       for (let k = 0; k < count; k++) {
         dev.feed({ fingers: 1, x: sx, y: sy }, t);
         for (let e = STEP_MS; e < spacingMs; e += STEP_MS) { t += STEP_MS; dev.feed({ fingers: 0, x: 0, y: 0 }, t); }
@@ -227,15 +227,11 @@ async function main() {
   // pills below, or off-panel). Portrait, native, unrotated: a panel report
   // (panelX, panelY) IS (lx, ly) directly - no rotation to undo, unlike
   // this app's landscape detour, which this function used to map through.
-  function cellFromReport(panelX: number, panelY: number): number {
-    const lx = panelX, ly = panelY;
-    if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W || ly < NUMPAD_Y0 || ly >= NUMPAD_Y0 + NUMPAD_H) return -1;
-    let col = Math.floor((lx - NUMPAD_X0) / CELL_W);
-    let row = Math.floor((ly - NUMPAD_Y0) / CELL_H);
-    if (col >= NUMPAD_COLS) col = NUMPAD_COLS - 1;
-    if (row >= NUMPAD_ROWS) row = NUMPAD_ROWS - 1;
-    return row * NUMPAD_COLS + col;
-  }
+  // Was a private copy of the grid arithmetic, which never subtracted the
+  // thumb bias and so named a row lower than the firmware hit-tested - see
+  // cellFromTouch()'s own comment in tools/tables-layout.ts. The shared mirror
+  // owns this now, bias and asymmetric edges included.
+  const cellFromReport = (panelX: number, panelY: number) => cellFromTouch(panelX, panelY);
 
   const JIT_TRIALS = 60;
   let jitCorrect = 0, jitElsewhere = 0, jitNone = 0, jitEpisodes = 0, jitInvented = 0;
@@ -244,7 +240,7 @@ async function main() {
     const dev = await freshDevice();
     const sim = new TouchSim(jitterProfile, PANEL_W, PANEL_H, seededRng(seedFromName(`tables-jitter-${i}`)));
     const cell = i % 9;
-    const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
+    const [px, py] = panelPoint(cellCx(cell), cellTouchCy(cell));
     sim.setPointer(true, px, py);
     let t = 1000;
     const reported = new Set<number>();

@@ -8,6 +8,7 @@
 //   bun run emulator/wasm/tests/feature-tables.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { cellTouchCy } from "../../../tools/tables-layout";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368, PANEL_H = 448;
@@ -35,7 +36,6 @@ const NUMPAD_W = CELL_W * NUMPAD_COLS; // 300
 const NUMPAD_X0 = OX + (USABLE_W - NUMPAD_W) / 2, NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H; // 34, 154
 const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
 const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
-const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
 const digitCell = (d: number) => (d === 0 ? CELL_ZERO : d - 1);
 
 // The question band, lifted from tables.c the same way the numpad geometry
@@ -193,7 +193,7 @@ function pressCell(dev: Device, cell: number) {
 // what the "first hover is immediate" test below uses to drive a hold
 // shorter than the old ARM_MS+COMMIT_CONFIRM_MS=112ms floor.
 function pressCellFor(dev: Device, cell: number, holdMs: number) {
-  const px = Math.round(cellCx(cell)), py = Math.round(cellCy(cell)); // panel coords directly - portrait, no rotation
+  const px = Math.round(cellCx(cell)), py = Math.round(cellTouchCy(cell)); // panel coords directly - portrait, no rotation
   let t = clock;
   const end = t + holdMs;
   while (t < end) { t += STEP_MS; dev.touch(true, px, py); dev.tick(t); }

@@ -36,7 +36,7 @@
 //   bun run emulator/wasm/tests/repro-tables-loupe-flicker.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { PANEL_W, PANEL_H, cellCx, cellCy, LOUPE_CY, LOUPE_BOX_H } from "../../../tools/tables-layout";
+import { PANEL_W, PANEL_H, cellCx, cellTouchCy, LOUPE_CY, LOUPE_BOX_H } from "../../../tools/tables-layout";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const loupeYMin = LOUPE_CY - LOUPE_BOX_H / 2, loupeYMax = LOUPE_CY + LOUPE_BOX_H / 2;
@@ -103,7 +103,7 @@ async function main() {
   console.log("=== repro: tables.c's loupe must not flicker under a held-still finger ===\n");
 
   const dev = await loadDevice();
-  const px = Math.round(cellCx(7)), py = Math.round(cellCy(7)); // digit 8
+  const px = Math.round(cellCx(7)), py = Math.round(cellTouchCy(7)); // digit 8
 
   // Arm (ARM_MS=40) and confirm (COMMIT_CONFIRM_MS=72) the hold - past both
   // before measuring, so the loupe has already settled once.
@@ -130,7 +130,7 @@ async function main() {
   // exact case s->loupeCell exists to catch, since the box's own x never
   // moves in this scenario. digitCell(5) below is column-1 like digit 8
   // (same x), a different row.
-  const px2 = Math.round(cellCx(4)), py2 = Math.round(cellCy(4)); // digit 5, same x as digit 8, different row
+  const px2 = Math.round(cellCx(4)), py2 = Math.round(cellTouchCy(4)); // digit 5, same x as digit 8, different row
   check("the row-change probe actually keeps x fixed and only moves y (or this test proves nothing)",
     px2 === px && py2 !== py, `px=${px} px2=${px2} py=${py} py2=${py2}`);
   let sawLoupeRedraw = false;

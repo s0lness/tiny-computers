@@ -63,7 +63,7 @@ import { join } from "node:path";
 import { TouchSim } from "../emulator/src/touchsim";
 import { TOUCHSIM_HARDWARE_MEASURED } from "../emulator/src/constants";
 import { seededRng, seedFromName } from "./gate/touch";
-import { PANEL_W, PANEL_H, CELL_ZERO, cellCx, cellCy, panelPoint } from "./tables-layout";
+import { PANEL_W, PANEL_H, CELL_ZERO, cellCx, cellTouchCy, panelPoint } from "./tables-layout";
 
 const ROOT = join(import.meta.dir, "..");
 const BUILD_TS = join(ROOT, "emulator", "wasm", "build.ts");
@@ -147,7 +147,7 @@ async function scenarioHeldStill(compiled: WebAssembly.Module, graceMs: number) 
     const dev = await loadDevice(compiled);
     const sim = new TouchSim(profile, PANEL_W, PANEL_H, seededRng(seedFromName(`grace-${graceMs}-held-${i}`)));
     const cell = i % 9;
-    const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
+    const [px, py] = panelPoint(cellCx(cell), cellTouchCy(cell));
     sim.setPointer(true, px, py);
     let t = 1000, committed = false;
     for (let e = 0; e < HOLD_MS; e += STEP_MS) {
@@ -177,14 +177,14 @@ async function scenarioDrag(compiled: WebAssembly.Module, graceMs: number) {
       const u = e / DRAG_MS;
       const [px, py] = panelPoint(
         cellCx(from) + (cellCx(to) - cellCx(from)) * u,
-        cellCy(from) + (cellCy(to) - cellCy(from)) * u);
+        cellTouchCy(from) + (cellTouchCy(to) - cellTouchCy(from)) * u);
       sim.setPointer(true, px, py);
       t += STEP_MS;
       const r = sim.poll(t);
       dev.feed(r.fingers === 1, r.x, r.y, t);
       if (dev.drainLog().some((l) => l.includes("tables: digit"))) early = true;
     }
-    const [tx, ty] = panelPoint(cellCx(to), cellCy(to));
+    const [tx, ty] = panelPoint(cellCx(to), cellTouchCy(to));
     sim.setPointer(true, tx, ty);
     for (let e = 0; e < SETTLE_MS; e += STEP_MS) {
       t += STEP_MS;
@@ -226,7 +226,7 @@ async function scenarioTap(compiled: WebAssembly.Module, graceMs: number) {
     const dev = await loadDevice(compiled);
     const sim = new TouchSim(profile, PANEL_W, PANEL_H, seededRng(seedFromName(`grace-${graceMs}-tap-${i}`)));
     const cell = i % 9;
-    const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
+    const [px, py] = panelPoint(cellCx(cell), cellTouchCy(cell));
     sim.setPointer(true, px, py);
     let t = 1000;
     const digits: number[] = [];

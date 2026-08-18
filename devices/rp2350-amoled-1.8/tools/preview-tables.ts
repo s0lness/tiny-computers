@@ -52,7 +52,7 @@
  */
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { PANEL_W, PANEL_H, CELL_BACK, CELL_CHECK, cellCx, cellCy, digitCell, panelPoint } from "./tables-layout";
+import { PANEL_W, PANEL_H, CELL_BACK, CELL_CHECK, cellCx, cellTouchCy, digitCell, panelPoint } from "./tables-layout";
 
 const ROOT = join(import.meta.dir, "..");
 const WASM_PATH = join(ROOT, "emulator", "wasm", "dist", "emu.wasm");
@@ -65,8 +65,10 @@ const FRAME_MS = 16;
 // consumers under this directory each carrying their own copy is exactly
 // how repro-touch-dropout-tables.ts and sweep-tables-grace.ts silently
 // hit-tested the WRONG numpad rectangle for a full redesign cycle once
-// already). cellCx/cellCy/digitCell/CELL_BACK/CELL_CHECK/panelPoint all
-// come from there now.
+// already). cellCx/cellTouchCy/digitCell/CELL_BACK/CELL_CHECK/panelPoint all
+// come from there now - cellTouchCy, not cellCy, because a touch site has
+// to land where a finger would, not on the drawn centre (see
+// tables-layout.ts's own comment on the two).
 
 async function loadDevice() {
     let memory!: WebAssembly.Memory;
@@ -111,13 +113,13 @@ async function loadDevice() {
         // (tables.c's ARM_MS/COMMIT_CONFIRM_MS), leaving it DOWN - for the
         // mid-drag shot, which wants the loupe caught open.
         pressAndHold(cell: number, ms: number) {
-            const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
+            const [px, py] = panelPoint(cellCx(cell), cellTouchCy(cell));
             const end2 = t + ms;
             while (t < end2) { t += FRAME_MS; e.emu_touch(1, px, py); e.emu_tick(t); }
         },
         // A full press-hold-release on one cell.
         tapCell(cell: number) {
-            const [px, py] = panelPoint(cellCx(cell), cellCy(cell));
+            const [px, py] = panelPoint(cellCx(cell), cellTouchCy(cell));
             const end2 = t + 200;
             while (t < end2) { t += FRAME_MS; e.emu_touch(1, px, py); e.emu_tick(t); }
             e.emu_touch(0, 0, 0);
