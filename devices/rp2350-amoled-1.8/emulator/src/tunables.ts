@@ -139,7 +139,24 @@ function renderControl(
   return { setValue };
 }
 
-export function buildTuneControls(container: HTMLElement, wrap: HTMLElement, tunables: DeviceTunable[], emu: EmuExports, devlink?: DevlinkClient): void {
+// HIDDEN FROM THE PANEL, NOT REMOVED FROM THE DEVICE. The owner, looking at
+// the toolbox: "you can remove these from the emulator btw" - the sketchpad's
+// six stroke thresholds, which were the reason this whole mechanism was built
+// and have been settled constants since. Six sliders nobody will touch, in
+// front of the two he is actually trying to move, is noise.
+//
+// They stay REGISTERED, and that is deliberate rather than lazy:
+// emulator/wasm/tests/repro-touch-dropout-stroke-start.ts sets "lift", reads
+// it back, resets it and asserts all six are present, specifically to prove
+// the tuning path reaches sketch.c's own state "and is not just a decorated
+// no-op". Unregistering them would leave that test green and hollow, which is
+// the failure mode this repo has already been bitten by four times this week.
+// So the device still has them, dev.ts tune still lists them, and only the
+// browser's panel looks away.
+const HIDDEN_TUNABLES = new Set(["lift", "confirm", "pendgrace", "minjump", "maxjump", "maxspeed"]);
+
+export function buildTuneControls(container: HTMLElement, wrap: HTMLElement, allTunables: DeviceTunable[], emu: EmuExports, devlink?: DevlinkClient): void {
+  const tunables = allTunables.filter((t) => !HIDDEN_TUNABLES.has(t.id));
   container.innerHTML = "";
   const hasEmuTune = tunables.length > 0 && !!emu.emu_tune_get && !!emu.emu_tune_set;
   wrap.classList.toggle("hidden", !hasEmuTune && !devlink);
