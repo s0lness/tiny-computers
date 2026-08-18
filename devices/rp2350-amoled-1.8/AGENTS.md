@@ -396,6 +396,30 @@ Flash (no buttons needed, picotool reboots the board itself):
 & "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" load firmware/build/main.uf2 -f -x
 ```
 
+### The board is currently carrying a TUNING build (2026-08-18)
+
+The puck was flashed from `firmware/build-tune`, configured with the three
+live-tune flags on:
+
+```powershell
+cmake -S firmware -B firmware/build-tune -G Ninja `
+  -Dpicotool_DIR="$env:USERPROFILE\pico\tools\picotool-dist\picotool" `
+  -Dpioasm_DIR="$env:USERPROFILE\pico\tools\sdk-tools\pioasm" `
+  -DSKETCH_LIVE_TUNE=1 -DCLOCK_LIVE_TUNE=1 -DTABLES_LIVE_TUNE=1
+cmake --build firmware/build-tune
+& "$env:USERPROFILE\pico\tools\picotool-dist\picotool\picotool.exe" load firmware/build-tune/main.uf2 -f -x
+```
+
+That is what makes the browser's tunables panel able to reach the board at
+all: a default build reports zero tunables (`bun tools/dev.ts tune` prints an
+empty list, the panel shows "device: 0 tunables"), which is correct and
+deliberate, and which read for a while as "the sliders are broken".
+
+**Reflash `firmware/build` before the puck goes back to the children.** The
+knobs are a bench instrument; nothing on the toy should be adjustable by
+whoever is holding it, and the tuning build carries three apps' worth of
+development state it does not need.
+
 Change the message or the look, then rebuild:
 
 ```powershell

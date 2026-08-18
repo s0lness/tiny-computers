@@ -388,7 +388,14 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // LITERATURE'S RESIDUAL (1.6mm ~= 20px) than to its full correction. See
 // TOUCH_THUMB_BIAS_Y_DEFAULT's own tunable range below, which is sized off
 // these numbers rather than off the half-key ceiling two paragraphs up.
-#define TOUCH_THUMB_BIAS_Y_DEFAULT 29.0f
+// 40, not the half-key 29 the paragraph above derives: the owner tried a half
+// key on the panel and asked for more ("et sur le numpad flash avec 40 pour
+// thumbbias"). 40px is 3.1mm, which sits between the literature's residual
+// (1.6mm) and its full correction (4mm ~= 51px), so this is inside the range
+// Holz and Baudisch measured rather than past it. The zones now sit MORE than
+// a key's half below their drawings: aiming at a key's own drawn centre gives
+// the key ABOVE it, which is the point.
+#define TOUCH_THUMB_BIAS_Y_DEFAULT 40.0f
 
 /* ---- DEVELOPMENT: live tuning of the thumb bias (TABLES_LIVE_TUNE) ------
  *
