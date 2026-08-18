@@ -303,7 +303,7 @@ void AMOLED_1IN8_DisplayWindows(uint32_t Xstart, uint32_t Ystart, uint32_t Xend,
     for (i = Ystart; i < Yend; i++) {
         pixel_offset = (i * AMOLED_1IN8.WIDTH + Xstart) * 2;
         partial_image = (UBYTE *)Image + pixel_offset;
-        dma_channel_configure(dma_tx, 
+        dma_channel_configure(dma_tx,
                             &c,
                             &qspi.pio->txf[qspi.sm],  // Destination pointer (PIO TX FIFO)
                             partial_image,            // Source pointer (data buffer)
@@ -312,6 +312,23 @@ void AMOLED_1IN8_DisplayWindows(uint32_t Xstart, uint32_t Ystart, uint32_t Xend,
 
         // Waiting for DMA transfer to complete
         while(dma_channel_is_busy(dma_tx));
+        // dma_channel_is_busy() going false means only that THIS row's bytes
+        // have been fed into the PIO TX FIFO, exactly the gap
+        // AMOLED_1IN8_WaitShiftOut()'s own header comment describes: the
+        // state machine can still be clocking the tail of this row's data
+        // (FIFO plus OSR) out onto the wire when the loop immediately
+        // reconfigures and re-arms the SAME DMA channel for the next row.
+        // That reconfigure was previously unguarded here, row after row, for
+        // every partial-window push - the one place in this function the
+        // fix below the CS-deselect call was never applied. This is
+        // docs/decisions/0001's own named, never-confirmed candidate ("a
+        // per-row DMA re-arm race that only bites when the transfer is short
+        // enough to complete inside the re-arm window"), closed at the
+        // boundary it actually names: between rows, not only at the end of
+        // the whole window. Cost is small (busy_wait_us(2) per row, the same
+        // margin already paid once per push) against a frame budget in the
+        // milliseconds.
+        AMOLED_1IN8_WaitShiftOut();
     }
 
     AMOLED_1IN8_WaitShiftOut();
