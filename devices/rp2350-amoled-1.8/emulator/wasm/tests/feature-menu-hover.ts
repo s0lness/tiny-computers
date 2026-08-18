@@ -66,6 +66,8 @@ import { seededRng, seedFromName } from "../../../tools/gate/touch";
 // rate by hand, which left positionJitterEnabled false - so the defect that
 // most threatens a grid of 112px cells was the one thing it did not simulate.
 import { TOUCHSIM_HARDWARE_MEASURED } from "../../src/constants";
+import { MENU_TOP_INSET, MENU_CANCEL_FLOOR, MENU_AVAIL_H, MENU_CELL_FLOOR, MENU_ROWS_MAX,
+         menuRows, rowSpan, menuCellH, menuGridY0, cellRect, type Rect } from "../../../tools/menu-layout.ts";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
@@ -80,12 +82,10 @@ const APP_INDEX_MENU = -1;
 // roster leaves slack.
 const ICON_W = 96;
 const ICON_H = 96;
-const MENU_CELL_FLOOR = 112;
-const MENU_COLS_MAX = 4;
-const MENU_TOP_INSET = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
-const MENU_CANCEL_FLOOR = 22;
-const MENU_AVAIL_H = LAND_H - MENU_TOP_INSET - MENU_CANCEL_FLOOR; // 336
-const MENU_ROWS_MAX = Math.floor(MENU_AVAIL_H / MENU_CELL_FLOOR); // 3
+// Geometry comes from tools/menu-layout.ts, not from a fourth hand-copy of
+// menu.c's formulas. Three copies existed and all three went stale in the
+// same commit when the grid started centring itself; the failures they
+// reported were their own.
 const MENU_ICON_PAD = 8;
 const MENU_RELEASE_GRACE_MS = 300;
 const MENU_HOVER_CONFIRM_MS = 150;
@@ -219,46 +219,10 @@ type Device = Awaited<ReturnType<typeof loadDevice>>;
  * a layout menu.c no longer had and kept passing (see repro-switch-input.ts
  * for the write-up).
  */
-function menuRows(n: number): number {
-    return Math.min(Math.max(Math.ceil(n / MENU_COLS_MAX), 1), MENU_ROWS_MAX);
-}
-function rowSpan(n: number, r: number): { first: number; cols: number } {
-    const rows = menuRows(n);
-    const base = Math.floor(n / rows);
-    const extra = n % rows;
-    return { first: r * base + Math.min(r, extra), cols: base + (r < extra ? 1 : 0) };
-}
-// menu_cell_h() in menu.c (decision 0020): the smaller of (available height
-// / rows) and the narrowest row's own width, rounded DOWN to a multiple of
-// 8 (decision 0001), never below the floor.
-function menuCellH(n: number): number {
-    const rows = menuRows(n);
-    const byHeight = Math.floor(MENU_AVAIL_H / rows);
-    let byWidth = LAND_W;
-    for (let r = 0; r < rows; r++) byWidth = Math.min(byWidth, Math.floor(LAND_W / rowSpan(n, r).cols));
-    let h = Math.min(byHeight, byWidth);
-    h = Math.floor(h / 8) * 8;
-    return Math.max(h, MENU_CELL_FLOOR);
-}
 // menu_icon_size() in menu.c: the icon actually rendered in a cell of the
 // given size, never smaller than ICON_W.
 function menuIconSize(cellW: number, cellH: number): number {
     return Math.max(ICON_W, Math.min(cellW, cellH) - 2 * MENU_ICON_PAD);
-}
-type Rect = { bx: number; by: number; bw: number; bh: number };
-function cellRect(n: number, i: number): Rect {
-    const rows = menuRows(n);
-    const cellH = menuCellH(n);
-    for (let r = 0; r < rows; r++) {
-        const { first, cols } = rowSpan(n, r);
-        if (i < first + cols) {
-            const c = i - first;
-            const w = Math.floor(LAND_W / cols);
-            const bx = c * w;
-            return { bx, by: MENU_TOP_INSET + r * cellH, bw: c === cols - 1 ? LAND_W - bx : w, bh: cellH };
-        }
-    }
-    throw new Error(`no cell for index ${i} at ${n} apps`);
 }
 const cellCentre = (n: number, i: number): [number, number] => {
     const { bx, by, bw, bh } = cellRect(n, i);

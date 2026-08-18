@@ -268,6 +268,37 @@ static int menu_cell_h(void) {
     return h;
 }
 
+// Where the block of rows starts, vertically. Not MENU_TOP_INSET flat: with
+// a small roster the rows do not fill MENU_AVAIL_H, and packing them against
+// the top left the owner looking at a quarter of the panel as bare paper
+// below the last row ("recentrer mieux le menu a 5 apps"). The slack is now
+// split evenly above and below, so a five-app menu reads as a considered
+// block on the page rather than as a grid that ran out. At a roster that
+// fills the space this returns MENU_TOP_INSET exactly, so nothing about the
+// eleven- or twelve-app layouts moves.
+// Centred in the WHOLE landscape height, not in MENU_AVAIL_H. Both are
+// defensible and the full height is the right one, because a release above
+// the grid and a release below it already do the same thing (cancel - see
+// menu_hit()'s own comment on symmetric treatment). So the strip left over
+// is one cancel zone in two halves, not a reserved band at the bottom plus
+// an accident at the top, and the icons sit where the eye expects them.
+// Floored at MENU_TOP_INSET so the bezel margin is never eaten: at eleven
+// and twelve apps the rows fill the panel, the floor binds, and those
+// layouts do not move by a pixel.
+static int menu_grid_y0(void) {
+    int grid = menu_rows() * menu_cell_h();
+    int y0 = (LAND_H - grid) / 2;
+    // Centred, but never at the cancel band's expense. MENU_CANCEL_FLOOR is
+    // a floor on the strip BELOW the grid, and a naive centring spends half
+    // of it on the top: at eleven and twelve apps the slack is 32px, so
+    // centring would leave 16 below against a floor of 22. Clamped, those
+    // rosters keep y0 = MENU_TOP_INSET and do not move at all, while five
+    // and six apps have slack to spare and centre freely.
+    int maxY0 = LAND_H - MENU_CANCEL_FLOOR - grid;
+    if (y0 > maxY0) y0 = maxY0;
+    return y0 < MENU_TOP_INSET ? MENU_TOP_INSET : y0;
+}
+
 // Cell i's landscape rectangle. Contiguous and full-width within its row
 // (no gap, no margin either side): the LAST cell of a row absorbs whatever
 // LAND_W does not divide evenly, so every x in [0, LAND_W) belongs to
@@ -292,7 +323,7 @@ static void cell_rect_land(int i, int *bx, int *by, int *bw, int *bh) {
     int w = LAND_W / cols;
     *bx = c * w;
     *bw = (c == cols - 1) ? (LAND_W - *bx) : w;
-    *by = MENU_TOP_INSET + r * cellH;
+    *by = menu_grid_y0() + r * cellH;
     *bh = cellH;
 }
 
@@ -346,9 +377,13 @@ static void panel_to_land(int px, int py, int *lx, int *ly) {
 static int menu_hit(int lx, int ly) {
     int rows = menu_rows();
     int cellH = menu_cell_h();
-    int gy = ly - MENU_TOP_INSET;
-    if (gy < 0) return -1;            // above the grid: the bezel-margin strip
-    if (gy >= rows * cellH) return -1; // below the grid: the cancel band
+    // menu_grid_y0(), NOT MENU_TOP_INSET: the grid is centred vertically in
+    // the slack a small roster leaves, and a hit test reading a different
+    // origin from cell_rect_land() would put every cell's touch target a
+    // few dozen pixels above its own picture. One function, both callers.
+    int gy = ly - menu_grid_y0();
+    if (gy < 0) return -1;            // above the grid: bezel margin plus slack
+    if (gy >= rows * cellH) return -1; // below the grid: slack plus the cancel band
     int r = gy / cellH;
     int first, cols;
     menu_row_span(r, &first, &cols);

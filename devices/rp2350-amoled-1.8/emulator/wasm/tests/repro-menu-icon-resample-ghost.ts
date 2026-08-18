@@ -46,6 +46,7 @@
 //   bun run emulator/wasm/tests/repro-menu-icon-resample-ghost.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { MENU_CELL_FLOOR, menuRows, rowSpan, menuCellH, cellRect } from "../../../tools/menu-layout.ts";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const PANEL_W = 368;
@@ -59,12 +60,9 @@ const APP_INDEX_MENU = -1;
 // every other test in this directory: a claim, checked against the real
 // framebuffer below, not trusted on its own (docs/decisions/0010).
 const ICON_W = 96;
-const MENU_CELL_FLOOR = 112;
-const MENU_COLS_MAX = 4;
-const MENU_TOP_INSET = 10;
-const MENU_CANCEL_FLOOR = 22;
-const MENU_AVAIL_H = LAND_H - MENU_TOP_INSET - MENU_CANCEL_FLOOR;
-const MENU_ROWS_MAX = Math.floor(MENU_AVAIL_H / MENU_CELL_FLOOR);
+// Geometry from tools/menu-layout.ts, not a fourth hand-copy: this file was
+// one of three that reported failures of their own making when the grid
+// started centring itself.
 const MENU_ICON_PAD = 8;
 const FOUR_ICON_R = 17.5;
 const FOUR_ICON_A = 25.5;
@@ -72,40 +70,8 @@ const FOUR_ICON_B = 70.5;
 const LUCIDE_STROKE_HALF = 5.0;
 const FOUR_SLOT = 3; // g_menuAppIndex: chrono, sketch, timer, four, tables
 
-function menuRows(n: number): number {
-    return Math.min(Math.max(Math.ceil(n / MENU_COLS_MAX), 1), MENU_ROWS_MAX);
-}
-function rowSpan(n: number, r: number): { first: number; cols: number } {
-    const rows = menuRows(n);
-    const base = Math.floor(n / rows);
-    const extra = n % rows;
-    return { first: r * base + Math.min(r, extra), cols: base + (r < extra ? 1 : 0) };
-}
-function menuCellH(n: number): number {
-    const rows = menuRows(n);
-    const byHeight = Math.floor(MENU_AVAIL_H / rows);
-    let byWidth = LAND_W;
-    for (let r = 0; r < rows; r++) byWidth = Math.min(byWidth, Math.floor(LAND_W / rowSpan(n, r).cols));
-    let h = Math.min(byHeight, byWidth);
-    h = Math.floor(h / 8) * 8;
-    return Math.max(h, MENU_CELL_FLOOR);
-}
 function menuIconSize(cellW: number, cellH: number): number {
     return Math.max(ICON_W, Math.min(cellW, cellH) - 2 * MENU_ICON_PAD);
-}
-function cellRect(n: number, i: number): { bx: number; by: number; bw: number; bh: number } {
-    const rows = menuRows(n);
-    const cellH = menuCellH(n);
-    for (let r = 0; r < rows; r++) {
-        const { first, cols } = rowSpan(n, r);
-        if (i < first + cols) {
-            const c = i - first;
-            const w = Math.floor(LAND_W / cols);
-            const bx = c * w;
-            return { bx, by: MENU_TOP_INSET + r * cellH, bw: c === cols - 1 ? LAND_W - bx : w, bh: cellH };
-        }
-    }
-    throw new Error(`no cell for index ${i} at ${n} apps`);
 }
 
 let passCount = 0, failCount = 0;
