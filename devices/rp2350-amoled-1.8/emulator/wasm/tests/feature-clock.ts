@@ -683,13 +683,21 @@ async function main() {
     check("the panel itself now reads 08:38, segment by segment", facesOk, faceDetail.join("; "));
 
     const dotsCell: Cell = { upright: false, x: L_DOTS_X, y: L_Y0, w: L_DOTS_W, h: L_DIGIT_H, t: L_SEG_T };
-    // isInk, not isDark: the dots now pulse (see "THE PULSE" below), so the
-    // darkest pixel here can legitimately land on either DOTS_PULSE_FAINT
-    // (128) or INK_LIT (0) depending on the instant this snapshot was taken
-    // - this check is only "are the dots there at all", not "which half of
-    // the pulse is it".
+    // Sampled across a WHOLE pulse cycle, not at one instant. The pulse used
+    // to alternate between two ink levels, so any single snapshot found
+    // something dark; the owner then asked for "visible one second /
+    // invisible one second", and on the invisible half the separator cell is
+    // honestly blank paper. A one-shot probe therefore fails half the time
+    // through no fault of the firmware. This asks the only question that
+    // still means anything: are the dots there at SOME point in a cycle.
+    let dotsDarkestSeen = 255;
+    for (let i = 0; i < 12; i++) {
+        t += 250;
+        dev.tick(t);
+        dotsDarkestSeen = Math.min(dotsDarkestSeen, cellDarkest(dev.fbSnapshot(), dotsCell));
+    }
     check("held long-ways it reads like the stopwatch, with the two dots between the pairs",
-        isInk(cellDarkest(fb, dotsCell)), `darkest pixel in the separator cell is ${cellDarkest(fb, dotsCell)}`);
+        isInk(dotsDarkestSeen), `darkest pixel seen in the separator cell across a full pulse cycle is ${dotsDarkestSeen}`);
     check("the chevrons are gone now that set mode is closed",
         chevronDarkest(fb, false, landChevCentres[0]![0], CHEV_L_UP_APEX, CHEV_L_UP_BASE) > 140,
         `darkest pixel where the hours' up chevron was`);
@@ -903,6 +911,13 @@ async function main() {
     // ---- 10. abandonment: wandering off mid-set discards, silently --------
     console.log("\n-- wandering off mid-set times out and discards --");
     dev.drainLog();
+    // Past the confirm lockout first. A confirm deafens both button
+    // detectors for one DOUBLE_PRESS_WINDOW_MS so that the second press of
+    // the owner's own double-press cannot reopen what the first just closed
+    // (see setting_tick()). A test pressing again with zero delay is not a
+    // person; a person pausing half a second is.
+    t += DOUBLE_PRESS_WINDOW_MS + 100;
+    dev.tick(t);
     t = doublePressPWR(dev, t);
     check("set mode opened for the abandonment check",
         dev.fwLogLines().some((l) => l.includes("clock: set mode opened")));

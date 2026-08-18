@@ -70,17 +70,18 @@
  * WHY THIS IS ALLOWED WHEN SECONDS ARE NOT is a cost argument, not a taste
  * one, and it is the same argument as the paragraph above: a face that
  * ticks every second costs a redraw a second, forever, of the WHOLE face.
- * The dots pulse by toggling between two ink levels every
- * DOTS_PULSE_HALF_MS (500ms - lit half a second, faint half a second, so
- * ONE blink per second, the rate every clock a child has seen uses), and
- * every toggle redraws exactly the cell dots_cell() already owned before
- * this feature existed (32 x 208 landscape px, the separator's own bounding
- * box, sized for the known/unknown transition it always had to redraw for).
- * That is about 6,656 px pushed per toggle, roughly 13,300 px/sec at two
- * toggles a second - under a twelfth of one full-panel repaint (368*448 =
- * 164,864 px) per second, and confined to a cell already being pushed. The
- * first version ran at four toggles a second and the owner asked for it
- * slower; halving the rate halved the cost with it. A pulsing pair
+ * The dots pulse by appearing and disappearing every DOTS_PULSE_HALF_MS
+ * (1000ms - a second visible, a second gone, the owner's own wording and
+ * the convention every mains clock has used for fifty years), and every
+ * toggle redraws exactly the cell dots_cell() already owned before this
+ * feature existed (32 x 208 landscape px, the separator's own bounding box,
+ * sized for the known/unknown transition it always had to redraw for). That
+ * is about 6,656 px pushed per toggle, roughly 6,650 px/sec at one toggle a
+ * second - under a twenty-fourth of one full-panel repaint (368*448 =
+ * 164,864 px) per second, and confined to a cell already being pushed. Two
+ * faster rates were tried first, at four and two toggles a second, and both
+ * were rejected by eye as flicker rather than heartbeat; each halving
+ * halved the cost with it. A pulsing pair
  * of dots is a few dozen pixels moving four times a second inside a window
  * that was already there; a face that ticks every second is the whole face,
  * every second, forever. That difference is why one is acceptable here and
@@ -362,11 +363,19 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 // ONE BLINK PER SECOND, which is what every clock a child has ever seen does.
 // The first version toggled every BLINK_PERIOD_MS/2, four times a second, and
 // the owner asked for it slower: "the clock blink should blink every second".
-// Lit for half a second, faint for half a second, so the pair completes one
-// blink per second. Halves the pulse's cost at the same time - see THE PULSE
-// in this file's header for the arithmetic.
-#define DOTS_PULSE_HALF_MS 500u
-#define DOTS_PULSE_FAINT  130
+// A SECOND VISIBLE, A SECOND GONE, which is the owner's own wording ("i'd
+// rather it's visible one second / invisible one second") and the convention
+// a mains-powered digital clock has used since the seventies. Two earlier
+// rates were tried and rejected by eye: four toggles a second read as a
+// flicker, and two read as a nervous tick rather than as a heartbeat.
+//
+// GONE means gone, not dimmed. A faint pair was the first attempt and it is
+// the wrong signal here: this device already owns "faint" as the empty
+// face's slow breathe, the screen that means the battery emptied and the
+// time is not known. Two animations both trading on paleness would compete;
+// a separator that is either there or is not cannot be confused with it.
+#define DOTS_PULSE_HALF_MS 1000u
+#define DOTS_PULSE_FAINT  255
 
 // ---- the setting gesture's chevrons: four small marks, one per direction,
 // flanking each digit pair while set mode is open -------------------------
@@ -649,6 +658,11 @@ struct clock_state_s {
     // does nothing - this app has no use for a lone short press).
     bool     havePendingShort;
     uint32_t pendingShortMs;
+    bool     havePendingBoot;
+    uint32_t pendingBootMs;
+    // Set when a confirm closes set mode: see the lockout in setting_tick().
+    uint32_t ignorePressUntilMs;
+    bool     haveIgnoreUntil;
 
     // Committed, and waiting for the value to come back out the other side.
     // THIS IS A HARDWARE-ONLY GLITCH GUARD and the emulator cannot show what
@@ -1015,6 +1029,25 @@ static bool pwr_double_press(clock_state_t *s, uint32_t nowMs, uint8_t key) {
     return false;
 }
 
+// The same shape on BOOT, because the owner asked for it: "double tapping boot
+// should open up the edit mode as well (if it's not risking fucking up the
+// device)". It is not. BOOT is already read on EVERY frame for every app, at
+// bootbtn.c's own 50ms cadence, and the click is already published to apps as
+// app_frame_t.bootClicked - so this adds no hardware access at all, only a
+// second reading of a stream that was already flowing. The hazard decisions
+// 0004/0005 are about is core1 fetching from flash while core0 borrows the
+// chip select, and nothing here changes how often that borrow happens.
+static bool boot_double_tap(clock_state_t *s, uint32_t nowMs, bool clicked) {
+    if (!clicked) return false;
+    if (s->havePendingBoot && (nowMs - s->pendingBootMs) <= DOUBLE_PRESS_WINDOW_MS) {
+        s->havePendingBoot = false;
+        return true;
+    }
+    s->havePendingBoot = true;
+    s->pendingBootMs = nowMs;
+    return false;
+}
+
 // Which field a tap at (touchX, touchY) adjusts, and which way - see "THE
 // TAP TARGET" above, and "THE OWNER'S MOCKUP" by the CHEV_* constants for
 // what the chevrons now promise: a left arrow decreases, a right arrow
@@ -1062,9 +1095,50 @@ static void chevron_zone(bool upright, int touchX, int touchY, int *field, int *
 // flight across that instant would otherwise pick its field with the wrong
 // rule for exactly one frame.
 static void setting_tick(clock_state_t *s, const app_frame_t *f, bool upright, bool flip180) {
-    if (pwr_double_press(s, f->nowMs, f->key)) {
-        if (!s->active) {
+    // LEAVING is one press of either button; ENTERING still takes a double.
+    // The owner, after using it: "when in clock edit mode, pressing boot or
+    // pwr once should confirm the time." That asymmetry is the right way
+    // round rather than an inconsistency: opening the gesture by accident
+    // would let a child scramble a clock nobody notices is wrong for a day,
+    // so it stays deliberate; closing it by accident costs her the time she
+    // had already dialled in and she simply dials it again, with the whole
+    // thing visible on screen while she does.
+    // THE LOCKOUT, and it is not defensive programming, it is the muscle
+    // memory this change creates. The owner learned "double-press to
+    // validate". Now the FIRST of those two presses validates - so the
+    // SECOND one lands on a closed set mode and, without this, is parked as
+    // the opening half of a fresh double-press, reopening what he just
+    // closed. Caught by the test that says two presses further apart than
+    // the window never open set mode; it was right and the code was wrong.
+    //
+    // So a confirm deafens both detectors for one window: long enough to
+    // swallow the rest of a double-press, short enough that a deliberate
+    // reopen a moment later still works.
+    if (s->haveIgnoreUntil && (int32_t)(f->nowMs - s->ignorePressUntilMs) < 0) {
+        return;
+    }
+    s->haveIgnoreUntil = false;
+
+    bool confirmNow = s->active && ((f->key & KEY_SHORT) || f->bootClicked);
+    bool openNow = !s->active &&
+                    (pwr_double_press(s, f->nowMs, f->key) ||
+                     boot_double_tap(s, f->nowMs, f->bootClicked));
+
+    if (confirmNow) {
+        s->havePendingShort = false;
+        s->havePendingBoot = false;
+        s->ignorePressUntilMs = f->nowMs + DOUBLE_PRESS_WINDOW_MS;
+        s->haveIgnoreUntil = true;
+    }
+
+    if (confirmNow || openNow) {
+        if (openNow) {
             s->active = true;
+            // Nothing half-seen may survive into set mode: a first press
+            // parked by either detector before opening would otherwise land
+            // as the confirm that closes it again on the next button.
+            s->havePendingShort = false;
+            s->havePendingBoot = false;
             // Seed from whatever is on screen. An unknown clock seeds at
             // 12:00, a neutral place to start tapping from rather than
             // midnight, where half the useful range is a long way of
