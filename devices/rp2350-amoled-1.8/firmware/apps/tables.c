@@ -357,10 +357,21 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // magnified digit before committing, so a bias that guesses wrong is visible
 // and correctable in the same gesture rather than silently wrong.
 //
-// The ceiling worth knowing before raising this again: at CELL_H/2 = 28 the
-// zones would sit a full half-key below their drawings, and the TOP row would
-// start losing its own upper half off the pad entirely. If 22 still reads low,
-// the honest fix stops being a bias and becomes taller keys.
+// THE OWNER ASKED FOR EXACTLY THE CEILING THIS PARAGRAPH USED TO WARN ABOUT:
+// "limite ça devrait être 50% du chiffre d'en dessous" - pressing the top half
+// of the key BELOW the one you want should still give you the one you want.
+// That is a bias of half a key, CELL_H/2 = 28.5, so 29: at 28 a touch exactly
+// halfway into the lower key still lands on the lower key, and half was the
+// whole request.
+//
+// The objection this paragraph used to raise was real and is now ANSWERED IN
+// CODE rather than by staying small: at a half-key bias the top row loses its
+// own upper half off the pad, because numpad_hit() gated on the BIASED y and a
+// touch on the top row's drawn upper half biased its way clean off the pad and
+// was rejected. So the gate now reads the RAW touch at the top edge and clamps
+// into the first row (see numpad_hit()). The top row keeps every pixel it
+// draws; the other three sit half a key below theirs, which is the ask.
+// The remaining honest fix, if half a key still reads low, is taller keys.
 //
 // THE LITERATURE, found after the owner had already moved this twice by
 // feel: Holz and Baudisch, "Understanding Touch" (CHI 2011). Users aim by
@@ -377,7 +388,7 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // LITERATURE'S RESIDUAL (1.6mm ~= 20px) than to its full correction. See
 // TOUCH_THUMB_BIAS_Y_DEFAULT's own tunable range below, which is sized off
 // these numbers rather than off the half-key ceiling two paragraphs up.
-#define TOUCH_THUMB_BIAS_Y_DEFAULT 22.0f
+#define TOUCH_THUMB_BIAS_Y_DEFAULT 29.0f
 
 /* ---- DEVELOPMENT: live tuning of the thumb bias (TABLES_LIVE_TUNE) ------
  *
@@ -490,9 +501,24 @@ bool tables_tune_set(const char *name, float value, float *outApplied) {
 #endif // TABLES_LIVE_TUNE
 
 static int numpad_hit(int lx, int ly) {
-    ly -= (int)TOUCH_THUMB_BIAS_Y;
+    const int biased = ly - (int)TOUCH_THUMB_BIAS_Y;
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W) return -1;
-    if (ly < NUMPAD_Y0 || ly >= NUMPAD_Y0 + NUMPAD_H) return -1;
+    // THE TWO EDGES ARE NOT SYMMETRIC, on purpose.
+    //
+    // At the TOP the gate reads the RAW touch, then clamps into the first row.
+    // Gating on the biased y instead (which is what this did until the bias
+    // reached half a key) threw away the top row's own upper half: a finger on
+    // the drawn "7" biased its way off the pad and was rejected, so the row
+    // could only be hit from its lower part. A key you can see and cannot press
+    // is worse than any aiming error this bias corrects.
+    //
+    // At the BOTTOM the gate reads the BIASED y, which is what lets the zero
+    // row keep reaching a bias-worth BELOW the pad, into the counters' band.
+    // That band draws two small pills and takes no touch of its own, so the
+    // reach costs nothing and gives the row a child aims at lowest the most
+    // room.
+    if (ly < NUMPAD_Y0 || biased >= NUMPAD_Y0 + NUMPAD_H) return -1;
+    ly = biased < NUMPAD_Y0 ? NUMPAD_Y0 : biased;
     int col = (lx - NUMPAD_X0) / CELL_W;
     int row = (ly - NUMPAD_Y0) / CELL_H;
     if (col >= NUMPAD_COLS) col = NUMPAD_COLS - 1;

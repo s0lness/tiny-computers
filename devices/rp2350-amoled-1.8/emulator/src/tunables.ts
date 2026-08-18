@@ -153,10 +153,25 @@ function renderControl(
 // the failure mode this repo has already been bitten by four times this week.
 // So the device still has them, dev.ts tune still lists them, and only the
 // browser's panel looks away.
-const HIDDEN_TUNABLES = new Set(["lift", "confirm", "pendgrace", "minjump", "maxjump", "maxspeed"]);
+// Exported so the regression test addresses the same rows the panel does,
+// rather than keeping its own copy of this list and going stale the way four
+// hand-copied layout mirrors already did in this repo.
+export const HIDDEN_TUNABLES = new Set(["lift", "confirm", "pendgrace", "minjump", "maxjump", "maxspeed"]);
 
+// THE INDEX MUST SURVIVE THE FILTER. emu_tune_set/get address a knob by its
+// position in the FULL registry (tune_registry.h), so hiding rows from the
+// panel must not renumber the rows that remain. It did, for one day: this was
+// `allTunables.filter(...)` and the row's own array position was handed
+// straight to emu_tune_set, so with the six hidden sketch knobs sitting first
+// in the registry every visible slider wrote SIX SLOTS UP - moving
+// "pulsecycle" set "lift". The read-back landed in the same wrong slot, so the
+// number under the slider still followed the thumb and the panel looked alive
+// while nothing on the panel could ever change. The owner: "quand je change
+// les sliders, rien ne change ni sur l'émulateur ni sur l'appareil."
 export function buildTuneControls(container: HTMLElement, wrap: HTMLElement, allTunables: DeviceTunable[], emu: EmuExports, devlink?: DevlinkClient): void {
-  const tunables = allTunables.filter((t) => !HIDDEN_TUNABLES.has(t.id));
+  const tunables = allTunables
+    .map((t, registryIndex) => ({ ...t, registryIndex }))
+    .filter((t) => !HIDDEN_TUNABLES.has(t.id));
   container.innerHTML = "";
   const hasEmuTune = tunables.length > 0 && !!emu.emu_tune_get && !!emu.emu_tune_set;
   wrap.classList.toggle("hidden", !hasEmuTune && !devlink);
@@ -169,7 +184,7 @@ export function buildTuneControls(container: HTMLElement, wrap: HTMLElement, all
 
   interface RowState {
     refs: RowRefs;
-    emuIndex: number | null; // index into `tunables`, or null if device-only
+    emuIndex: number | null; // index into the FULL registry (see the filter's own comment), or null if device-only
     emuSetValue: ((v: number) => void) | null;
     devSetValue: ((v: number) => void) | null;
     hasDev: boolean;
@@ -191,7 +206,8 @@ export function buildTuneControls(container: HTMLElement, wrap: HTMLElement, all
     const tuneGet = emu.emu_tune_get!;
     const tuneSet = emu.emu_tune_set!;
     const tuneReset = emu.emu_tune_reset;
-    tunables.forEach((t, index) => {
+    tunables.forEach((t) => {
+      const index = t.registryIndex; // NOT the position in `tunables` - see above
       const refs = buildRowSkeleton(container, t.id);
       const state: RowState = { refs, emuIndex: index, emuSetValue: null, devSetValue: null, hasDev: false };
       rows.set(t.id, state);

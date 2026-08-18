@@ -88,6 +88,19 @@ export const NUMPAD_H = CELL_H * NUMPAD_ROWS; // 228
 export const NUMPAD_X0 = OX + (USABLE_W - NUMPAD_W) / 2; // 34 - centred
 export const NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H; // 154
 
+// THE HITBOX IS NOT THE DRAWING, and callers that tap by cell should know how
+// far apart the two now are. tables.c's TOUCH_THUMB_BIAS_Y_DEFAULT shifts every
+// zone DOWN by half a key, so a finger on the top half of the "5" gives the "8"
+// - the owner's own rule, "limite ça devrait être 50% du chiffre d'en dessous".
+//
+// The knife edge worth knowing before raising it again: cellCy() below returns
+// a cell's DRAWN centre, CELL_H/2 = 28.5 into the key, which the tests round to
+// 29 and the bias then takes back to exactly the key's top edge. It still names
+// the right key, by one pixel. At a bias of 30 every by-cell tap in the suite
+// would land one row up, and the failures would read like a firmware bug rather
+// than like taps aimed at drawings instead of zones.
+export const TOUCH_THUMB_BIAS_Y = 29;
+
 export const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
 export const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
 export const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
