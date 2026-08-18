@@ -297,39 +297,84 @@
  * would ever see this screen, are the two pieces she plays with and her own
  * two hands.
  *
- * THE PICTURES ARE THE GAME'S OWN PIECES. "Vs human" is drawn as the two
- * pieces she is about to see on the board: a red disc and a blue disc,
- * side by side, in the exact colours and the exact roundness section 4
- * already argued for. Two round things next to each other, echoing what
- * "two people passing a puck" already looks like once a game is under way -
- * the picture does not invent a new vocabulary, it borrows the one the app
- * teaches her the instant she starts playing, so every game she finishes
- * makes the picture MORE legible next time, not less. "Vs cpu" is drawn as
- * one thing instead of two: a single grey face, with two dot eyes and a
- * short antenna. Alone where the other option is a pair, cold grey where
- * the other option is the two warm/cool colours she already knows, and
- * carrying one small detail (the antenna) that a disc never has. A face is
- * about the most primitive shape there is to a two-year-old - faces are
- * recognised before almost anything else is - so "a face, but a strange
- * one, alone" is legible on sight even to someone who has never played this
- * game before, and "two of my colours together" is legible to her doubly so
- * once she has played it once. Three independent differences (count: one
- * versus two; temperature: cold grey versus warm/cool saturated colour;
- * a feature neither piece has: the antenna) rather than one, which is the
- * same redundancy section 1 already argues for on the board itself - a
- * single cue that fails to land costs the whole picture, three do not.
+ * THE REAL SIZE, MEASURED FIRST, NOT A COMFORTABLE ONE. Before drawing
+ * anything: the picture this screen already had was a disc of radius
+ * HOLE_R*1.6 = 32px, i.e. a 64px-wide circle, deliberately drawn past a
+ * real board piece (HOLE_R*1.15 would have READ as "a piece"; this is the
+ * picture that has to carry the whole choice on an otherwise empty screen).
+ * Both new pictures below are built to that same measured unit, PICTURE_R
+ * (render_choose()'s own local, still HOLE_R*1.6) - not to whatever size
+ * happened to look comfortable while drawing them on a laptop screen. The
+ * owner's niece cannot read, so this has to work at the size a five-inch
+ * puck actually gives a picture, and that size was already settled once.
+ *
+ * SHE ORIGINALLY GOT THIS RIGHT: THE OWNER'S OWN BRIEF NAMES A ROBOT AND
+ * TWO PEOPLE, SO THAT IS WHAT IS DRAWN NOW, NOT TWO DISCS AND A FACE. The
+ * two-disc-and-a-face picture above was legible - the game's own pieces,
+ * doubled, against a single grey head - but it answered "which opponent"
+ * with an abstraction (colour count) rather than with a PICTURE of the two
+ * things being chosen between. The owner's brief was explicit: two people
+ * together for the human side, a robot for the cpu side - the sense of the
+ * emojis, not their pixels (there is no emoji font here, section header
+ * above). SILHOUETTE FIRST, DETAIL SECOND: a robot and two people are
+ * already very different shapes, and the risk in drawing either badly is
+ * throwing that away by making both "a circle with details inside" again -
+ * which is exactly what the disc-and-a-face picture did, just with the
+ * count and the antenna carrying all the weight. draw_person() and
+ * draw_robot() (just above) are built so the OUTLINE differs before either
+ * one is coloured or has a single feature drawn on it: a person is a round
+ * head on a full-stadium body (cornerR == halfW everywhere, the chute's own
+ * shape); a robot is a small-corner-radius, boxy head and torso with stub
+ * arms - softened per decision 0009 (nothing here has a hard right angle)
+ * but visibly SQUARER than the person's shape at every corner, which a
+ * silhouette read notices before anything else does.
+ *
+ * "VS HUMAN" IS TWO PEOPLE, STANDING TOGETHER, IN THE GAME'S OWN RED AND
+ * BLUE. Colour is KEPT, on purpose - see the next paragraph. Their bodies
+ * are drawn touching (the gap between the two figures' centres is fixed,
+ * not concentric like the old discs, but close enough that the pill shapes
+ * meet at the middle), which is the "together" side of the emoji this
+ * borrows from; their round heads stay visibly separated at every size this
+ * picture is ever drawn at (the _Static_assert-free version of that
+ * guarantee is arithmetic in render_choose()'s own comment, not asserted by
+ * the compiler, because unlike the board's piece geometry this shape has no
+ * second layout variant to protect against). A CHILD COUNTING SHAPES,
+ * COLOUR ASIDE, COUNTS TWO ROUND HEADS AND TWO SOFT BODIES.
+ *
+ * "VS CPU" IS ONE ROBOT, ALONE, IN THE SAME COLD GREY THE OLD FACE USED.
+ * Singular where the other option is a pair, boxy where the other option is
+ * round everywhere, and carrying two features neither person has at all:
+ * stub arms sticking straight out, and the antenna - both survive a blur
+ * the way the old face's antenna alone had to. A CHILD READING SHAPE ONLY
+ * COUNTS ONE FIGURE, WITH CORNERS AND PARTS STICKING OUT WHERE THE OTHER
+ * PICTURE HAS NONE.
+ *
+ * WHAT COLOUR IS STILL DOING HERE. Section 8's original argument for
+ * keeping the game's own red/blue on the human side and a saturation-free
+ * grey on the cpu side does not weaken just because the shapes changed -
+ * colour was never the ONLY cue (this paragraph exists because it never had
+ * to carry the picture alone: count and now silhouette both do), and
+ * dropping it would throw away the one cue that also teaches her the game's
+ * own vocabulary before she has played a single piece. A child who can only
+ * tell the two apart by SHAPE - colourblind, or looking at a grey photo of
+ * the panel - still sees exactly what the paragraphs above describe: two
+ * round-headed, soft-bodied figures standing together, against one boxy
+ * figure standing alone with things sticking out of it that the other
+ * picture does not have. Shape alone already carries the whole choice;
+ * colour is redundancy on top of it, the same standard section 1 holds the
+ * board's own three cues to.
  *
  * WHY NOT LUCIDE, WHICH THE MENU USES FOR ITS THREE ICONS (decision 0009's
  * own named exception). That exception is scoped to the menu's three icons
  * specifically, and for a reason that does not transfer here: those three
  * pictures (a stopwatch, a pencil, a clock face) already have a Lucide
- * source to convert from, and a game piece does not - "two red-and-blue
- * discs" and "a grey face with an antenna" are this app's own invention, so
- * decision 0009's actual rule applies unmodified: float primitives, no
- * ruler, nothing straight that does not have to be. Every shape on this
- * screen is fill_disc/fill_ring/fill_rrect, the exact three functions
- * section 4 already built for the board itself - the choice screen adds no
- * drawing primitive of its own, only new call sites.
+ * source to convert from, and neither a person nor a robot pictogram does -
+ * this app's own invention, so decision 0009's actual rule applies
+ * unmodified: float primitives, no ruler, nothing straight that does not
+ * have to be. Every shape on this screen is still fill_disc/fill_rrect, the
+ * same two functions section 4 already built for the board itself - the
+ * choice screen adds no drawing primitive of its own, only two new call
+ * sites (draw_person, draw_robot) built from them.
  *
  * THE GESTURE IS THE SAME ONE, because section 2's whole argument (a
  * dropout-prone controller, RELEASE as the verb that must not fire by
@@ -1400,14 +1445,15 @@ static void fill_rrect(float cx, float cy, float halfW, float halfH, float corne
  * the two apart by shape still can, from the mouth alone, because the
  * warm/cool colour was never the only cue in this app to begin with.
  *
- * WHY NOT THE CHOICE SCREEN TOO. render_choose()'s two discs sit almost
- * concentric (ICON_GAP = 0.55 * ICON_R, well under the sum of their radii,
- * on purpose - see feature-four-choice.ts's own comment about the overlap)
- * and feature-four-choice.ts probes deep inside each one. That picture is
- * answering "which opponent", not "whose piece is this", and the header's
- * own section 8 argument for two PLAIN discs there (the pieces the moment
- * before she has ever seen them played) does not need faces to work.
- * Scoped out on purpose, not missed.
+ * WHY NOT THE CHOICE SCREEN TOO. render_choose() draws its own two pictures
+ * (a pair of people, a robot - section 8, rewritten the same day this
+ * section was added, once the owner's brief turned out to want pictures of
+ * the opponent rather than a doubled piece) and feature-four-choice.ts
+ * probes each one on its own terms. That screen is answering "which
+ * opponent", not "whose piece is this", and it never borrowed draw_face()
+ * or vice versa - the two screens share fill_disc/fill_rrect, the same two
+ * primitives section 4 built for the board, and nothing else. Scoped apart
+ * on purpose, not missed.
  *
  * WHERE THE FEATURES MAY NOT GO. Every board test in this repository that
  * reads a piece's colour does it at one of a small number of exact points:
@@ -1551,11 +1597,71 @@ static float drain_offset(const four_state_t *s, uint32_t nowMs, int c) {
     return 0.5f * DRAIN_GRAVITY * t * t;
 }
 
-// The choice screen (section 8): "vs human" as the two pieces she is about
-// to play with, "vs cpu" as one grey face, alone. Built entirely from
-// fill_disc/fill_ring/fill_rrect - no new drawing primitive, only new call
-// sites, per decision 0009 (the float brush, since neither picture has a
-// Lucide source to convert from).
+// A person, for "vs human": a round head sitting on a vertical pill-shaped
+// body (cornerR == bodyHW, the same full-stadium shape the chute already
+// uses, so there is no straight-to-straight corner anywhere on it). `u` is
+// the figure's own unit - scaled uniformly by the confirmed side's pop, the
+// same discipline draw_face()'s features hold against `r` (that function's
+// own header, section 10), so every proportion holds through the animation.
+static void draw_person(float cx, float cy, float u, uint16_t color, int clipX0, int clipX1) {
+    float bodyHW = u * 0.62f;
+    float bodyHH = u * 1.05f;
+    float headR  = u * 0.46f;
+    float bodyTop = cy - bodyHH;
+    float headCy = bodyTop - headR + headR * 0.45f;  // a slight overlap, so
+                                                        // there is no gap at
+                                                        // the neck
+    fill_rrect(cx, cy, bodyHW, bodyHH, bodyHW, color, clipX0, clipX1, 256);
+    fill_disc(cx, headCy, headR, color, clipX0, clipX1, 256);
+}
+
+// A robot, for "vs cpu": a BOXY head and torso - a small corner radius,
+// softened per decision 0009 but nowhere near the person's full stadium,
+// which is the whole point: a person is round everywhere on this screen, a
+// robot is not, and that difference has to survive being squinted at before
+// either colour or any feature inside it is read. Stub arms widen its own
+// silhouette the way a person's plain pill body never does; eyes, a mouth
+// and the antenna are the idea draw_face() borrowed from this screen for the
+// board's own tokens (that function's own header, section 10).
+static void draw_robot(float cx, float cy, float u, int clipX0, int clipX1) {
+    uint16_t grey = px_swap(0x8410);   // a plain, saturation-free mid grey:
+                                         // "metal", not a pale UI tint
+    uint16_t dark = px_swap(0x2104);   // eyes/mouth/antenna accents
+
+    float bodyHW = u * 0.64f, bodyHH = u * 1.05f, bodyR = u * 0.16f;
+    float headHW = u * 0.56f, headHH = u * 0.46f, headR = u * 0.13f;
+    float bodyTop = cy - bodyHH;
+    float headCy = bodyTop - headHH + headHH * 0.35f;  // same neck overlap
+                                                          // as draw_person()
+
+    // Stub arms at shoulder height, sticking straight out - the one part of
+    // this picture with no counterpart on the person figure at all.
+    float armY = bodyTop + bodyHH * 0.30f;
+    float armHalfLen = u * 0.28f, armHalfThick = u * 0.09f;
+    fill_rrect(cx - bodyHW - armHalfLen, armY, armHalfLen, armHalfThick, armHalfThick, grey, clipX0, clipX1, 256);
+    fill_rrect(cx + bodyHW + armHalfLen, armY, armHalfLen, armHalfThick, armHalfThick, grey, clipX0, clipX1, 256);
+
+    fill_rrect(cx, cy, bodyHW, bodyHH, bodyR, grey, clipX0, clipX1, 256);
+    fill_rrect(cx, headCy, headHW, headHH, headR, grey, clipX0, clipX1, 256);
+
+    // Eyes and mouth, inside the head - legible before anyone explains them,
+    // section 8's own standard for the antenna below.
+    float eyeDx = headHW * 0.40f, eyeR = headHW * 0.16f;
+    fill_disc(cx - eyeDx, headCy - headHH * 0.10f, eyeR, dark, clipX0, clipX1, 256);
+    fill_disc(cx + eyeDx, headCy - headHH * 0.10f, eyeR, dark, clipX0, clipX1, 256);
+    fill_rrect(cx, headCy + headHH * 0.45f, headHW * 0.35f, headHH * 0.10f, headHH * 0.10f, dark, clipX0, clipX1, 256);
+
+    // The antenna: a stem and a tip, above the head.
+    float stemHH = u * 0.20f, stemHW = u * 0.055f;
+    float stemCy = headCy - headHH - stemHH - u * 0.05f;
+    fill_rrect(cx, stemCy, stemHW, stemHH, stemHW, grey, clipX0, clipX1, 256);
+    fill_disc(cx, stemCy - stemHH - u * 0.10f, u * 0.10f, grey, clipX0, clipX1, 256);
+}
+
+// The choice screen (section 8): "vs human" as two people standing
+// together, "vs cpu" as one robot, alone - no new drawing primitive, only
+// new call sites (draw_person/draw_robot above), per decision 0009 (the
+// float brush, since neither picture has a Lucide source to convert from).
 static void render_choose(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
     gfx_fill_rect_land(lx0, 0, lx1 - lx0, LAND_H, PX_WHITE);
 
@@ -1574,33 +1680,31 @@ static void render_choose(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {
         if (s->hoverCol == 0) scaleHuman = grown; else scaleCpu = grown;
     }
 
-    // "vs human": the two pieces she is about to see on the real board, in
-    // their real colours - the picture borrows the game's own vocabulary
-    // rather than inventing one (section 8). Sized well past a real piece
-    // (HOLE_R*1.15 reads as "a piece" at board scale; this is the picture
-    // that has to carry the whole choice on an otherwise empty screen, so
-    // it is drawn nearly twice a piece's size instead).
-    float r = HOLE_R * 1.6f * scaleHuman;
-    float gap = HOLE_R * 1.6f * 0.55f;
-    fill_disc(cxHuman - gap, cy, r, col_piece(P_RED), lx0, lx1, 256);
-    fill_disc(cxHuman + gap, cy, r, col_piece(P_BLUE), lx0, lx1, 256);
+    // Both pictures share one unit, PICTURE_R: the same "nearly twice a
+    // board piece" scale the old two-disc picture used (HOLE_R*1.6 - this is
+    // the picture that has to carry the whole choice on an otherwise empty
+    // screen), so a person and a robot read as the same SIZE of thing even
+    // though their shapes could not be more different.
+    float PICTURE_R = HOLE_R * 1.6f;
 
-    // "vs cpu": one grey face, alone - cold where the pieces are warm/cool
-    // and saturated, singular where they are a pair, and carrying features
-    // (eyes, a mouth, an antenna) neither piece has. Four independent
-    // differences, section 8's own argument for why this is not one cue
-    // that can fail.
-    uint16_t grey = px_swap(0x8410);   // a plain, saturation-free mid grey:
-                                         // "metal", not a pale UI tint
-    uint16_t dark = px_swap(0x2104);   // eyes/mouth: darker than the face,
-                                         // same hue
-    float hr = HOLE_R * 1.6f * scaleCpu;
-    fill_disc(cxCpu, cy, hr, grey, lx0, lx1, 256);
-    fill_disc(cxCpu - hr * 0.32f, cy - hr * 0.12f, hr * 0.15f, dark, lx0, lx1, 256);
-    fill_disc(cxCpu + hr * 0.32f, cy - hr * 0.12f, hr * 0.15f, dark, lx0, lx1, 256);
-    fill_rrect(cxCpu, cy + hr * 0.32f, hr * 0.24f, hr * 0.05f, hr * 0.05f, dark, lx0, lx1, 256);
-    fill_rrect(cxCpu, cy - hr - hr * 0.28f, hr * 0.06f, hr * 0.22f, hr * 0.06f, grey, lx0, lx1, 256);
-    fill_disc(cxCpu, cy - hr - hr * 0.5f, hr * 0.16f, grey, lx0, lx1, 256);
+    // "vs human": two people, in the game's own red and blue - the picture
+    // borrows the vocabulary she already learns from playing (section 8)
+    // rather than inventing a new one. The gap between their centres is
+    // fixed (not scaled by the pop, the same choice the old two-disc picture
+    // made), so growing the pair on its own pop never separates them: their
+    // bodies stay touching (a "together" cue) while their round heads stay
+    // visibly apart even at the largest pop - a child counting heads always
+    // counts two.
+    float gap = PICTURE_R * 0.575f;
+    draw_person(cxHuman - gap, cy, PICTURE_R * scaleHuman, col_piece(P_RED), lx0, lx1);
+    draw_person(cxHuman + gap, cy, PICTURE_R * scaleHuman, col_piece(P_BLUE), lx0, lx1);
+
+    // "vs cpu": one robot, alone - a boxy silhouette where the pair is soft
+    // and round, singular where they are two, cold grey where they are
+    // warm/cool and saturated, and carrying stub arms and an antenna neither
+    // person has. Four independent differences, section 8's own argument
+    // for why this is not one cue that can fail.
+    draw_robot(cxCpu, cy, PICTURE_R * scaleCpu, lx0, lx1);
 }
 
 static void render_span(four_state_t *s, uint32_t nowMs, int lx0, int lx1) {

@@ -212,9 +212,9 @@ firmware/runtime/    the runtime: runtime.c (board entry point, startup,
 firmware/apps/        one file per app plus shared helpers: chrono.c
                       (stopwatch), sketch.c (drawing), timer.c (countdown),
                       four.c (Connect Four: opens on a wordless choice
-                      between two pieces (vs a second person) and one grey
-                      face (vs the cpu) - see the file's own header section
-                      8; two people pass the puck, slide a thumb and
+                      between two people standing together (vs a second
+                      person) and one robot (vs the cpu) - see the file's own
+                      header section 8; two people pass the puck, slide a thumb and
                       release to drop, and a chosen cpu opponent plays
                       itself with the same gesture, tuned beatable and
                       measured against a naive player model, see section 9

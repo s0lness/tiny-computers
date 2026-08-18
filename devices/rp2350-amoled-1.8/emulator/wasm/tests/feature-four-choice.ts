@@ -5,9 +5,9 @@
 //
 // WHAT THIS FILE PROVES, IN ORDER:
 //   1. the app opens on the choice screen, not on a board: two pictures,
-//      no board pixels, no text - "vs human" as two pieces (red and blue,
-//      the game's own colours), "vs cpu" as one grey face with an antenna,
-//      alone;
+//      no board pixels, no text - "vs human" as two people standing
+//      together (red and blue, the game's own colours), "vs cpu" as one
+//      grey robot, alone, with an antenna and stub arms neither person has;
 //   2. a thumb over "vs human" pops that picture and NOT the other one;
 //   3. releasing over "vs human" deals an ordinary two-player game (red
 //      waiting, no cpu turn ever taken);
@@ -55,17 +55,20 @@ const CPU_AIM_MS = 350;
 const CX_HUMAN = LAND_W * 0.25;
 const CX_CPU = LAND_W * 0.75;
 const CY = LAND_H * 0.5;
-// render_choose()'s own geometry: HOLE_R = CELL/2 - 4 = 20, the picture
-// radius is 1.6x that, and the two human-side discs sit 0.55x that radius
-// off-centre - derived the same way, not copied as numbers, so a change to
-// either constant in four.c moves this file's probes with it.
+// render_choose()'s own geometry (firmware/apps/four.c, section 8): HOLE_R =
+// CELL/2 - 4 = 20, PICTURE_R = 1.6x that (the same "nearly twice a board
+// piece" scale the picture always used), and the two people's own centres
+// sit PICTURE_R*0.575 either side of CX_HUMAN - derived the same way, not
+// copied as numbers, so a change to any of those constants in four.c moves
+// this file's probes with it.
 const HOLE_R = 48 / 2 - 4;
-const ICON_R = HOLE_R * 1.6;
-const ICON_GAP = ICON_R * 0.55;
-// Probe points well inside each disc's OWN region, clear of where the two
-// human-side discs overlap.
-const HUMAN_RED_X = CX_HUMAN - ICON_GAP - ICON_R * 0.4;
-const HUMAN_BLUE_X = CX_HUMAN + ICON_GAP + ICON_R * 0.4;
+const PICTURE_R = HOLE_R * 1.6;
+const PERSON_GAP = PICTURE_R * 0.575;
+// Each person's own centre (CY sits on draw_person()'s body, dead centre of
+// its own colour, well clear of the small overlap where the two bodies
+// touch at the middle of the picture).
+const HUMAN_RED_X = CX_HUMAN - PERSON_GAP;
+const HUMAN_BLUE_X = CX_HUMAN + PERSON_GAP;
 
 const C_WHITE: [number, number] = [0xff, 0xff];
 const C_RED: [number, number] = [0xf8, 0x00];
@@ -247,10 +250,10 @@ async function main() {
     let fb = dev.fbSnapshot();
     const humanRed = landPx(fb, HUMAN_RED_X, CY);
     const humanBlue = landPx(fb, HUMAN_BLUE_X, CY);
-    check('"vs human" is drawn as a red piece and a blue piece, side by side',
+    check('"vs human" is drawn as a red person and a blue person, standing together',
         isRedish(humanRed) && isBluish(humanBlue), `${describe(humanRed)}, ${describe(humanBlue)}`);
     const cpuFace = landPx(fb, CX_CPU, CY);
-    check('"vs cpu" is drawn as a single grey face', near(cpuFace, C_GREY, 10), describe(cpuFace));
+    check('"vs cpu" is drawn as a single grey robot', near(cpuFace, C_GREY, 10), describe(cpuFace));
     check("no red or blue ink anywhere near the cpu picture - it is alone, not a pair",
         !isRedish(cpuFace) && !isBluish(cpuFace), describe(cpuFace));
     const nothingElse = landPx(fb, LAND_W / 2, 20);
@@ -267,7 +270,7 @@ async function main() {
         isRedish(humanRedGrown) && near(cpuStillRest, C_GREY, 10),
         `human edge ${describe(humanRedGrown)}, cpu centre ${describe(cpuStillRest)}`);
     await writeScreenshot("four-choice.png", fb,
-        'the opening choice screen: "vs human" (two pieces) popped under a thumb, "vs cpu" (one grey face) at rest');
+        'the opening choice screen: "vs human" (two people) popped under a thumb, "vs cpu" (one grey robot) at rest');
 
     dev.drainLog();
     t = settle(dev, t, RELEASE_GRACE_MS + 350);
@@ -316,9 +319,9 @@ async function main() {
     // THEN drag to human and release before ITS confirm window closes.
     t = holdLand(dev, CX_CPU, CY, t, ARM_MS_MIN_HOLD); // confirms "vs cpu"
     fb = dev.fbSnapshot();
-    const cpuPoppedFirst = landPx(fb, CX_CPU + 25, CY);
-    check('holding on "vs cpu" long enough confirms it (it pops)', isRedish(cpuPoppedFirst) === false && !isBluish(cpuPoppedFirst),
-        describe(cpuPoppedFirst));
+    const cpuPoppedFirst = landPx(fb, CX_CPU, CY);
+    check('holding on "vs cpu" long enough confirms it (it pops, and is still the robot)',
+        near(cpuPoppedFirst, C_GREY, 10), describe(cpuPoppedFirst));
     t = holdLand(dev, CX_HUMAN, CY, t, 60); // NOT long enough to reconfirm
                                               // (well under
                                               // CHOOSE_CONFIRM_MS)
