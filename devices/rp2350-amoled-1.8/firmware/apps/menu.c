@@ -261,7 +261,11 @@ static int menu_min_row_width(int rows) {
 static int menu_cell_h(void) {
     int rows = menu_rows();
     int byHeight = MENU_AVAIL_H / rows;
-    int byWidth = menu_min_row_width(rows);
+    // EXPERIMENT: allow a cell up to 1.2x its own width instead of capping it
+    // at square. Capping at square is what leaves 40px of paper above and
+    // below the six-app grid while the icons sit 10px from the side bezels -
+    // the asymmetry the owner reads as unsatisfying.
+    int byWidth = (menu_min_row_width(rows) * 6) / 5;
     int h = byHeight < byWidth ? byHeight : byWidth;
     h = (h / 8) * 8;
     if (h < MENU_CELL_FLOOR) h = MENU_CELL_FLOOR;

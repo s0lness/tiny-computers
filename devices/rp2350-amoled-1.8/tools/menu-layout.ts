@@ -52,10 +52,11 @@ export function rowSpan(n: number, r: number): { first: number; cols: number } {
 export function menuCellH(n: number): number {
   const rows = menuRows(n);
   const byHeight = Math.floor(MENU_AVAIL_H / rows);
-  let byWidth = LAND_W;
+  let narrowest = LAND_W;
   for (let r = 0; r < rows; r++) {
-    byWidth = Math.min(byWidth, Math.floor(LAND_W / rowSpan(n, r).cols));
+    narrowest = Math.min(narrowest, Math.floor(LAND_W / rowSpan(n, r).cols));
   }
+  const byWidth = Math.floor((narrowest * 6) / 5); // menu.c: up to 1.2x width
   return Math.max(Math.floor(Math.min(byHeight, byWidth) / 8) * 8, MENU_CELL_FLOOR);
 }
 
