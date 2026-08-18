@@ -86,8 +86,17 @@ const CHEV_L_GAP = 36;                // clock.c CHEV_L_GAP
 // positions that matter are the shared left/right X offsets, not a per-line
 // Y offset the way the old up/down layout needed.
 const CHEV_P_HOURS_CY = P_Y_HOURS + P_DIGIT_H / 2, CHEV_P_MIN_CY = P_Y_MINUTES + P_DIGIT_H / 2;
-const CHEV_P_LEFT_BASE = P_DIGIT_X[0]! - CHEV_P_GAP, CHEV_P_LEFT_APEX = CHEV_P_LEFT_BASE - CHEV_P_H;
-const CHEV_P_RIGHT_BASE = P_DIGIT_X[1]! + P_DIGIT_W + CHEV_P_GAP, CHEV_P_RIGHT_APEX = CHEV_P_RIGHT_BASE + CHEV_P_H;
+// Upright chevrons are centred in the free space between the bezel margin and
+// the digit block, not offset from the digits - clock.c's CHEV_P_LEFT_MID /
+// CHEV_P_RIGHT_MID, evaluated the same way here. Derived from the same spans
+// the firmware uses, so moving either the digits or the margin moves both
+// together instead of leaving this file probing empty paper.
+const CHEV_P_LEFT_MID = Math.floor((BEZEL + P_DIGIT_X[0]!) / 2);
+const CHEV_P_RIGHT_MID = Math.floor(((P_DIGIT_X[1]! + P_DIGIT_W) + (PANEL_W - BEZEL)) / 2);
+const CHEV_P_LEFT_BASE = CHEV_P_LEFT_MID + Math.floor(CHEV_P_H / 2);
+const CHEV_P_LEFT_APEX = CHEV_P_LEFT_MID - Math.floor(CHEV_P_H / 2);
+const CHEV_P_RIGHT_BASE = CHEV_P_RIGHT_MID - Math.floor(CHEV_P_H / 2);
+const CHEV_P_RIGHT_APEX = CHEV_P_RIGHT_MID + Math.floor(CHEV_P_H / 2);
 const CHEV_L_UP_BASE = L_Y0 - CHEV_L_GAP, CHEV_L_UP_APEX = CHEV_L_UP_BASE - CHEV_H;
 const CHEV_L_DN_BASE = L_Y0 + L_DIGIT_H + CHEV_L_GAP, CHEV_L_DN_APEX = CHEV_L_DN_BASE + CHEV_H;
 
@@ -742,9 +751,17 @@ async function main() {
         dev.tick(t);
         pulseLevels.add(landGray(dev.fbSnapshot(), dotsProbeX, dotsProbeY));
     }
-    check("the dots pulse between two ink levels on a working face, rather than sitting fixed",
-        pulseLevels.size >= 2 && pulseLevels.size <= 3,
-        `${pulseLevels.size} distinct ink levels over 5s: ${[...pulseLevels].sort((a, b) => a - b).join(", ")}`);
+    // Was "exactly two levels", which pinned the hard blink this started as.
+    // The owner then asked for a fade ("j'aimerais un fondu plus doux comme
+    // un pulse vraiment doux"), so two levels is now the FAILURE it would be
+    // measuring for: a switch, not a breath. What still has to hold is that
+    // it sweeps, and that it reaches both ends rather than hovering in some
+    // comfortable grey - a fade that never fully arrives reads as a smudge.
+    const sorted = [...pulseLevels].sort((a, b) => a - b);
+    const lo = sorted[0] ?? 255, hi = sorted[sorted.length - 1] ?? 0;
+    check("the dots fade rather than switch, and the sweep reaches both fully lit and fully gone",
+        pulseLevels.size >= 8 && lo <= 16 && hi >= 244,
+        `${pulseLevels.size} distinct ink levels over 5s, ${lo}..${hi}: ${sorted.join(", ")}`);
 
     // ---- 6. all four TURN edges, checked against the panel itself -----------
     console.log("\n-- the four TURN edges: top/bottom portrait, right/left long-ways --");

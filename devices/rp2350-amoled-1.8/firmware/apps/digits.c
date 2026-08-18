@@ -178,6 +178,22 @@ void digits_draw_soft(digits_space_t space, int x, int y, int w, int h,
     float yB = (float)(y + h) - r - SOFT_INSET;
     float yM = (float)y + (float)h * 0.5f;
 
+    // THE ONE IS CENTRED IN ITS CELL, unlike a real seven-segment display,
+    // where it lights b and c and therefore hugs the right rail. On hardware
+    // that is forced by the glass; here the numerals are drawn, so it is a
+    // choice, and hugging right is the wrong one: the owner looked at 15:00
+    // on the clock and read the whole face as off-centre. It is not - the
+    // cells are symmetric to the pixel - but the leading 1 leaves most of
+    // its own cell empty, which the eye reads as a margin.
+    //
+    // Centring the stroke does not move any other digit, so nothing shifts
+    // as the time changes; only the 1's own position inside its own box.
+    if (value == 1) {
+        float cx = (float)x + (float)w * 0.5f;
+        xL = cx;
+        xR = cx;
+    }
+
     if (segs & 0x01) soft_capsule(space, xL, yT, xR, yT, r, colorPx); // a, top
     if (segs & 0x40) soft_capsule(space, xL, yM, xR, yM, r, colorPx); // g, middle
     if (segs & 0x08) soft_capsule(space, xL, yB, xR, yB, r, colorPx); // d, bottom

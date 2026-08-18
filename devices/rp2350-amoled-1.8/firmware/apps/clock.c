@@ -376,6 +376,30 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 // a separator that is either there or is not cannot be confused with it.
 #define DOTS_PULSE_HALF_MS 1000u
 #define DOTS_PULSE_FAINT  255
+// How many ink levels one whole cycle is quantised into - see
+// dots_pulse_ink(). Even, so the curve has a symmetric peak.
+//
+// 32, not 16. At 16 the owner could see the steps: "le fondu est un peu trop
+// saccadé, j'aimerais un fondu plus doux comme un pulse vraiment doux".
+// Sixteen redraws a second is the point where the separator stops looking
+// like it is being switched through positions and starts looking like it is
+// breathing.
+#define DOTS_PULSE_STEPS  32u
+
+// A RAISED COSINE, not a straight ramp, and that is half of why the first
+// attempt read as jerky. A linear fade spends as long crossing the greys
+// nobody can tell apart as it does crossing the ones they can, and it turns
+// around at each end with a corner; a cosine slows into both ends and moves
+// fastest through the middle, which is what "a soft pulse" actually means to
+// an eye. Precomputed rather than called: no float, no libm, the same value
+// every run, and it is sixteen bytes.
+//
+// Read as "how lit", 0 gone through 255 fully lit, for the half-cycle; the
+// other half is this mirrored.
+static const uint8_t DOTS_PULSE_CURVE[16] = {
+      0,   3,  11,  24,  42,  64,  88, 114,
+    141, 167, 191, 213, 231, 244, 252, 255
+};
 
 // ---- the setting gesture's chevrons: four small marks, one per direction,
 // flanking each digit pair while set mode is open -------------------------
@@ -407,20 +431,28 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 #define CHEV_T      6
 #define CHEV_H      9   // long-ways: base-to-apex distance (vertical)
 
-// Upright: each chevron sits CHEV_P_GAP clear of its line's own left/right
-// digit edge, CHEV_P_H further out from there to its point. P_X0=60 and
-// P_X1+P_DIGIT_W=308 leave 60px of margin on both sides of the two-column
-// block (368 wide total) to spend this in - comfortably inside that with
-// room to spare, matching the mockup's own clearance rather than crowding
-// the bezel.
-#define CHEV_P_GAP  6
+// Upright: each chevron is CENTRED IN THE FREE SPACE, not tucked against the
+// digits. The owner: "in portrait mode you should push the arrows away from
+// the numbers, centered between the end of the screen (minus the margin you
+// have in mind) and the numbers."
+//
+// The free space on each side runs from the bezel margin to the digit block:
+// left is [PANEL_BEZEL_MARGIN_PX, P_X0] = [10, 60], right is
+// [P_X1+P_DIGIT_W, PANEL_W-PANEL_BEZEL_MARGIN_PX] = [308, 358]. Fifty pixels
+// each, so each chevron's own midpoint lands at 35 and 333 and it stands
+// alone in its column rather than reading as an ornament hung off a digit.
+//
+// Written as the midpoint of a span rather than as an offset from the digits,
+// so it stays right if either the digit block or the bezel margin ever moves.
 #define CHEV_P_H    9
 #define CHEV_P_HOURS_CY   (P_Y_HOURS + P_DIGIT_H / 2)
 #define CHEV_P_MIN_CY     (P_Y_MINUTES + P_DIGIT_H / 2)
-#define CHEV_P_LEFT_BASE  (P_X0 - CHEV_P_GAP)
-#define CHEV_P_LEFT_APEX  (CHEV_P_LEFT_BASE - CHEV_P_H)
-#define CHEV_P_RIGHT_BASE (P_X1 + P_DIGIT_W + CHEV_P_GAP)
-#define CHEV_P_RIGHT_APEX (CHEV_P_RIGHT_BASE + CHEV_P_H)
+#define CHEV_P_LEFT_MID   ((PANEL_BEZEL_MARGIN_PX + P_X0) / 2)
+#define CHEV_P_RIGHT_MID  (((P_X1 + P_DIGIT_W) + (PANEL_W - PANEL_BEZEL_MARGIN_PX)) / 2)
+#define CHEV_P_LEFT_BASE  (CHEV_P_LEFT_MID + CHEV_P_H / 2)
+#define CHEV_P_LEFT_APEX  (CHEV_P_LEFT_MID - CHEV_P_H / 2)
+#define CHEV_P_RIGHT_BASE (CHEV_P_RIGHT_MID - CHEV_P_H / 2)
+#define CHEV_P_RIGHT_APEX (CHEV_P_RIGHT_MID + CHEV_P_H / 2)
 
 // Long-ways: both pairs sit in the same single row (y=[L_Y0,
 // L_Y0+L_DIGIT_H)), so the up/down offsets are shared; only the x centre
@@ -843,7 +875,31 @@ static void draw_all_chevrons(bool upright) {
 // is the point - a pulsing clock and a breathing ghost must not read as the
 // same animation wearing two colours.
 static uint8_t dots_pulse_ink(uint32_t nowMs) {
-    return ((nowMs / DOTS_PULSE_HALF_MS) % 2u) ? DOTS_PULSE_FAINT : INK_LIT;
+    // A RAMP, NOT A SWITCH - the owner wants to see whether a fade reads
+    // better than a hard blink ("could do a faint fade in/out of the blink?
+    // just to try it out on the emulator"). Triangular over the full cycle:
+    // down to lit across the first half, back up to gone across the second,
+    // quantised to DOTS_PULSE_STEPS levels so the cell is repainted a fixed,
+    // countable number of times per cycle instead of on every frame.
+    //
+    // THE COST, since that is the whole reason this app refuses to show
+    // seconds: a hard blink repaints the separator's cell twice per two-second
+    // cycle, about 6,650 px/sec. This repaints it DOTS_PULSE_STEPS times per
+    // cycle instead - at 32, that is sixteen repaints a second, roughly
+    // 106,000 px/sec. That is about two thirds of one full-panel repaint per
+    // second, eight times the hard blink's cost, and still confined to a cell
+    // that was already being pushed. It is the price of a fade that reads as
+    // breathing rather than as stepping, and it is stated here rather than
+    // discovered later.
+    uint32_t cycle = DOTS_PULSE_HALF_MS * 2u;
+    uint32_t phase = nowMs % cycle;
+    uint32_t step = (phase * DOTS_PULSE_STEPS) / cycle;   // 0..STEPS-1
+    uint32_t half = DOTS_PULSE_STEPS / 2u;
+    uint32_t i = (step < half) ? step : (DOTS_PULSE_STEPS - 1u - step);
+    if (i >= half) i = half - 1u;
+    // The table is "how lit", 0 gone and 255 fully lit; the ink level this
+    // function returns runs the other way (INK_LIT is 0, black).
+    return (uint8_t)(DOTS_PULSE_FAINT - DOTS_PULSE_CURVE[i]);
 }
 
 // Turns the WHOLE panel 180 degrees in place - see "PICTURE, ROTATED, NOT
