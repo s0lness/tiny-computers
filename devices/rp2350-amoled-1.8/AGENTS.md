@@ -218,10 +218,16 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       release to drop, and a chosen cpu opponent plays
                       itself with the same gesture, tuned beatable and
                       measured against a naive player model, see section 9
-                      and tools/four-cpu-winrate.ts), clock.c (two faces, set by
-                      holding BOOT and sliding a finger over the pair being
-                      set; blank rather than wrong when the RTC's OS flag
-                      says the battery emptied), morpion.c (noughts and
+                      and tools/four-cpu-winrate.ts), clock.c (two faces,
+                      chosen by which edge is up: portrait when TOP or
+                      BOTTOM, long-ways when LEFT or RIGHT, and the picture
+                      turned 180 degrees on the two inverted edges so the
+                      hours read upright in the hand. Set by double-pressing
+                      PWR, tapping the quarter of the glass holding the pair
+                      you want, and double-pressing again to commit; the
+                      long-ways face's separator dots pulse so a running
+                      clock looks alive. Blank rather than wrong when the
+                      RTC's OS flag says the battery emptied), morpion.c (noughts and
                       crosses, same two people and the same press-drag-
                       release; the candidate cell is named by a CROSS of two
                       lit bands, because a thumb hides the cell it is
