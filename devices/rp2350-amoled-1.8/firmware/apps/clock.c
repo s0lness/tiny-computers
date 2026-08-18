@@ -71,13 +71,16 @@
  * one, and it is the same argument as the paragraph above: a face that
  * ticks every second costs a redraw a second, forever, of the WHOLE face.
  * The dots pulse by toggling between two ink levels every
- * BLINK_PERIOD_MS/2 (250ms - four times a second), and every toggle
- * redraws exactly the cell dots_cell() already owned before this feature
- * existed (32 x 208 landscape px, the separator's own bounding box, sized
- * for the known/unknown transition it always had to redraw for). That is
- * about 6,656 px pushed per toggle, roughly 26,600 px/sec at four toggles a
- * second - under a sixth of one full-panel repaint (368*448 = 164,864 px)
- * per second, and confined to a cell already being pushed. A pulsing pair
+ * DOTS_PULSE_HALF_MS (500ms - lit half a second, faint half a second, so
+ * ONE blink per second, the rate every clock a child has seen uses), and
+ * every toggle redraws exactly the cell dots_cell() already owned before
+ * this feature existed (32 x 208 landscape px, the separator's own bounding
+ * box, sized for the known/unknown transition it always had to redraw for).
+ * That is about 6,656 px pushed per toggle, roughly 13,300 px/sec at two
+ * toggles a second - under a twelfth of one full-panel repaint (368*448 =
+ * 164,864 px) per second, and confined to a cell already being pushed. The
+ * first version ran at four toggles a second and the owner asked for it
+ * slower; halving the rate halved the cost with it. A pulsing pair
  * of dots is a few dozen pixels moving four times a second inside a window
  * that was already there; a face that ticks every second is the whole face,
  * every second, forever. That difference is why one is acceptable here and
@@ -355,6 +358,14 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 // there is no cross-file coupling to a translation unit that never sees
 // this one.
 #define BLINK_PERIOD_MS   500u
+
+// ONE BLINK PER SECOND, which is what every clock a child has ever seen does.
+// The first version toggled every BLINK_PERIOD_MS/2, four times a second, and
+// the owner asked for it slower: "the clock blink should blink every second".
+// Lit for half a second, faint for half a second, so the pair completes one
+// blink per second. Halves the pulse's cost at the same time - see THE PULSE
+// in this file's header for the arithmetic.
+#define DOTS_PULSE_HALF_MS 500u
 #define DOTS_PULSE_FAINT  130
 
 // ---- the setting gesture's chevrons: four small marks, one per direction,
@@ -818,8 +829,7 @@ static void draw_all_chevrons(bool upright) {
 // is the point - a pulsing clock and a breathing ghost must not read as the
 // same animation wearing two colours.
 static uint8_t dots_pulse_ink(uint32_t nowMs) {
-    uint32_t half = BLINK_PERIOD_MS / 2u;
-    return ((nowMs / half) % 2u) ? DOTS_PULSE_FAINT : INK_LIT;
+    return ((nowMs / DOTS_PULSE_HALF_MS) % 2u) ? DOTS_PULSE_FAINT : INK_LIT;
 }
 
 // Turns the WHOLE panel 180 degrees in place - see "PICTURE, ROTATED, NOT

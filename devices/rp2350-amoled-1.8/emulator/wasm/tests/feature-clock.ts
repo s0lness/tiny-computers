@@ -712,8 +712,18 @@ async function main() {
     }
     check("the minute rolls over on its own", rolled,
         dev.fwLogLines().findLast((l) => l.startsWith("clock: 08:")) ?? "(no line)");
-    check("...and it costs exactly ONE pushed window - one digit, once a minute, which is what not showing seconds buys",
-        pushesOnRollover.length === 1, JSON.stringify(pushesOnRollover));
+    // ONE digit window, plus the dots' own cell whenever the pulse toggles in
+    // the same tick - which, since the pulse's half-period became 500ms (one
+    // blink a second, at the owner's request), is EVERY minute boundary: a
+    // minute is a whole number of half-seconds. So the honest bound is "the
+    // digit, and nothing except possibly the separator", not "exactly one".
+    // Loosened deliberately rather than by reflex: what this check exists to
+    // catch is a rollover that repaints the whole face, and it still does.
+    const digitCells = pushesOnRollover.filter((r) => r.h !== L_DOTS_W);
+    const dotsCells = pushesOnRollover.filter((r) => r.h === L_DOTS_W);
+    check("...and it costs ONE digit window, plus the separator only when its own blink lands in the same tick",
+        digitCells.length === 1 && dotsCells.length <= 1,
+        JSON.stringify(pushesOnRollover));
 
     // ---- 5. the pulse ---------------------------------------------------------
     console.log("\n-- the dots pulse on a working face --");

@@ -327,6 +327,14 @@ static uint32_t s_playStartMs = 0;
 // power-off request (see its comment).
 #define SOUND_SAFETY_CEILING_MS 120000u
 
+// The speaker amp, raised only while something is actually playing. Idempotent
+// so the callers do not have to track it, and a no-op before the hardware is
+// up so a failed bring-up cannot leave the pin driven.
+static void amp_set(bool on) {
+    if (!s_hwReady) return;
+    gpio_put(PIN_PA_ENABLE, on ? 1 : 0);
+}
+
 static void refill_buffer(uint32_t *buf) {
     if (!s_playing) {
         memset(buf, 0, SOUND_BUF_FRAMES * sizeof(uint32_t));
@@ -334,6 +342,7 @@ static void refill_buffer(uint32_t *buf) {
     }
     if (to_ms_since_boot(get_absolute_time()) - s_playStartMs > SOUND_SAFETY_CEILING_MS) {
         s_playing = false;
+        amp_set(false);
         memset(buf, 0, SOUND_BUF_FRAMES * sizeof(uint32_t));
         return;
     }
@@ -359,10 +368,12 @@ void sound_play(sound_id_t id) {
     s_playSampleIndex = 0;
     s_playStartMs = to_ms_since_boot(get_absolute_time());
     s_playing = true;
+    amp_set(true);
 }
 
 void sound_stop(void) {
     s_playing = false;
+    amp_set(false);
     if (!s_hwReady) return;
     // Zero BOTH buffers immediately, including whichever one the DMA is
     // currently mid-read of: this is not a data race worth guarding, since
@@ -420,9 +431,19 @@ void sound_init(void) {
     es8311_bring_up(); // the only i2c1 traffic this file ever issues
     i2s_hw_init();      // starts the bus running silence (both buffers zeroed)
 
-    if (s_hwReady) {
-        gpio_put(PIN_PA_ENABLE, 1); // now safe: the amp's input is silence, not a transient
-    }
+    // The amp is NOT switched on here any more. It used to be, right after
+    // the bus came up, and then stayed on for the life of the device: an
+    // idle class-D amplifier sitting on a running I2S bus hisses, and the
+    // owner heard it - "the device hums when the timer is counting down.
+    // should be silent". The timer is simply where a quiet room and a
+    // motionless screen made it audible; it was there in every app.
+    //
+    // So the amp now follows the sound: up in sound_play(), down when
+    // playback ends. The transient this pin's original ordering existed to
+    // avoid is still avoided, because the bus runs silence CONTINUOUSLY
+    // whether or not anything is playing (see refill_buffer(), which zeroes
+    // into the buffers when idle) - so the amp's input at the moment it is
+    // switched on is the same clean silence it was at boot.
 
     printf("sound: init %s\r\n", s_hwReady ? "ok" : "FAILED (no PIO state machine)");
 }
