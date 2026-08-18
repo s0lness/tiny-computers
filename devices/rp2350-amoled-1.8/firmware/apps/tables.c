@@ -324,7 +324,35 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // below, or outside the panel entirely) - the numpad's own cancel region.
 // A release verdict that reads -1 here commits nothing, the same rule
 // menu.c's cancel band enforces for the app grid.
+// THE THUMB LANDS BELOW WHERE IT AIMS, so the hit grid sits below the drawn
+// one. The owner, after using it: "if i aim the 5 with my thumb the touchpoint
+// will be slightly under the exact one. it should start a little at the top of
+// 8." That is the ordinary geometry of a thumb - the contact patch's centroid
+// sits behind and below the point of the thumb the eye is aiming with - and no
+// amount of filtering fixes it, because the controller is reporting the
+// contact honestly.
+//
+// So subtract the bias from the reported y before deciding which row was
+// meant. In the reported coordinates every key's zone therefore moves DOWN by
+// this much: the 5's zone reaches into the top of the 8's drawn cell, exactly
+// as he describes, and the top row gains the same slack above it that the
+// bottom row loses below.
+//
+// Applied ONLY to the row, not the column. The same physics does not push a
+// thumb sideways: left and right of the intended point are symmetric, and
+// biasing x would just make one column harder to hit than the other.
+//
+// The loupe is unaffected by construction: it draws whatever cell this
+// function names, so what she sees magnified is what this bias chose, and
+// "what commits is what the loupe showed" still holds.
+//
+// 14px is a starting value, about a quarter of CELL_H and a millimetre of
+// glass at this panel's ~322ppi, chosen to be felt without being noticed. It
+// is a taste number and the owner's thumb is the only instrument for it.
+#define TOUCH_THUMB_BIAS_Y 14
+
 static int numpad_hit(int lx, int ly) {
+    ly -= TOUCH_THUMB_BIAS_Y;
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W) return -1;
     if (ly < NUMPAD_Y0 || ly >= NUMPAD_Y0 + NUMPAD_H) return -1;
     int col = (lx - NUMPAD_X0) / CELL_W;
