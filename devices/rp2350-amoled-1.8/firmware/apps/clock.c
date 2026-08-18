@@ -59,6 +59,30 @@
  * rolls over from); they are simply not on the screen. The only thing that
  * ever moves on a working face is a minute digit, once a minute, one cell.
  *
+ * THE PULSE. The owner asked the long-ways separator to pulse, so the
+ * working face reads as alive rather than static ("tu peux faire pulser le
+ * ':' qui sépare les chiffres ?"). It pulses ONLY in the long-ways face -
+ * the upright face has no separator at all, and this file's own header
+ * already argues at length for why nothing should sit between its two
+ * lines; putting a pulsing mark there would undo that argument, not extend
+ * it. That choice was put to the owner and he has not overruled it.
+ *
+ * WHY THIS IS ALLOWED WHEN SECONDS ARE NOT is a cost argument, not a taste
+ * one, and it is the same argument as the paragraph above: a face that
+ * ticks every second costs a redraw a second, forever, of the WHOLE face.
+ * The dots pulse by toggling between two ink levels every
+ * BLINK_PERIOD_MS/2 (250ms - four times a second), and every toggle
+ * redraws exactly the cell dots_cell() already owned before this feature
+ * existed (32 x 208 landscape px, the separator's own bounding box, sized
+ * for the known/unknown transition it always had to redraw for). That is
+ * about 6,656 px pushed per toggle, roughly 26,600 px/sec at four toggles a
+ * second - under a sixth of one full-panel repaint (368*448 = 164,864 px)
+ * per second, and confined to a cell already being pushed. A pulsing pair
+ * of dots is a few dozen pixels moving four times a second inside a window
+ * that was already there; a face that ticks every second is the whole face,
+ * every second, forever. That difference is why one is acceptable here and
+ * the other still is not.
+ *
  * WHAT IS NOT HERE, and is not an oversight: no date, no alarm, no seconds,
  * no battery, no app name, nothing belonging to the runtime (decision 0002
  * section 4b). A clock is a clock.
@@ -69,6 +93,7 @@
 #include "digits.h"
 #include "gfx.h"
 #include "sensors.h"
+#include "shapes.h"
 
 /* =========================================================================
  * THE ORIENTATION SIGNAL, AND THE ONE FUNCTION THAT READS IT
@@ -77,8 +102,8 @@
  * this app: it comes from the IMU, on i2c1, which core1 owns exclusively,
  * published through app_frame_t.tilt (firmware/runtime/tilt.h, decision
  * 0012). This app does not read the IMU itself and never has; everything
- * below asks clock_is_upright() and nothing else, so this is still the one
- * place the signal enters the app.
+ * below asks clock_face() and nothing else, so this is still the one place
+ * the signal enters the app.
  *
  * g_clockApp.landscape is true (see the app_t at the bottom of this file),
  * so the runtime hands this app gravity already rotated into ITS OWN
@@ -86,25 +111,72 @@
  * chrono, timer and four already draw in, and that rotation is
  * `land.up = (panel.up + 3) % 4`.
  *
- * WHICH TWO OF THE FOUR EDGES MEAN "UPRIGHT" WAS MEASURED, not reasoned out
- * from the rotation formula alone - the first version of this comment did
- * that and got it backwards, and the "the puck is turned upright" section
- * of feature-clock.ts caught it (the setting gesture used the wrong axis
- * mapping and dialled in the wrong time). tilt.c's `up` defaults to
- * TILT_UP_TOP and only updates once the in-plane component of gravity
- * clears TILT_UP_MIN_G, so a puck lying flat with nothing yet measured
- * reads panel.up = TOP, which the rotation above turns into
- * `land.up = LEFT` for this app. That default HAS to mean "long-ways": a
- * clock a child picks up before the IMU has produced a single sample must
- * show the same face every other app already assumes. Turning the puck
- * about the panel's own vertical axis (tilting the screen up or down
- * toward the person reading it, gravity moving in panel Y) keeps land.up
- * in {LEFT, RIGHT} - the SAME pair the flat default belongs to - which is
- * exactly the small, natural adjustment a person makes while holding a
- * landscape app normally, so LEFT/RIGHT is "long-ways". Turning the puck a
- * genuine quarter turn about the screen's own normal (gravity moving in
- * panel X instead) swaps which physical panel axis governs `up` and lands
- * in the other pair, {TOP, BOTTOM} - that quarter turn is "upright".
+ * THE OWNER'S RULE, verbatim: "on the clock: when in top mode and bottom
+ * mode i want the clock to be in portrait mode (with the hours facing the
+ * top) and when in right or left use the paysage mode." That is a rule
+ * about the PANEL's own physical edges (the same TOP/RIGHT/BOTTOM/LEFT the
+ * emulator's TURN control names - puckpose.ts's edgeNameForTurn()), not
+ * about land.up directly: `land.up = (panel.up + 3) % 4` rotates one step
+ * backwards through TOP->RIGHT->BOTTOM->LEFT->TOP, so panel TOP/BOTTOM (the
+ * owner's "portrait" pair) arrive here as land.up LEFT/RIGHT, and panel
+ * RIGHT/LEFT (his "paysage" pair) arrive as land.up TOP/BOTTOM. So, IN
+ * TERMS OF f->tilt.up, the value this function actually reads:
+ *
+ *     land.up == LEFT or RIGHT  ->  upright (portrait)
+ *     land.up == TOP or BOTTOM  ->  long-ways (landscape)
+ *
+ * which is the OPPOSITE of what an earlier version of this function checked
+ * (TOP/BOTTOM -> upright). THIS WAS MEASURED AGAINST THE EMULATOR, not
+ * reasoned out from the rotation formula alone - the same caution this
+ * comment already carried once before, for exactly the same reason: an
+ * earlier draft of THIS OWN PARAGRAPH argued a "genuine quarter turn" lands
+ * on {TOP, BOTTOM} and called that "upright", which is what the old code
+ * did and is exactly backwards from what a hand actually holding the puck
+ * long-ways produces - confirmed 2026-08-18 by driving
+ * puckpose.ts's gravityFromPose() (the same conversion the emulator's own
+ * TURN buttons now use, since commit 78f7c99 made them drive real firmware
+ * orientation instead of only the picture) through this compiled emu.wasm
+ * for all four TURN positions and reading back the firmware's own "clock:
+ * layout ..." log line. Do not re-derive this pairing from the rotation
+ * formula on paper again; it has already been gotten backwards twice that
+ * way. If it is ever in doubt, drive the emulator and read the log.
+ *
+ * WHICH EDGE OF EACH PAIR IS "NORMAL" AND WHICH IS UPSIDE DOWN. Two edges
+ * both select the same FAMILY (portrait or landscape) but are 180 degrees
+ * apart from each other, so only one of them can be the face as originally
+ * laid out - the other needs the whole picture turned to still read right
+ * side up. See clock_face_t and PICTURE, ROTATED below for how; this is
+ * only which edge gets which treatment, also settled by driving the
+ * emulator rather than assumed:
+ *
+ *   - portrait: land.up == LEFT (panel TOP up, the owner's own first
+ *     example and this device's flat, unmeasured default - see below) is
+ *     the face as laid out; land.up == RIGHT (panel BOTTOM up, the puck
+ *     held upside down) is the same face turned 180.
+ *   - landscape: land.up == TOP (panel RIGHT up) is the face as laid out -
+ *     the panel's own RIGHT edge carries the buttons (AGENTS.md's board
+ *     table), so "panel RIGHT up" is "held sideways with the buttons along
+ *     the top edge", app.h's own documented convention for every landscape
+ *     app on this device (chrono, timer, four, morpion all already assume
+ *     this exact hold); land.up == BOTTOM (panel LEFT up) is that same
+ *     landscape face turned 180.
+ *
+ * THE FLAT, UNMEASURED DEFAULT NOW READS UPRIGHT, AND THAT IS A REAL
+ * BEHAVIOUR CHANGE FROM BEFORE, STATED RATHER THAN HIDDEN. tilt.c's `up`
+ * defaults to TILT_UP_TOP (panel.up = TOP) before the IMU has produced a
+ * measurement past TILT_UP_MIN_G, which is now land.up = LEFT - the
+ * unflipped PORTRAIT case, per the table above. The previous version of
+ * this file deliberately defaulted to long-ways, reasoning that a clock
+ * picked up before the IMU has a reading should match every other app on
+ * this device, which boots landscape. That reasoning does not survive the
+ * owner's new rule intact: panel TOP is his own first, explicit example of
+ * "portrait", and it is also the specific edge tilt.c reports before
+ * anything has been measured, so making the default disagree with his own
+ * rule for that one edge would be a special case invented to preserve an
+ * old default he did not ask to keep. The boot face is now upright; a
+ * child who picks the clock up before the IMU has produced a reading still
+ * sees a stable, sensible face (not a guess that flips under her), it is
+ * simply the other one now.
  *
  * COASTING NEEDS NO BRANCH HERE. tilt.h's filter holds gx/gy and the
  * derived `up` at their last belief while the trust gate has fully given up
@@ -123,18 +195,55 @@
  * stale, they are not derived from anything, so reading them would not be
  * "the last known orientation" in the sense this app means it, it would be
  * whatever those fields happen to still contain. So on an invalid tilt this
- * function does not touch f->tilt at all: it returns s->upright, the layout
- * already painted. app_alloc() zeroes a fresh clock_state_t (app.h), so the
- * very first call - before any tilt has ever arrived - reads s->upright as
- * false, i.e. long-ways: the posture the owner described first ("un display
- * horizontal qui marche le chronometre"), and the one every other app on
- * this device already boots into. A child who picks the clock up before the
- * IMU has produced a reading sees the same face she would a moment later,
- * not a guess that might flip out from under her.
+ * function does not touch f->tilt at all: it returns whatever was last
+ * painted (s->upright, s->flip180). app_alloc() zeroes a fresh
+ * clock_state_t (app.h), so the very first call - before any tilt has ever
+ * arrived - reads both as false: upright, unflipped, the same face the flat
+ * default above settles on a moment later once the IMU's first sample
+ * lands. A child who picks the clock up before the IMU has produced a
+ * reading sees the same face she would a moment later either way.
+ *
+ * PICTURE, ROTATED, NOT A SECOND RENDERER. The "upside down" half of each
+ * pair is drawn by painting the WHOLE face normally - the exact same
+ * digits_draw_soft()/digits_draw_dots_soft() calls, at their normal
+ * coordinates, unaware anything is flipped - and then reversing every pixel
+ * of the finished panel end for end (panel_rotate_180() below: pixel i
+ * swaps with pixel (PANEL_W*PANEL_H-1-i), which is exactly a 180 degree
+ * rotation about the panel's own centre - see that function's comment for
+ * why one array reversal is the whole proof). This is deliberate and is
+ * the ONLY way this file draws a rotated face: digits.h is explicit that a
+ * second, rotated copy of the seven-segment renderer is not an acceptable
+ * fix for anything ("the owner has already had to ask twice for the same
+ * glyph fix... a second seven-segment renderer in an app file is how that
+ * happens a third time"), and a generic, digit-blind pixel reversal cannot
+ * drift from digits.c's own rendering the way a hand-rolled rotated glyph
+ * could. The cost of this choice is real and is paid on the STEADY-STATE
+ * minute rollover, not on entry: while flipped, a changed digit repaints
+ * the WHOLE face (paint_all(), rotated) rather than the one cell that
+ * changed, because a single cell's pixels cannot be reversed in place
+ * without first knowing where its flipped counterpart on the panel is -
+ * see clock_tick()'s own comment on this trade. It stays a once-a-minute
+ * (or once-per-tap, while dialling) cost, never a per-tick one, which is
+ * the same bound this file already holds everywhere else. The pulsing
+ * dots need NONE of this: their cell sits exactly on the panel's own
+ * rotational centre (proven in "THE PULSE" - digits.h and this file's own
+ * geometry put dots_cell() at (80,208,208,32) in panel space, whose centre
+ * is (184,224), the panel's own (PANEL_W/2, PANEL_H/2)) and two identical
+ * round dots are unchanged by swapping which one is "the upper one", so
+ * the pulse's existing small, cheap, unconditional per-cell update is
+ * already correct in every orientation and needed no change at all.
  * ========================================================================= */
 
 typedef struct clock_state_s clock_state_t;
-static bool clock_is_upright(clock_state_t *s, const app_frame_t *f);
+
+// Which face to draw, and whether it needs turning 180 - see "THE
+// ORIENTATION SIGNAL" above for the full mapping and why it is the only
+// function that reads f->tilt.
+typedef struct {
+    bool upright;
+    bool flip180;
+} clock_face_t;
+static clock_face_t clock_face(clock_state_t *s, const app_frame_t *f);
 
 /* =========================================================================
  * LAYOUT
@@ -201,14 +310,78 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 #define GHOST_STEPS     6
 #define GHOST_PERIOD_MS 5000u
 
-// A lit numeral is black; the pair you are NOT currently dragging goes grey
-// while the time is being set, so the screen says which of the two your
-// finger is moving without a word or an arrow on it.
+// A lit numeral is black, set mode included: both fields are live at once
+// (see "THE GESTURE" below), so there is no longer a "resting" pair to grey
+// out the way an old, one-field-at-a-time drag needed.
 #define INK_LIT     0
-#define INK_RESTING 150
 
 // Sentinel for "this cell holds a ghost, not a digit".
 #define CELL_GHOST (-1)
+
+// The dots' pulse, on a working face - see "THE PULSE" above. Reuses
+// tables.c's own BLINK_PERIOD_MS value and name (a plain two-state blink,
+// not a smooth ramp, same convention that file's wrong-answer reveal
+// already uses), file-scoped here like every #define in this file, so
+// there is no cross-file coupling to a translation unit that never sees
+// this one.
+#define BLINK_PERIOD_MS   500u
+#define DOTS_PULSE_FAINT  130
+
+// ---- the setting gesture's chevrons: four small "^"/"v" marks, one per
+// direction, flanking each digit pair while set mode is open -------------
+//
+// Sized and placed the same way in both layouts: CHEV_GAP clear of the
+// digit block's own edge, CHEV_H from base to apex, CHEV_HALF_W either
+// side of centre. Every position below is checked against
+// PANEL_BEZEL_MARGIN_PX by arithmetic, not by eye - see the LAYOUT
+// section's own rule about that margin - and confirmed by the gate.
+#define CHEV_HALF_W 13
+#define CHEV_H      9
+#define CHEV_T      6
+#define CHEV_GAP    3
+
+// Upright: the hours' chevrons flank y=[P_Y_HOURS, P_Y_HOURS+P_DIGIT_H),
+// the minutes' flank y=[P_Y_MINUTES, P_Y_MINUTES+P_DIGIT_H) - same x centre
+// for both, PANEL_W/2, since both rows share the same two columns.
+#define CHEV_P_HOURS_UP_BASE   (P_Y_HOURS - CHEV_GAP)
+#define CHEV_P_HOURS_UP_APEX   (CHEV_P_HOURS_UP_BASE - CHEV_H)
+#define CHEV_P_HOURS_DN_BASE   (P_Y_HOURS + P_DIGIT_H + CHEV_GAP)
+#define CHEV_P_HOURS_DN_APEX   (CHEV_P_HOURS_DN_BASE + CHEV_H)
+#define CHEV_P_MIN_UP_BASE     (P_Y_MINUTES - CHEV_GAP)
+#define CHEV_P_MIN_UP_APEX     (CHEV_P_MIN_UP_BASE - CHEV_H)
+#define CHEV_P_MIN_DN_BASE     (P_Y_MINUTES + P_DIGIT_H + CHEV_GAP)
+#define CHEV_P_MIN_DN_APEX     (CHEV_P_MIN_DN_BASE + CHEV_H)
+
+// Long-ways: both pairs sit in the same single row (y=[L_Y0,
+// L_Y0+L_DIGIT_H)), so the up/down offsets are shared; only the x centre
+// differs between the hours' pair and the minutes' (computed in
+// draw_all_chevrons() from L_DIGIT_X, not duplicated here as a second set
+// of literals).
+#define CHEV_L_UP_BASE (L_Y0 - CHEV_GAP)
+#define CHEV_L_UP_APEX (CHEV_L_UP_BASE - CHEV_H)
+#define CHEV_L_DN_BASE (L_Y0 + L_DIGIT_H + CHEV_GAP)
+#define CHEV_L_DN_APEX (CHEV_L_DN_BASE + CHEV_H)
+
+// How long, idle, set mode waits before giving up and returning to the
+// running clock (or the empty face) without committing - see "IF SHE
+// WANDERS OFF MID-SET" below.
+#define SET_MODE_TIMEOUT_MS 60000u
+
+// The double-press window: two KEY_SHORT verdicts (sensors.h) this close
+// together are one gesture, not two taps of something else - see "THE
+// WINDOW" below for why this cannot be confused with either of this
+// button's other two gestures.
+#define DOUBLE_PRESS_WINDOW_MS 500u
+
+// How long a chevron tap ignores a further touchPressed edge after it fires
+// - see "THE TAP TARGET IS DEBOUNCED" below. Chosen from a MEASUREMENT, not
+// a guess: repro-touch-dropout-clock-set.ts drove the real dropout-heavy
+// profile (34 episodes/sec, sensors_touch_next()'s own per-report loss) at
+// a chevron zone and found a single physical tap under it firing several
+// touchPressed edges, over-stepping the field every time; 250ms clears that
+// while staying well under a fifth of a second, comfortably faster than a
+// deliberate second tap needs to be.
+#define TAP_COOLDOWN_MS 250u
 
 /* =========================================================================
  * SETTING THE TIME, which is the whole product
@@ -224,33 +397,123 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
  * board. That is a handful of times a year, by an adult, usually with the
  * device in one hand.
  *
- * THE GESTURE: hold BOOT, and slide a finger over the pair you want to
- * change. One rule covers both layouts, and it is the same sentence in each:
+ * THE GESTURE: double-press PWR to open it, tap the pair you want to change,
+ * double-press PWR again to commit. This replaces an earlier hold-BOOT-and-
+ * slide gesture (see this file's git history) - the owner's own words for
+ * the new one, verbatim: "double press une fois et des chevrons apparaissent
+ * pour choisir l'heure, double press pour valider".
  *
- *     the axis that SEPARATES the two pairs chooses which pair you are
- *     setting; the other axis carries the value.
+ * WHY PWR AND NOT BOOT. PWR is wired to the AXP2101 PMIC, which already
+ * decodes press, release, short-press and long-press verdicts off the raw
+ * pin (sensors.h) - a double-press is just two of those short-press
+ * verdicts close together in time, nothing new for this app to detect. BOOT
+ * is not on any chip at all: it is read by borrowing the flash chip select
+ * (bootbtn.c), sampled at 20Hz, and already spoken for by two other
+ * gestures (the BOOT+PWR menu chord, and the hold-and-slide this one
+ * replaces). A double-press gesture is a natural fit for a button the PMIC
+ * already timestamps; it would be an awkward one for a button that has to
+ * disturb flash timing just to be read.
  *
- * Held upright the hours are the top line and the minutes the bottom one, so
- * touching high sets hours, touching low sets minutes, and sliding left to
- * right runs the value from 0 up. Held long-ways the hours are the left pair
- * and the minutes the right, so touching left sets hours, touching right
- * sets minutes, and sliding top to bottom runs the value. Nothing to learn
- * twice.
+ * THE WINDOW, AND WHY IT CANNOT BE CONFUSED WITH EITHER OF THIS BUTTON'S
+ * OTHER TWO GESTURES. A double-press is two KEY_SHORT verdicts within
+ * DOUBLE_PRESS_WINDOW_MS (500ms) of each other - nothing about the raw
+ * press/release edges, only the verdict the PMIC itself already computes on
+ * release. That is what keeps it clear of the other two things this same
+ * button does, and neither margin is close:
  *
- * The value is ABSOLUTE, not accumulated: where your finger is along the
- * axis IS the number, edge to edge. So any value is one slide away, there is
- * no drift to correct, nothing to hold down and wait for, and letting go
- * without releasing BOOT lets you go straight to the other pair. Releasing
- * BOOT commits, and that single event is the only i2c write this app ever
- * causes.
+ *   - the BOOT+PWR menu chord (runtime_core.c) needs PWR held long enough
+ *     for the PMIC's OWN long-press verdict, KEY_LONG at 1.5s. A press under
+ *     that threshold can only ever produce KEY_SHORT, never KEY_LONG, so a
+ *     double-press - two presses each necessarily well short of 1.5s, or the
+ *     second one would have been a long press instead of a short one - is
+ *     not a partial or slow attempt at the chord, it is a verdict the
+ *     chord's own detector never even looks at;
+ *   - the PWR-held-alone power-off gesture (runtime_core.c,
+ *     poweroff_gesture_tick()) restarts its own hold timer on every fresh
+ *     KEY_PRESS and only starts dimming the panel after
+ *     PWR_HOLD_DIM_START_MS (800ms) of ONE continuous hold, cutting power at
+ *     PWR_HOLD_POWEROFF_MS (2000ms). Two quick taps inside a 500ms window
+ *     are each a small fraction of 800ms, and releasing between them resets
+ *     that timer anyway - a double-press cannot be mistaken for the start of
+ *     a power-off, and opening or closing set mode never dims the screen.
  *
- * WHY BOOT HAS TO BE HELD: without it, the child who carries this device
- * around would reset the clock with her thumb, daily. BOOT is a real button
- * on the case that has to be held with the other hand while sliding, which
- * is a two-handed, deliberate act; it is also already the modifier idiom
- * this device uses (BOOT plus PWR opens the menu), so it is not a new
- * concept. A wrong setting costs ten seconds to fix, so the guard does not
- * need to be stronger than that.
+ * 500ms is a plain double-tap window, the same order of magnitude a mouse or
+ * a touchscreen already asks a hand for, generous enough that a small
+ * child's slower fingers do not need a stopwatch, and - as shown above - an
+ * order of magnitude clear of both other thresholds this same button
+ * carries.
+ *
+ * THE FIRST DOUBLE-PRESS opens set mode, and chevrons appear above and below
+ * BOTH the hours and the minutes AT ONCE - not one pair with a further
+ * gesture to move onto the other, because the owner asked for exactly two
+ * double-presses total, open and commit, with nothing in between (an
+ * earlier draft of this feature had a middle double-press to move a cursor
+ * from the hours to the minutes; the owner cut it, in his own words: "on
+ * refait double press pour valider les réglages" - two, not three). So "how
+ * does she reach both fields with only one opening gesture" has to be
+ * answered by WHERE she taps, not by a mode step, and this app already had
+ * the rule: the hold-and-slide gesture this replaces picked its pair the
+ * same way - "the axis that SEPARATES the two pairs chooses which pair" -
+ * and that sentence survives the redesign unchanged, it now just picks a
+ * chevron zone instead of a slide's starting field. Held upright the hours
+ * sit above the minutes, so touching the top half of the glass reaches the
+ * hours' chevrons and the bottom half the minutes'; held long-ways the hours
+ * are the left pair and the minutes the right, so touching left reaches the
+ * hours and touching right the minutes. Nothing to learn twice.
+ *
+ * WHAT SAYS THE OTHER FIELD IS ALSO LIVE: the other field's own chevrons,
+ * on screen at the same time, in the same ink, from the moment set mode
+ * opens. There is no hidden mode to discover by trial and error the way a
+ * numpad's missing check key once was (tables.c's own history records a
+ * child who "attendait" at a key that was never coming); a glance at the
+ * screen is the whole instruction, because nothing about it changes once
+ * she starts tapping. Every tap only ever changes the field its zone
+ * belongs to - there is no field latch to get wrong, because there is no
+ * drag left to latch anything against; each tap is independent and takes
+ * effect immediately.
+ *
+ * THE TAP TARGET is NOT the chevron ink. Each chevron pair marks a few dozen
+ * pixels, far smaller than the ~100px an adult fingertip or the ~75px a
+ * child's covers (AGENTS.md's "a finger is about 100 pixels wide" section),
+ * so the actual target is the whole quarter of the glass that chevron sits
+ * in: held upright, the panel's own four quarters (top to bottom) are
+ * hours-up, hours-down, minutes-up, minutes-down; held long-ways, each pair
+ * gets the full half of the panel nearer it, split again into an upper and
+ * a lower half for the two directions. Every zone is well over 100px in
+ * both dimensions, and together they cover the ENTIRE glass - there is no
+ * dead area to miss, which is the more forgiving of the two options this
+ * task posed (tap the chevrons themselves, or tap anywhere above/below) and
+ * the one every other touch target on this device already prefers over a
+ * small, precise one (AGENTS.md's "a finger also HIDES what it is choosing"
+ * section; four.c and morpion.c made the same choice already, for the same
+ * reason).
+ *
+ * THE SECOND DOUBLE-PRESS commits, exactly the way releasing BOOT used to:
+ * one sensors_set_clock() call, seconds zeroed so the owner can line it up
+ * against a wall clock's minute and let go.
+ *
+ * IF SHE WANDERS OFF MID-SET: SET_MODE_TIMEOUT_MS (60s) of no tap and no
+ * double-press returns silently to the running clock (or the empty face, if
+ * it was still unknown when set mode opened), discarding whatever was
+ * dialled in. Nothing reaches the RTC unless the second double-press
+ * actually lands - a half-dialled value is never committed by a timeout,
+ * only by a deliberate second press - and a set screen left open forever is
+ * two real costs on this hardware: a static image on an AMOLED panel with a
+ * documented burn-in concern (AGENTS.md), and a toy stuck in a mode a child
+ * cannot get herself out of. 60 seconds is generous enough to tap a value in
+ * one step at a time, worst case dialling minutes end to end, without
+ * feeling like it is racing her.
+ *
+ * REACHABLE FROM, AND SETTABLE OUT OF, THE EMPTY FACE. The double-press does
+ * not care what sensors_clock() currently says: an unset clock still
+ * receives KEY_SHORT verdicts from the PMIC exactly like a set one, so the
+ * gesture opens from the ghost face the same way it opens from a working
+ * one - it has to, since a flat-battery clock is the one case this whole
+ * feature exists for. Entering set mode from unknown seeds at 12:00, same
+ * reasoning as before: a neutral middle of the range rather than midnight,
+ * where half the useful range would be a long way of tapping away.
+ * Committing clears the RTC's OS flag (sensors_set_clock()'s own contract),
+ * so the face that appears afterwards is a real time, not the ghost.
  *
  * WHY NOT OVER USB, which tools/dev.ts could do in twenty lines. It was
  * considered and it is the weaker answer, for three reasons that all point
@@ -262,7 +525,7 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
  * clock that is confidently one hour out is precisely the failure this app's
  * empty face exists to avoid. And it is invisible: the owner cannot tell
  * whether it worked without looking at the device anyway, whereas the
- * gesture's whole feedback is the number changing under his finger. The
+ * gesture's whole feedback is the numbers changing under a finger. The
  * seconds are set to zero on commit, so setting it at the top of a minute is
  * exact; that is the only accuracy USB would have bought.
  * ========================================================================= */
@@ -273,32 +536,49 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 struct clock_state_s {
     // What is currently on the panel, so a tick only ever redraws a cell
     // whose content actually changed. Both halves matter: the same digit in
-    // a different ink (the empty face breathing, or a pair greying out while
-    // the other is set) is a change, and a different digit in the same ink
-    // obviously is.
+    // a different ink (the empty face breathing, or the dots pulsing) is a
+    // change, and a different digit in the same ink obviously is.
     int     cellDigit[4];
     uint8_t cellInk[4];
     bool    painted;   // has a full face been drawn at least once
     bool    upright;   // ...and in which layout
+    bool    flip180;   // ...and whether that layout was painted turned 180 -
+                        // see "THE ORIENTATION SIGNAL" above; doubles as both
+                        // the !valid fallback and the "did this change"
+                        // comparison, the same way `upright` already does
+    bool    paintedActive; // ...and whether that paint included the
+                            // chevrons - see paint_all()'s `active` param
 
-    // The setting gesture. `active` spans the whole BOOT hold, not just the
-    // frames a finger is down, so lifting to move to the other pair does not
-    // end it.
+    // The setting gesture. `active` spans the whole open-to-commit window,
+    // from the first double-press to the second - see "THE GESTURE" above.
+    // Both fields are live throughout, so there is no per-field "which one
+    // is currently being touched" left to track.
     bool active;
-    bool touching;     // a finger is down within this hold
-    int  field;
     int  setH, setM;
+    uint32_t lastActivityMs; // last tap or double-press while active, for
+                              // the abandonment timeout (SET_MODE_TIMEOUT_MS)
+    uint32_t lastTapMs;      // when the last chevron tap was ACCEPTED - see
+                              // TAP_COOLDOWN_MS and "THE TAP TARGET IS
+                              // DEBOUNCED" below
+
+    // The double-press detector, shared by "open" and "commit" (see
+    // pwr_double_press()): the first KEY_SHORT verdict of a pair is parked
+    // here until either a second one lands within DOUBLE_PRESS_WINDOW_MS
+    // (a double-press) or the window closes on its own (a single tap that
+    // does nothing - this app has no use for a lone short press).
+    bool     havePendingShort;
+    uint32_t pendingShortMs;
 
     // Committed, and waiting for the value to come back out the other side.
     // THIS IS A HARDWARE-ONLY GLITCH GUARD and the emulator cannot show what
     // it prevents: on the board, sensors_set_clock() is a core0 REQUEST that
     // core1 performs (sensors.h), and performing it is three bounded i2c
     // transactions, so the published clock still reads "not known" for a
-    // millisecond or two after BOOT comes up. Without this, releasing BOOT
-    // would flash the empty face for a frame before the time appeared -
-    // exactly at the moment the owner is looking to see whether it worked.
-    // In wasm the shim's set is synchronous, so this branch is never taken
-    // there and no test can catch its absence.
+    // millisecond or two after the commit double-press lands. Without this,
+    // committing would flash the empty face for a frame before the time
+    // appeared - exactly at the moment the owner is looking to see whether
+    // it worked. In wasm the shim's set is synchronous, so this branch is
+    // never taken there and no test can catch its absence.
     bool pendingSet;
     int  pendingH, pendingM;
 
@@ -316,15 +596,25 @@ struct clock_state_s {
 
 static clock_state_t *s_state;
 
-// THE ONE PLACE THE ORIENTATION SIGNAL ENTERS THIS APP. See the section at
-// the top of this file for the full reasoning on the axis, on coasting, and
-// on !valid; the short version, MEASURED against the real emulator rather
-// than reasoned out on paper: TOP/BOTTOM is upright, LEFT/RIGHT (the pair
-// the flat default belongs to) is long-ways, and an invalid reading holds
-// whatever is already on screen.
-static bool clock_is_upright(clock_state_t *s, const app_frame_t *f) {
-    if (!f->tilt.valid) return s->upright;
-    return f->tilt.up == TILT_UP_TOP || f->tilt.up == TILT_UP_BOTTOM;
+// THE ONE PLACE THE ORIENTATION SIGNAL ENTERS THIS APP. See "THE
+// ORIENTATION SIGNAL" at the top of this file for the full reasoning on the
+// mapping, on which edge of each pair is flipped, on coasting, and on
+// !valid; the short version, MEASURED against the real emulator rather than
+// reasoned out on paper: LEFT/RIGHT is upright (LEFT, the flat default,
+// unflipped; RIGHT flipped), TOP/BOTTOM is long-ways (TOP unflipped,
+// BOTTOM flipped), and an invalid reading holds whatever is already on
+// screen.
+static clock_face_t clock_face(clock_state_t *s, const app_frame_t *f) {
+    clock_face_t out;
+    if (!f->tilt.valid) {
+        out.upright = s->upright;
+        out.flip180 = s->flip180;
+        return out;
+    }
+    uint8_t up = f->tilt.up;
+    out.upright = (up == TILT_UP_LEFT || up == TILT_UP_RIGHT);
+    out.flip180 = out.upright ? (up == TILT_UP_RIGHT) : (up == TILT_UP_BOTTOM);
+    return out;
 }
 
 /* ---- cells --------------------------------------------------------------
@@ -366,6 +656,90 @@ static void dots_cell(cell_t *out) {
     out->w = L_DOTS_W;
     out->h = L_DIGIT_H;
     out->t = L_SEG_T;
+}
+
+/* ---- the chevrons --------------------------------------------------------
+ *
+ * Four small "^"/"v" marks, drawn only while set mode is open - see "THE
+ * GESTURE" above for what they mean and why every tap on the glass, not
+ * just a tap on the ink itself, is the real target.
+ */
+
+// One capsule of a chevron's arm, in whichever space this face draws in -
+// the same portrait/landscape isometry digits.c's own soft_capsule uses
+// (panel (x,y) -> landscape (y, PANEL_W-x), see that function's comment for
+// the derivation), duplicated here rather than exported from digits.h: a
+// chevron is UI chrome, not a numeral, and digits.h's "these must not fork"
+// argument is specifically about the seven-segment glyphs it renders.
+static void chevron_capsule(digits_space_t space, float x0, float y0,
+                            float x1, float y1, float r, uint16_t colorPx) {
+    if (space == DIGITS_LANDSCAPE) {
+        shapes_fill_capsule_aa_land(x0, y0, r, x1, y1, r, colorPx);
+    } else {
+        float edge = (float)PANEL_W;
+        shapes_fill_capsule_aa_land(y0, edge - x0, r, y1, edge - x1, r, colorPx);
+    }
+}
+
+// Two capsules meeting at (cx, apexY), base spanning cx-halfW..cx+halfW at
+// baseY. apexY above baseY draws an up chevron (increase), apexY below
+// baseY a down chevron (decrease) - the sign of apexY-baseY says which, so
+// no caller needs to say it twice.
+static void draw_chevron(digits_space_t space, int cx, int apexY, int baseY,
+                         int halfW, int t, uint16_t colorPx) {
+    float r = (float)t * 0.5f;
+    chevron_capsule(space, (float)(cx - halfW), (float)baseY, (float)cx, (float)apexY, r, colorPx);
+    chevron_capsule(space, (float)cx, (float)apexY, (float)(cx + halfW), (float)baseY, r, colorPx);
+}
+
+// All four, for whichever layout is showing. Positions come from the
+// CHEV_* macros above (LAYOUT-adjacent, checked against
+// PANEL_BEZEL_MARGIN_PX by arithmetic there); only the landscape x centres
+// are computed here, from L_DIGIT_X, rather than duplicated as a second set
+// of literals.
+static void draw_all_chevrons(bool upright) {
+    uint16_t px = gray_to_px(INK_LIT);
+    if (upright) {
+        int cx = PANEL_W / 2;
+        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_HOURS_UP_APEX, CHEV_P_HOURS_UP_BASE, CHEV_HALF_W, CHEV_T, px);
+        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_HOURS_DN_APEX, CHEV_P_HOURS_DN_BASE, CHEV_HALF_W, CHEV_T, px);
+        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_MIN_UP_APEX,   CHEV_P_MIN_UP_BASE,   CHEV_HALF_W, CHEV_T, px);
+        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_MIN_DN_APEX,   CHEV_P_MIN_DN_BASE,   CHEV_HALF_W, CHEV_T, px);
+    } else {
+        int cxHours   = (L_DIGIT_X[0] + L_DIGIT_X[1] + L_DIGIT_W) / 2;
+        int cxMinutes = (L_DIGIT_X[2] + L_DIGIT_X[3] + L_DIGIT_W) / 2;
+        draw_chevron(DIGITS_LANDSCAPE, cxHours,   CHEV_L_UP_APEX, CHEV_L_UP_BASE, CHEV_HALF_W, CHEV_T, px);
+        draw_chevron(DIGITS_LANDSCAPE, cxHours,   CHEV_L_DN_APEX, CHEV_L_DN_BASE, CHEV_HALF_W, CHEV_T, px);
+        draw_chevron(DIGITS_LANDSCAPE, cxMinutes, CHEV_L_UP_APEX, CHEV_L_UP_BASE, CHEV_HALF_W, CHEV_T, px);
+        draw_chevron(DIGITS_LANDSCAPE, cxMinutes, CHEV_L_DN_APEX, CHEV_L_DN_BASE, CHEV_HALF_W, CHEV_T, px);
+    }
+}
+
+// The dots' pulse - see "THE PULSE" above. A plain two-state blink on
+// BLINK_PERIOD_MS, not a smooth ramp: cheap (one comparison, no table) and
+// unmistakably distinct from the empty face's slow six-step breathe, which
+// is the point - a pulsing clock and a breathing ghost must not read as the
+// same animation wearing two colours.
+static uint8_t dots_pulse_ink(uint32_t nowMs) {
+    uint32_t half = BLINK_PERIOD_MS / 2u;
+    return ((nowMs / half) % 2u) ? DOTS_PULSE_FAINT : INK_LIT;
+}
+
+// Turns the WHOLE panel 180 degrees in place - see "PICTURE, ROTATED, NOT
+// A SECOND RENDERER" above for why this exists and why it is deliberately
+// generic. gfx_fb is one contiguous row-major array of PANEL_W*PANEL_H
+// pixels, so a point reflection about the panel's own centre - (x,y) ->
+// (PANEL_W-1-x, PANEL_H-1-y) - is exactly index i -> (PANEL_W*PANEL_H-1-i):
+// (PANEL_H-1-y)*PANEL_W + (PANEL_W-1-x) = PANEL_W*PANEL_H - 1 - (y*PANEL_W+x).
+// That collapses a 2D rotation into a single linear array reversal, which
+// is the entire function.
+static void panel_rotate_180(void) {
+    int n = PANEL_W * PANEL_H;
+    for (int i = 0; i < n / 2; i++) {
+        uint16_t tmp = gfx_fb[i];
+        gfx_fb[i] = gfx_fb[n - 1 - i];
+        gfx_fb[n - 1 - i] = tmp;
+    }
 }
 
 static void cell_clear(const cell_t *c) {
@@ -457,23 +831,27 @@ static bool face_now(clock_state_t *s, const app_frame_t *f, int digits[4], uint
     digits[2] = mm / 10;
     digits[3] = mm % 10;
 
-    uint8_t hoursInk = INK_LIT, minutesInk = INK_LIT;
-    if (s->active && s->touching) {
-        // Say which pair the finger is moving, with the only thing on screen
-        // there is to say it with.
-        if (s->field == FIELD_HOURS) minutesInk = INK_RESTING;
-        else hoursInk = INK_RESTING;
-    }
-    ink[0] = ink[1] = hoursInk;
-    ink[2] = ink[3] = minutesInk;
+    // Both fields are live at once while set mode is open (see "THE
+    // GESTURE"), so there is no "resting" pair to grey out any more - the
+    // chevrons are what says a field is editable, not the ink colour.
+    ink[0] = ink[1] = ink[2] = ink[3] = INK_LIT;
     return true;
 }
 
 /* ---- painting ----------------------------------------------------------- */
 
-// A whole face, from white. Used on enter() and whenever the puck is turned
-// over, which is the one moment every pixel on the panel changes at once.
-static void paint_all(clock_state_t *s, bool upright, const int digits[4], const uint8_t ink[4],
+// A whole face, from white. Used on enter(), whenever the puck is turned
+// over or turned upside down, whenever set mode opens or closes, and (while
+// flipped) whenever a digit changes - every one of those is a moment where
+// more than a single cell's worth of the panel changes at once, or where
+// PICTURE, ROTATED above needs the whole assembled face to reverse
+// correctly. Always draws the face NORMALLY, unflipped, digits.c's own
+// calls untouched; `flip180` is applied once, at the very end, as a single
+// whole-panel pixel reversal - see panel_rotate_180() and this file's own
+// "THE ORIENTATION SIGNAL" section for why that is the only place a flip
+// ever happens.
+static void paint_all(clock_state_t *s, bool upright, bool flip180, bool active,
+                      const int digits[4], const uint8_t ink[4],
                       uint8_t dotsInk, bool push) {
     gfx_fill_rect(0, 0, PANEL_W, PANEL_H, PX_WHITE);
 
@@ -495,43 +873,103 @@ static void paint_all(clock_state_t *s, bool upright, const int digits[4], const
         s->cellDigit[i] = digits[i];
         s->cellInk[i] = ink[i];
     }
+
+    if (active) draw_all_chevrons(upright);
+
+    if (flip180) panel_rotate_180();
+
     s->upright = upright;
+    s->flip180 = flip180;
     s->painted = true;
+    s->paintedActive = active;
 
     // enter() must not push (app.h: the runtime pushes the whole panel once
-    // after it returns); a turn-over must, and the whole panel is exactly
-    // what changed.
+    // after it returns); a turn-over or a set-mode transition must, and the
+    // whole panel is exactly what changed in both cases.
     if (push) gfx_push_all();
 }
 
 /* ---- the setting gesture ------------------------------------------------ */
 
-// Where a value lands when the finger is at `v` along an axis running from
-// `lo` to `hi`, for a field with `range` values. Absolute: the position IS
-// the number. Clamped at both ends rather than wrapping, so pressing at the
-// edge of the glass is a stable 0 or 23 instead of a coin flip.
-static int value_from_axis(int v, int lo, int hi, int range) {
-    if (v <= lo) return 0;
-    if (v >= hi) return range - 1;
-    return (v - lo) * range / (hi - lo);
+// Two KEY_SHORT verdicts within DOUBLE_PRESS_WINDOW_MS of each other is a
+// double-press; one on its own, with the window closing before a second
+// arrives, is a tap this app has no use for and simply forgets. Shared by
+// both halves of the gesture (opening set mode and committing it) - see
+// "THE GESTURE" above for why this cannot be confused with the menu chord
+// or the PWR-held-alone power-off gesture.
+static bool pwr_double_press(clock_state_t *s, uint32_t nowMs, uint8_t key) {
+    if (!(key & KEY_SHORT)) return false;
+    if (s->havePendingShort && (nowMs - s->pendingShortMs) <= DOUBLE_PRESS_WINDOW_MS) {
+        s->havePendingShort = false;
+        return true;
+    }
+    s->havePendingShort = true;
+    s->pendingShortMs = nowMs;
+    return false;
 }
 
-// `upright` is passed in rather than read back off s->upright, which is the
-// layout currently PAINTED and is one frame stale on the tick the puck is
-// turned over - a gesture in flight across that instant would otherwise pick
-// its field with the wrong rule for exactly one frame.
-static void setting_tick(clock_state_t *s, const app_frame_t *f, bool upright) {
-    // BOOT's LEVEL, not its click: this is a modifier being held, the same
-    // way the menu chord uses it (runtime_core.c). sensors_boot_down() is a
-    // published signal like any other - the app is not touching a chip - and
-    // it is rate-limited to 20Hz inside bootbtn.c regardless of how often it
-    // is asked (see sensors.h's BOOT section).
-    bool bootHeld = sensors_boot_down();
+// Which field a tap at (touchX, touchY) adjusts, and which way - see "THE
+// TAP TARGET" above. Every point on the glass lands in exactly one of the
+// four zones; there is no miss case, deliberately, because a target a
+// child can fail to hit is worse than one that is occasionally the coarser
+// of two reasonable choices.
+static void chevron_zone(bool upright, int touchX, int touchY, int *field, int *dir) {
+    if (upright) {
+        // The panel's own four quarters, top to bottom. X is unscoped - the
+        // full 368px width counts as one target - which is what makes this
+        // more forgiving than aiming at either pair's own narrower column.
+        int y = touchY;
+        if (y < PANEL_H / 4)          { *field = FIELD_HOURS;   *dir = +1; }
+        else if (y < PANEL_H / 2)     { *field = FIELD_HOURS;   *dir = -1; }
+        else if (y < 3 * PANEL_H / 4) { *field = FIELD_MINUTES; *dir = +1; }
+        else                          { *field = FIELD_MINUTES; *dir = -1; }
+    } else {
+        // Panel coordinates map to landscape as (lx, ly) = (touchY,
+        // PANEL_W-1-touchX) - gfx.h's own mapping, inverted, the same
+        // conversion the old positional gesture used. lx (which pair, left
+        // or right) and ly (which direction, above or below the digit row)
+        // are independent axes here, so each pair gets the FULL height for
+        // its own up/down split rather than sharing one axis for both jobs
+        // the way the upright layout has to.
+        int lx = touchY;
+        int ly = PANEL_W - 1 - touchX;
+        *field = (lx < LAND_W / 2) ? FIELD_HOURS : FIELD_MINUTES;
+        *dir = (ly < LAND_H / 2) ? +1 : -1;
+    }
+}
 
-    if (!bootHeld) {
-        if (s->active) {
+// `upright`/`flip180` are passed in rather than read back off s->upright/
+// s->flip180, which is the layout currently PAINTED and is one frame stale
+// on the tick the puck is turned over or turned upside down - a gesture in
+// flight across that instant would otherwise pick its field with the wrong
+// rule for exactly one frame.
+static void setting_tick(clock_state_t *s, const app_frame_t *f, bool upright, bool flip180) {
+    if (pwr_double_press(s, f->nowMs, f->key)) {
+        if (!s->active) {
+            s->active = true;
+            // Seed from whatever is on screen. An unknown clock seeds at
+            // 12:00, a neutral place to start tapping from rather than
+            // midnight, where half the useful range is a long way of
+            // tapping away.
+            sensors_clock_t c;
+            sensors_clock(&c);
+            if (c.known) {
+                uint32_t sec = (c.secOfDay + (f->nowMs - c.sampledAtMs) / 1000u) % 86400u;
+                s->setH = (int)(sec / 3600u);
+                s->setM = (int)((sec / 60u) % 60u);
+            } else {
+                s->setH = 12;
+                s->setM = 0;
+            }
+            s->lastActivityMs = f->nowMs;
+            // See TAP_COOLDOWN_MS below: subtracting it (unsigned wrap is
+            // harmless here, it only ever makes the very next check MORE
+            // permissive) means the first tap after opening is never itself
+            // blocked by a cooldown left over from nothing.
+            s->lastTapMs = f->nowMs - TAP_COOLDOWN_MS;
+            printf("clock: set mode opened, seeded at %02d:%02d\r\n", s->setH, s->setM);
+        } else {
             s->active = false;
-            s->touching = false;
             // ONE write, on the event that made the value worth keeping.
             // Seconds are zero because the owner set this at a moment he
             // chose: he lines it up with a wall clock's minute and lets go.
@@ -542,62 +980,52 @@ static void setting_tick(clock_state_t *s, const app_frame_t *f, bool upright) {
             printf("clock: set to %02d:%02d\r\n", s->setH, s->setM);
             s->lastLoggedH = -1; // make the next steady-state line print
         }
+        // The double-press that just opened or closed set mode is not also
+        // a tap: nothing else this tick touches setH/setM or the timeout.
         return;
     }
 
-    if (!f->touchDown) {
-        // BOOT is held but nothing is on the glass: the hold stays open (so
-        // a finger can be lifted and put down on the other pair) and nothing
-        // changes.
-        s->touching = false;
-        return;
+    if (!s->active) return;
+
+    // THE TAP TARGET IS DEBOUNCED. touchPressed is a raw single-tick edge
+    // (runtime_core.c: down && !wasDown, resolved fresh from whatever the
+    // touch queue drained THIS tick), with no arming delay of its own -
+    // unlike dino.c's jump or four.c's drop, which both require several
+    // consistent samples before accepting a tap as real. Measured by
+    // repro-touch-dropout-clock-set.ts: under the controller's real dropout
+    // rate (34 episodes/sec, sensors_touch_next()'s own per-report loss), a
+    // single physical tap-and-release can make `down` flicker across
+    // several ticks, and every flicker back to true is a FRESH touchPressed
+    // edge - one physical tap fired many steps, every time, before this
+    // guard existed. So a tap only counts if it lands at least
+    // TAP_COOLDOWN_MS after the last one that did; see that constant's own
+    // comment for where 250ms comes from.
+    if (f->touchPressed && (f->nowMs - s->lastTapMs) >= TAP_COOLDOWN_MS) {
+        // Touch coordinates always arrive in real PANEL space, unrotated by
+        // anything this app draws (app.h) - the controller reports where a
+        // finger actually is, not where the picture happens to be. So a
+        // flipped face needs its touch point point-reflected the same way
+        // the picture itself was, BEFORE chevron_zone's own axis logic runs,
+        // or a tap in what the child sees as "the hours' up zone" would be
+        // read against the unrotated layout and hit the wrong quarter.
+        int tx = flip180 ? PANEL_W - 1 - f->touchX : f->touchX;
+        int ty = flip180 ? PANEL_H - 1 - f->touchY : f->touchY;
+        int field, dir;
+        chevron_zone(upright, tx, ty, &field, &dir);
+        if (field == FIELD_HOURS) s->setH = (s->setH + 24 + dir) % 24;
+        else s->setM = (s->setM + 60 + dir) % 60;
+        s->lastActivityMs = f->nowMs;
+        s->lastTapMs = f->nowMs;
     }
 
-    bool starting = !s->active;
-    if (starting) {
-        s->active = true;
-        // Seed from whatever is on screen, so the pair that is NOT touched
-        // keeps its value. An unknown clock seeds at 12:00, which is a
-        // neutral place to start dialling from rather than midnight, where
-        // half the useful range is a long slide away.
-        sensors_clock_t c;
-        sensors_clock(&c);
-        if (c.known) {
-            uint32_t sec = (c.secOfDay + (f->nowMs - c.sampledAtMs) / 1000u) % 86400u;
-            s->setH = (int)(sec / 3600u);
-            s->setM = (int)((sec / 60u) % 60u);
-        } else {
-            s->setH = 12;
-            s->setM = 0;
-        }
+    // Abandonment: see "IF SHE WANDERS OFF MID-SET" above. Discards
+    // silently - nothing reaches the RTC unless the commit double-press
+    // actually lands.
+    if (f->nowMs - s->lastActivityMs > SET_MODE_TIMEOUT_MS) {
+        s->active = false;
+        printf("clock: set mode abandoned after %us idle, discarding\r\n",
+               SET_MODE_TIMEOUT_MS / 1000u);
     }
-
-    // The field is latched when the finger LANDS, not re-evaluated as it
-    // moves: sliding a value all the way to one end must not hand the
-    // gesture over to the other pair halfway through.
-    bool landing = starting || !s->touching;
-    s->touching = true;
-
-    int value;
-    if (upright) {
-        // Upright: the pairs are stacked, so vertical position chooses and
-        // horizontal position sets.
-        if (landing) s->field = (f->touchY < PANEL_H / 2) ? FIELD_HOURS : FIELD_MINUTES;
-        value = value_from_axis(f->touchX, PANEL_BEZEL_MARGIN_PX, PANEL_W - PANEL_BEZEL_MARGIN_PX,
-                                s->field == FIELD_HOURS ? 24 : 60);
-    } else {
-        // Long-ways: the pairs are side by side, so it is the other way
-        // round. Panel coordinates map to landscape as (lx, ly) =
-        // (py, PANEL_W-1-px) - gfx.h's own mapping, inverted.
-        int lx = f->touchY;
-        int ly = PANEL_W - 1 - f->touchX;
-        if (landing) s->field = (lx < LAND_W / 2) ? FIELD_HOURS : FIELD_MINUTES;
-        value = value_from_axis(ly, PANEL_BEZEL_MARGIN_PX, LAND_H - PANEL_BEZEL_MARGIN_PX,
-                                s->field == FIELD_HOURS ? 24 : 60);
-    }
-
-    if (s->field == FIELD_HOURS) s->setH = value;
-    else s->setM = value;
 }
 
 /* ---- lifecycle ---------------------------------------------------------- */
@@ -608,11 +1036,12 @@ static void clock_enter(void) {
     s_state->lastLoggedM = -1;
 
     app_frame_t first = { 0 };
-    bool upright = clock_is_upright(s_state, &first);
+    clock_face_t face = clock_face(s_state, &first);
     int digits[4];
     uint8_t ink[4];
     bool known = face_now(s_state, &first, digits, ink);
-    paint_all(s_state, upright, digits, ink, known ? INK_LIT : ink[0], false);
+    paint_all(s_state, face.upright, face.flip180, false, digits, ink,
+             known ? dots_pulse_ink(0) : ink[0], false);
 
     printf("clock: state=%d bytes (arena %d)\r\n", (int)sizeof(clock_state_t), APP_ARENA_BYTES);
 }
@@ -620,34 +1049,65 @@ static void clock_enter(void) {
 static void clock_tick(const app_frame_t *f) {
     clock_state_t *s = s_state;
 
-    bool upright = clock_is_upright(s, f);
-    setting_tick(s, f, upright);
+    clock_face_t face = clock_face(s, f);
+    bool upright = face.upright, flip180 = face.flip180;
+    setting_tick(s, f, upright, flip180);
 
     int digits[4];
     uint8_t ink[4];
     bool known = face_now(s, f, digits, ink);
-    // The dots are as dark as the numerals when there is a time to show, and
-    // as pale as the ghosts when there is not - breathing with them, since
-    // they are redrawn by the same "did this cell's ink change" test below.
-    uint8_t dotsInk = known ? INK_LIT : ink[0];
+    // The dots pulse (see "THE PULSE") when there is a time to show, and
+    // breathe with the ghosts when there is not - either way they are
+    // redrawn by the same "did this cell's ink change" test below.
+    uint8_t dotsInk = known ? dots_pulse_ink(f->nowMs) : ink[0];
 
-    if (upright != s->upright || !s->painted) {
-        printf("clock: layout %s\r\n", upright ? "upright" : "long-ways");
-        paint_all(s, upright, digits, ink, dotsInk, true);
-    } else {
-        // The steady state: at most one cell changes, once a minute, and on
-        // most frames this loop does nothing at all.
-        for (int i = 0; i < 4; i++) {
-            if (digits[i] == s->cellDigit[i] && ink[i] == s->cellInk[i]) continue;
-            cell_t c;
-            cell_for(upright, i, &c);
-            cell_clear(&c);
-            cell_render(&c, digits[i], ink[i]);
-            cell_push(&c);
-            s->cellDigit[i] = digits[i];
-            s->cellInk[i] = ink[i];
+    bool modeChanged = (s->active != s->paintedActive);
+    bool layoutChanged = (upright != s->upright) || (flip180 != s->flip180);
+
+    if (modeChanged || layoutChanged || !s->painted) {
+        if (modeChanged) {
+            printf("clock: set mode %s\r\n", s->active ? "opened" : "closed");
+        } else if (upright != s->upright) {
+            printf("clock: layout %s\r\n", upright ? "upright" : "long-ways");
+        } else {
+            printf("clock: turned %s\r\n", flip180 ? "upside down" : "right side up");
         }
-        if (!upright && dotsInk != s->dotsInk) {
+        paint_all(s, upright, flip180, s->active, digits, ink, dotsInk, true);
+    } else {
+        bool digitsChanged = false;
+        for (int i = 0; i < 4; i++) {
+            if (digits[i] != s->cellDigit[i] || ink[i] != s->cellInk[i]) { digitsChanged = true; break; }
+        }
+        if (flip180 && digitsChanged) {
+            // See "PICTURE, ROTATED" above: a single cell's pixels cannot be
+            // reversed in place without a second, digit-specific coordinate
+            // transform this file deliberately does not build (that is the
+            // "second seven-segment renderer" digits.h forbids, one step
+            // removed). A full repaint costs more here, but it is still
+            // bounded to the same rare events - once a minute, or once per
+            // tap while dialling - not a per-tick cost.
+            paint_all(s, upright, flip180, s->active, digits, ink, dotsInk, true);
+        } else {
+            // The steady state: at most one cell changes, once a minute, and
+            // on most frames this loop does nothing at all.
+            for (int i = 0; i < 4; i++) {
+                if (digits[i] == s->cellDigit[i] && ink[i] == s->cellInk[i]) continue;
+                cell_t c;
+                cell_for(upright, i, &c);
+                cell_clear(&c);
+                cell_render(&c, digits[i], ink[i]);
+                cell_push(&c);
+                s->cellDigit[i] = digits[i];
+                s->cellInk[i] = ink[i];
+            }
+        }
+        // The dots' pulse never needs flip handling (see "PICTURE, ROTATED"
+        // above: their cell sits exactly on the panel's own rotational
+        // centre and two round dots are unchanged by swapping which is
+        // "upper"), so this runs unconditionally, flipped or not, and does
+        // nothing extra on a tick that just did a full repaint above (that
+        // repaint already drew the dots at dotsInk and recorded it).
+        if (!upright && dotsInk != s->dotsInk && !(flip180 && digitsChanged)) {
             cell_t d;
             dots_cell(&d);
             cell_clear(&d);
@@ -674,12 +1134,17 @@ static void clock_tick(const app_frame_t *f) {
     }
 }
 
-// landscape = true because that is the face this app comes up in and the one
-// the owner described first. It is a static flag and this app is not
-// statically oriented, which the runtime only uses to decide which way to
-// draw the menu overlay on top of it (app.h); when the shared orientation
-// signal lands, whether that flag should follow it is the runtime's question
-// rather than this file's.
+// landscape = true because the long-ways face is the one the owner described
+// first ("un display horizontal qui marche le chronometre") and the one
+// every landscape app on this device already assumes for its own gravity
+// rotation (tilt_for_app, "THE ORIENTATION SIGNAL" above) - it is NOT a
+// claim about which face is showing right now (that flipped to upright by
+// default once "THE ORIENTATION SIGNAL"'s new mapping landed; see its own
+// comment on why). This is a static flag and this app is not statically
+// oriented, which the runtime only uses to decide which way to draw the menu
+// overlay on top of it (app.h); when the shared orientation signal lands,
+// whether that flag should follow it is the runtime's question rather than
+// this file's.
 //
 // wantsShake is false for the same reason the stopwatch's is (sensors.h):
 // shaking a clock should not do anything, and erasing is not a verb a clock

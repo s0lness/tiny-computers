@@ -61,6 +61,8 @@ const LAND_H = PANEL_W; // 368
 const APP_CLOCK = 4;
 const APP_ARENA_BYTES = 65536; // app.h APP_ARENA_BYTES
 const BEZEL = 10; // gfx.h PANEL_BEZEL_MARGIN_PX
+const BTN_BOOT = 0;
+const BTN_PWR = 1;
 
 // ---- mirrors of clock.c's own constants. Lifted, not re-derived: the same
 // convention every other test in this directory uses for the app it drives.
@@ -73,6 +75,17 @@ const P_Y_HOURS = 28, P_Y_MINUTES = 252;
 const P_DIGIT_Y = [P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES];
 const GHOST_T = (t: number) => Math.floor((t * 2) / 5);
 const SOFT_INSET = 0.75;
+const DOUBLE_PRESS_WINDOW_MS = 500; // clock.c DOUBLE_PRESS_WINDOW_MS
+const SET_MODE_TIMEOUT_MS = 60000;  // clock.c SET_MODE_TIMEOUT_MS
+const CHEV_GAP = 3, CHEV_H = 9;     // clock.c CHEV_GAP / CHEV_H
+// clock.c's CHEV_P_*/CHEV_L_* macros, evaluated here the same way the C
+// preprocessor evaluates them there.
+const CHEV_P_HOURS_UP_BASE = P_Y_HOURS - CHEV_GAP, CHEV_P_HOURS_UP_APEX = CHEV_P_HOURS_UP_BASE - CHEV_H;
+const CHEV_P_HOURS_DN_BASE = P_Y_HOURS + P_DIGIT_H + CHEV_GAP, CHEV_P_HOURS_DN_APEX = CHEV_P_HOURS_DN_BASE + CHEV_H;
+const CHEV_P_MIN_UP_BASE = P_Y_MINUTES - CHEV_GAP, CHEV_P_MIN_UP_APEX = CHEV_P_MIN_UP_BASE - CHEV_H;
+const CHEV_P_MIN_DN_BASE = P_Y_MINUTES + P_DIGIT_H + CHEV_GAP, CHEV_P_MIN_DN_APEX = CHEV_P_MIN_DN_BASE + CHEV_H;
+const CHEV_L_UP_BASE = L_Y0 - CHEV_GAP, CHEV_L_UP_APEX = CHEV_L_UP_BASE - CHEV_H;
+const CHEV_L_DN_BASE = L_Y0 + L_DIGIT_H + CHEV_GAP, CHEV_L_DN_APEX = CHEV_L_DN_BASE + CHEV_H;
 
 // digits.c's SEVEN_SEG, so the test can say "cell 0 is showing an 8" by
 // looking at which segments are lit rather than by trusting a log line.
@@ -143,6 +156,12 @@ async function loadDevice() {
         appSwitch(index: number) { exp.emu_app_switch(index); },
         appCurrent(): number { return exp.emu_app_current(); },
         boot(down: boolean) { exp.emu_button(0, down ? 1 : 0); },
+        // Generic button level/verdict, for PWR (index 1): a real press is a
+        // level edge PLUS, on release, the PMIC's own short/long verdict
+        // (sensors.h) - see shortPressPWR()/doublePressPWR() below, which
+        // drive both exactly the way emu_shim.c documents.
+        button(index: number, down: boolean) { exp.emu_button(index, down ? 1 : 0); },
+        buttonVerdict(index: number, isLong: boolean) { exp.emu_button_verdict(index, isLong ? 1 : 0); },
         // Sets the pose and holds it - emu_tick() resubmits the last value
         // every tick (emu_shim.c), exactly like a hand holding the puck
         // still. The argument is Panel-space g, per tilt.h's own convention
@@ -233,6 +252,19 @@ function cellGray(fb: Uint8Array, c: Cell, x: number, y: number): number {
     return c.upright ? panelGray(fb, x, y) : landGray(fb, x, y);
 }
 
+// Same as cellGray, but reads through a 180-degree turn - the same
+// panel_rotate_180() clock.c's paint_all() applies when flip180 is set (see
+// clock.c's "THE ORIENTATION SIGNAL" and "PICTURE, ROTATED" sections): the
+// probe's own cell-space coordinates resolve to panel space exactly as
+// cellGray does, and then, if flipped, that panel point is point-reflected
+// about the panel's own centre before sampling.
+function cellGrayFlip(fb: Uint8Array, c: Cell, x: number, y: number, flip: boolean): number {
+    let px: number, py: number;
+    if (c.upright) { px = x; py = y; } else { px = PANEL_W - 1 - Math.round(y); py = Math.round(x); }
+    if (flip) { px = PANEL_W - 1 - px; py = PANEL_H - 1 - py; }
+    return panelGray(fb, px, py);
+}
+
 // The seven segment axes, derived exactly the way digits.c derives them
 // (radius plus SOFT_INSET off each edge, the middle rail at half height),
 // so a probe lands on a segment's centre line rather than near it. `strokeT`
@@ -260,6 +292,14 @@ function segmentMask(fb: Uint8Array, c: Cell, strokeT: number, lit: (g: number) 
     let mask = 0;
     segmentProbes(c, strokeT).forEach(([x, y], i) => {
         if (lit(cellGray(fb, c, x, y))) mask |= 1 << i;
+    });
+    return mask;
+}
+// Same, reading through a 180-degree turn - see cellGrayFlip.
+function segmentMaskFlip(fb: Uint8Array, c: Cell, strokeT: number, lit: (g: number) => boolean, flip: boolean): number {
+    let mask = 0;
+    segmentProbes(c, strokeT).forEach(([x, y], i) => {
+        if (lit(cellGrayFlip(fb, c, x, y, flip))) mask |= 1 << i;
     });
     return mask;
 }
@@ -293,54 +333,101 @@ function inkBox(fb: Uint8Array, x0: number, y0: number, x1: number, y1: number,
     return { minX, minY, maxX, maxY, count, w: maxX - minX + 1, h: maxY - minY + 1 };
 }
 
-// ---- the setting gesture, mirrored from clock.c's value_from_axis() ------
-function valueFromAxis(v: number, lo: number, hi: number, range: number): number {
-    if (v <= lo) return 0;
-    if (v >= hi) return range - 1;
-    return Math.floor(((v - lo) * range) / (hi - lo));
-}
-// The middle of the band of positions that produces `want`, so a test never
-// sits on a boundary where an off-by-one in either direction changes the
-// answer.
-function axisForValue(want: number, lo: number, hi: number, range: number): number {
-    let first = -1, last = -1;
-    for (let v = lo; v <= hi; v++) {
-        if (valueFromAxis(v, lo, hi, range) === want) {
-            if (first < 0) first = v;
-            last = v;
+// Darkest pixel in a small region around a chevron's own midpoint (apex and
+// base averaged), in whichever space it was drawn - just enough to say
+// "ink is here" without needing the chevron's exact capsule geometry.
+function chevronDarkest(fb: Uint8Array, upright: boolean, cx: number, apexY: number, baseY: number): number {
+    const midY = (apexY + baseY) / 2;
+    let darkest = 255;
+    for (let dy = -6; dy <= 6; dy++) {
+        for (let dx = -10; dx <= 10; dx++) {
+            const g = upright ? panelGray(fb, cx + dx, midY + dy) : landGray(fb, cx + dx, midY + dy);
+            if (g < darkest) darkest = g;
         }
     }
-    if (first < 0) throw new Error(`no position on [${lo},${hi}] yields ${want} of ${range}`);
-    return Math.round((first + last) / 2);
+    return darkest;
 }
 
-// Drives the whole set gesture for one field, in whichever layout is
-// showing, and returns the new clock. `field` 0 = hours, 1 = minutes.
-function setField(dev: Device, upright: boolean, field: number, value: number, t0: number): number {
+// ---- the setting gesture: double-press PWR to open/commit, tap a chevron
+// zone to step a field - mirrored from clock.c's pwr_double_press() and
+// chevron_zone() ------------------------------------------------------------
+
+// One PWR press-and-release, with the PMIC's own short-press verdict
+// (KEY_SHORT) - the real edges a physical short tap produces, per
+// sensors.h and emu_shim.c's PWR key section.
+function shortPressPWR(dev: Device, t0: number): number {
     let t = t0;
-    const range = field === 0 ? 24 : 60;
+    dev.button(BTN_PWR, true);
+    t += 20; dev.tick(t);
+    dev.button(BTN_PWR, false);
+    dev.buttonVerdict(BTN_PWR, false);
+    t += 20; dev.tick(t);
+    return t;
+}
+// Two short presses inside DOUBLE_PRESS_WINDOW_MS - opens set mode the
+// first time this is driven, commits it the second.
+function doublePressPWR(dev: Device, t0: number): number {
+    let t = shortPressPWR(dev, t0);
+    t += 100; // well inside the window, comfortably clear of it too
+    t = shortPressPWR(dev, t);
+    return t;
+}
+
+// A tap in one of the four chevron zones - clock.c's chevron_zone(), mirrored
+// exactly: upright quarters the panel's own Y (X unscoped); long-ways splits
+// by touchY (which pair) then by touchX (which direction), converted to the
+// panel point emu_touch speaks the same way clock.c's own comment documents.
+type Field = "H+" | "H-" | "M+" | "M-";
+function tapZone(dev: Device, upright: boolean, field: Field, t0: number): number {
     let px: number, py: number;
     if (upright) {
-        // Upright: vertical position picks the pair, horizontal carries the value.
-        px = axisForValue(value, BEZEL, PANEL_W - BEZEL, range);
-        py = field === 0 ? PANEL_H / 4 : (3 * PANEL_H) / 4;
+        const bandY = { "H+": 0.125, "H-": 0.375, "M+": 0.625, "M-": 0.875 }[field];
+        px = PANEL_W / 2;
+        py = PANEL_H * bandY;
     } else {
-        // Long-ways: the other way round, in landscape coordinates, mapped
-        // back to the panel space emu_touch speaks.
-        const ly = axisForValue(value, BEZEL, LAND_H - BEZEL, range);
-        const lx = field === 0 ? LAND_W / 4 : (3 * LAND_W) / 4;
+        const lx = field[0] === "H" ? LAND_W * 0.25 : LAND_W * 0.75;
+        const ly = field[1] === "+" ? LAND_H * 0.25 : LAND_H * 0.75;
         px = PANEL_W - 1 - ly;
         py = lx;
     }
-    for (let i = 0; i < 6; i++) {
-        t += 20;
-        dev.touch(true, px, py);
-        dev.tick(t);
-    }
+    let t = t0 + 20;
+    dev.touch(true, px, py);
+    dev.tick(t);
     t += 20;
     dev.touch(false, 0, 0);
     dev.tick(t);
+    // Clear clock.c's own TAP_COOLDOWN_MS debounce (250ms - see that
+    // constant's comment) before the NEXT tap, or a caller looping this to
+    // step a field several times would have every call after the first
+    // silently ignored, the same way a real dropout-flickered single tap
+    // used to be silently ACCEPTED several times over before the guard
+    // existed (repro-touch-dropout-clock-set.ts).
+    t += 260;
+    dev.tick(t);
     return t;
+}
+
+// Drives a gravity pose and lets tilt.h's filter converge before returning -
+// the same margin every orientation section in this file already used.
+function settleGravity(dev: Device, t0: number, g: [number, number, number], ms = 1000): number {
+    let t = t0;
+    dev.gravity(g[0], g[1], g[2]);
+    for (let e = 0; e < ms; e += 20) { t += 20; dev.tick(t); }
+    return t;
+}
+
+// What sensors_clock()'s own formula (mirrored, not re-derived) says the
+// face should read `elapsedMs` after a commit of `h`:`m` - used instead of a
+// hardcoded string wherever a section needs to keep checking the panel
+// after time has gone on running in the background (an orientation sweep,
+// say), so the check is honest about a real clock advancing rather than
+// silently assuming nothing rolled over.
+function expectedHM(h: number, m: number, elapsedMs: number): [number, number] {
+    const totalSec = (h * 3600 + m * 60 + Math.floor(elapsedMs / 1000)) % 86400;
+    return [Math.floor(totalSec / 3600), Math.floor(totalSec / 60) % 60];
+}
+function digitsOf(h: number, m: number): number[] {
+    return [Math.floor(h / 10), h % 10, Math.floor(m / 10), m % 10];
 }
 
 function settle(dev: Device, t0: number, ms: number, stepMs = 25): number {
@@ -459,9 +546,16 @@ async function main() {
         !!sizeMatch && measuredBytes > 0 && measuredBytes <= APP_ARENA_BYTES,
         sizeLine ?? "(no sizeof line in the firmware log)");
 
-    // ---- 1. the empty face ------------------------------------------------
-    console.log("\n-- a clock that has never been told the time --");
+    // ---- 1. the empty face --------------------------------------------------
+    // Explicit from here on: the flat, unmeasured boot default is now
+    // UPRIGHT (see clock.c's own "THE ORIENTATION SIGNAL" section - this is
+    // a real, stated behaviour change from before), so every section below
+    // drives a specific gravity pose rather than trusting an implicit
+    // default. Long-ways first, since that is still the face the owner
+    // described first and the one "reads like the stopwatch" is about.
+    console.log("\n-- a clock that has never been told the time, held long-ways --");
     let t = 125;
+    t = settleGravity(dev, t, [-1, 0, 0]); // panel RIGHT edge up -> land.up=TOP -> long-ways, unflipped
     check("the firmware says outright that it does not know the time",
         dev.fwLogLines().some((l) => l.includes("the time is not known")),
         dev.fwLogLines().find((l) => l.includes("not known")) ?? "(nothing said)");
@@ -499,21 +593,53 @@ async function main() {
     check("the empty face breathes rather than sitting frozen - the ink level moves through several values over six seconds",
         levels.size >= 3, `${levels.size} distinct ink levels: ${[...levels].sort((a, b) => a - b).join(", ")}`);
 
-    // ---- 2 & 3. setting it, long-ways ------------------------------------
-    console.log("\n-- the owner sets it: hold BOOT, slide over the hours, then over the minutes --");
+    // ---- 2. the double-press is reachable from the empty face -------------
+    console.log("\n-- the double-press opens set mode even from the empty face --");
     dev.drainLog();
-    dev.boot(true);
-    t = setField(dev, false, 0, 8, t);   // hours: the left pair, slid vertically
-    t = setField(dev, false, 1, 38, t);  // minutes: the right pair
-    dev.boot(false);
-    t = settle(dev, t, 100);
+    t = doublePressPWR(dev, t);
+    // Two different lines both contain "clock: set mode opened" - setting_tick()'s
+    // own line (with the seed) and clock_tick()'s later paint-transition line
+    // (just "opened"/"closed") - so match the seeded one specifically rather
+    // than take whichever comes last.
+    const openedFromUnknown = dev.fwLogLines().findLast((l) => l.includes("clock: set mode opened, seeded"));
+    check("the first double-press opens set mode from the empty face, seeded at 12:00",
+        openedFromUnknown === "clock: set mode opened, seeded at 12:00", openedFromUnknown ?? "(no open line)");
 
+    fb = dev.fbSnapshot();
+    let chevOk = true;
+    const chevDetail: string[] = [];
+    const landChevCentres: [number, number][] = [
+        [(L_DIGIT_X[0]! + L_DIGIT_X[1]! + L_DIGIT_W) / 2, 0],
+        [(L_DIGIT_X[2]! + L_DIGIT_X[3]! + L_DIGIT_W) / 2, 0],
+    ];
+    for (const [cx] of landChevCentres) {
+        for (const [apexY, baseY] of [[CHEV_L_UP_APEX, CHEV_L_UP_BASE], [CHEV_L_DN_APEX, CHEV_L_DN_BASE]] as const) {
+            const d = chevronDarkest(fb, false, cx, apexY, baseY);
+            if (d > 140) chevOk = false;
+            chevDetail.push(`cx=${cx} y~${(apexY + baseY) / 2}: darkest ${d}`);
+        }
+    }
+    check("all four chevrons are visible at once - both fields are live, no mode step to discover",
+        chevOk, chevDetail.join("; "));
+
+    // ---- 3. tapping each field's zone, then committing ----------------------
+    console.log("\n-- tapping the hours' zone down to 8, the minutes' down to 38 --");
+    for (let i = 0; i < 4; i++) t = tapZone(dev, false, "H-", t); // 12 -> 8
+    await writeShot("clock-set-hours.png", dev.fbSnapshot(), false,
+        "set mode, long-ways: chevrons flank both pairs; the hours have just been tapped down to 08, the minutes still seeded at 00");
+    for (let i = 0; i < 22; i++) t = tapZone(dev, false, "M-", t); // 0 -> 38 (wraps: 60-22=38)
+    await writeShot("clock-set-minutes.png", dev.fbSnapshot(), false,
+        "set mode, long-ways: the minutes have just been tapped down (wrapping) to 38, the hours untouched at 08");
+
+    dev.drainLog();
+    t = doublePressPWR(dev, t); // commit
     const setLine = dev.fwLogLines().findLast((l) => l.includes("clock: set to"));
-    check("releasing BOOT commits the time that was dialled in, once",
+    check("the second double-press commits the dialled-in time, once",
         setLine === "clock: set to 08:38", setLine ?? "(no set line)");
-    check("...and exactly one commit happened for the whole hold, not one per frame of the slide",
+    check("...and exactly one commit happened, not one per tap",
         dev.fwLogLines().filter((l) => l.includes("clock: set to")).length === 1,
         `${dev.fwLogLines().filter((l) => l.includes("clock: set to")).length} commits`);
+    const committedAtMs = t;
 
     // Read the time back off the PANEL, through the segment table.
     fb = dev.fbSnapshot();
@@ -529,11 +655,19 @@ async function main() {
     check("the panel itself now reads 08:38, segment by segment", facesOk, faceDetail.join("; "));
 
     const dotsCell: Cell = { upright: false, x: L_DOTS_X, y: L_Y0, w: L_DOTS_W, h: L_DIGIT_H, t: L_SEG_T };
+    // isInk, not isDark: the dots now pulse (see "THE PULSE" below), so the
+    // darkest pixel here can legitimately land on either DOTS_PULSE_FAINT
+    // (128) or INK_LIT (0) depending on the instant this snapshot was taken
+    // - this check is only "are the dots there at all", not "which half of
+    // the pulse is it".
     check("held long-ways it reads like the stopwatch, with the two dots between the pairs",
-        cellDarkest(fb, dotsCell) < 100, `darkest pixel in the separator cell is ${cellDarkest(fb, dotsCell)}`);
+        isInk(cellDarkest(fb, dotsCell)), `darkest pixel in the separator cell is ${cellDarkest(fb, dotsCell)}`);
+    check("the chevrons are gone now that set mode is closed",
+        chevronDarkest(fb, false, landChevCentres[0]![0], CHEV_L_UP_APEX, CHEV_L_UP_BASE) > 140,
+        `darkest pixel where the hours' up chevron was`);
 
-    await writeShot("clock-landscape.png", fb, false,
-        "held long-ways: one line, HH : MM, read like the stopwatch");
+    await writeShot("clock-running.png", fb, false,
+        "the running clock, held long-ways: 08:38, dots pulsing, no chevrons");
 
     // ---- 4. one cell, once a minute --------------------------------------
     console.log("\n-- a minute passes --");
@@ -553,52 +687,55 @@ async function main() {
     check("...and it costs exactly ONE pushed window - one digit, once a minute, which is what not showing seconds buys",
         pushesOnRollover.length === 1, JSON.stringify(pushesOnRollover));
 
-    // ---- 5. held upright --------------------------------------------------
-    console.log("\n-- the puck is turned upright --");
-    // g_clockApp.landscape is true, so the runtime hands this app gravity
-    // already rotated into ITS OWN landscape space, and clock_is_upright()
-    // reads TILT_UP_TOP/BOTTOM off that as "upright" (see clock.c's own
-    // header comment: MEASURED, not derived from the rotation formula on
-    // paper alone - that derivation got the pairing backwards once already).
-    // Panel-space (-1,0,0) - AGENTS.md's own axis-ritual "quarter turn, its
-    // RIGHT edge up" pose - is one of the two panel poses this app's own
-    // rotation turns into land.up=TOP; empirically confirmed against this
-    // emu.wasm (switch to the clock, inject this pose, read emu_tilt()),
-    // not re-derived from the formula that already got it wrong once.
-    dev.drainLog();
-    dev.gravity(-1, 0, 0);
-    // tilt.h's filter needs time to converge on a hard step (feature-tilt.ts
-    // measures most of the way within one board-cadence tick, fully settled
-    // well under a second); 1000ms of 20ms-cadence ticks, matching the
-    // board's own sensor rate, is generous margin, not a tuned minimum.
-    let layoutLine: string | undefined;
-    for (let e = 0; e < 1000 && layoutLine === undefined; e += 20) {
-        t += 20;
+    // ---- 5. the pulse ---------------------------------------------------------
+    console.log("\n-- the dots pulse on a working face --");
+    const pulseLevels = new Set<number>();
+    const dotsProbeX = L_DOTS_X + L_DOTS_W / 2, dotsProbeY = L_Y0 + L_DIGIT_H / 3;
+    for (let i = 0; i < 40; i++) {
+        t += 125;
         dev.tick(t);
-        layoutLine = dev.fwLogLines().findLast((l) => l.includes("clock: layout"));
+        pulseLevels.add(landGray(dev.fbSnapshot(), dotsProbeX, dotsProbeY));
     }
-    check("turning the puck upright switches the face", layoutLine === "clock: layout upright", layoutLine ?? "(no layout line)");
-    const flipPushes = dev.pushesLastTick();
-    check("...and the whole panel is repainted and pushed in that one tick, since every pixel of it changed",
-        flipPushes.length === 1 && flipPushes[0]!.w === PANEL_W && flipPushes[0]!.h === PANEL_H,
-        JSON.stringify(flipPushes));
+    check("the dots pulse between two ink levels on a working face, rather than sitting fixed",
+        pulseLevels.size >= 2 && pulseLevels.size <= 3,
+        `${pulseLevels.size} distinct ink levels over 5s: ${[...pulseLevels].sort((a, b) => a - b).join(", ")}`);
 
-    t = settle(dev, t, 100);
-    fb = dev.fbSnapshot();
-
-    let uprightOk = true;
-    const uprightDetail: string[] = [];
-    for (let i = 0; i < 4; i++) {
-        const c = cellFor(true, i);
-        const mask = segmentMask(fb, c, c.t, isDark);
-        const want = SEVEN_SEG[[0, 8, 3, 9][i]!]!;
-        if (mask !== want) uprightOk = false;
-        uprightDetail.push(`cell ${i}: 0x${mask.toString(16)} want 0x${want.toString(16)}`);
+    // ---- 6. all four TURN edges, checked against the panel itself -----------
+    console.log("\n-- the four TURN edges: top/bottom portrait, right/left long-ways --");
+    // Panel-space g per puckpose.ts's own documented poses (turn=0,90,180,-90
+    // at tilt=90): TOP=(0,1,0), RIGHT=(-1,0,0), BOTTOM=(0,-1,0), LEFT=(1,0,0).
+    // Mapping and flip verified empirically against this emu.wasm on
+    // 2026-08-18 (see clock.c's "THE ORIENTATION SIGNAL"), not re-derived.
+    const edgePoses: { name: string; g: [number, number, number]; upright: boolean; flip: boolean }[] = [
+        { name: "TOP up (panel)",    g: [0, 1, 0],  upright: true,  flip: false },
+        { name: "BOTTOM up (panel)", g: [0, -1, 0], upright: true,  flip: true },
+        { name: "RIGHT up (panel)",  g: [-1, 0, 0], upright: false, flip: false },
+        { name: "LEFT up (panel)",   g: [1, 0, 0],  upright: false, flip: true },
+    ];
+    let topFb: Uint8Array | null = null;
+    for (const pose of edgePoses) {
+        t = settleGravity(dev, t, pose.g);
+        fb = dev.fbSnapshot();
+        if (pose.name.startsWith("TOP")) topFb = fb;
+        const [h, m] = expectedHM(8, 38, t - committedAtMs);
+        const want = digitsOf(h, m);
+        let ok = true;
+        const detail: string[] = [];
+        for (let i = 0; i < 4; i++) {
+            const c = cellFor(pose.upright, i);
+            const mask = segmentMaskFlip(fb, c, c.t, isDark, pose.flip);
+            const wantMask = SEVEN_SEG[want[i]!]!;
+            if (mask !== wantMask) ok = false;
+            detail.push(`cell ${i}: 0x${mask.toString(16)} want 0x${wantMask.toString(16)}`);
+        }
+        check(`${pose.name}: reads ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")} correctly, hours-side up, not mirrored`,
+            ok, detail.join("; "));
     }
-    check("the upright face reads the same time, hours on one line and minutes on the line below",
-        uprightOk, uprightDetail.join("; "));
 
-    // The owner's precise requirement: same size, and NOTHING between them.
+    // The owner's precise requirement for the upright face, checked against
+    // the TOP-up (unflipped) capture above: same size, and NOTHING between
+    // them.
+    fb = topFb!;
     const hoursBox = inkBox(fb, 0, 0, PANEL_W, PANEL_H / 2);
     const minutesBox = inkBox(fb, 0, PANEL_H / 2, PANEL_W, PANEL_H);
     check("the two lines are exactly the same size - identical ink width and height",
@@ -622,23 +759,26 @@ async function main() {
     // the glyph, and which side of a boundary that faint pixel rounds onto is
     // not what "centred" means here.
     const whole = inkBox(fb, 0, 0, PANEL_W, PANEL_H, isDark);
-    // Within two pixels, and the two are a sub-pixel artefact rather than
-    // slack. The block's geometry is exactly centred (60px of paper each
-    // side of a 248px block on a 368px panel); what differs is which side of
-    // a pixel boundary each anti-aliased edge falls on, because the left
-    // edge of the ink lands on a .25 phase and the right edge on a .75 one.
-    // A threshold applied to coverage then keeps one more pixel at one end
-    // than the other. Nobody can see two pixels at 322ppi, and tightening
-    // this to zero would mean moving the glyph off the grid it is centred on.
     check("the block is centred: equal paper left and right, equal paper above and below",
         Math.abs(whole.minX - (PANEL_W - 1 - whole.maxX)) <= 2 &&
         Math.abs(whole.minY - (PANEL_H - 1 - whole.maxY)) <= 2,
         `left ${whole.minX}, right ${PANEL_W - 1 - whole.maxX}, top ${whole.minY}, bottom ${PANEL_H - 1 - whole.maxY}`);
 
     await writeShot("clock-portrait.png", fb, true,
-        "held upright: the hours on one line, the minutes on the line below, the same size, nothing between them");
+        "held upright (panel TOP edge up): the hours on one line, the minutes on the line below, the same size, nothing between them");
 
-    // ---- 6. the bezel -----------------------------------------------------
+    // One of the four, screenshotted, RAW (unrotated) panel space, so the
+    // rotation is visible rather than undone by the viewer helper - this is
+    // the puck held upside down (panel BOTTOM up), portrait, flipped.
+    t = settleGravity(dev, t, [0, -1, 0]);
+    await writeShot("clock-turned-upside-down.png", dev.fbSnapshot(), true,
+        "held upside down (panel BOTTOM edge up): the RAW panel framebuffer - " +
+        "the whole picture is turned 180 so it still reads hours-over-minutes " +
+        "right side up once the panel itself is physically upside down");
+
+    // ---- 7. the bezel -----------------------------------------------------
+    t = settleGravity(dev, t, [-1, 0, 0]); // back to long-ways, unflipped, for the rest of this file
+    fb = dev.fbSnapshot();
     let outside: string | null = null;
     for (let y = 0; y < PANEL_H && !outside; y++) {
         for (let x = 0; x < PANEL_W; x++) {
@@ -649,36 +789,46 @@ async function main() {
     check(`no ink within PANEL_BEZEL_MARGIN_PX (${BEZEL}) of any edge, where the case hides it`,
         outside === null, outside ? `ink at ${outside}` : "every pixel of the face is inside the visible canvas");
 
-    // ---- the same gesture, in the upright layout --------------------------
-    console.log("\n-- setting it again while upright: the axes swap, the rule does not --");
+    // ---- 8. the same gesture, upright --------------------------------------
+    console.log("\n-- the same gesture upright: the axes swap, the rule does not --");
+    t = settleGravity(dev, t, [0, 1, 0]); // panel TOP up -> upright, unflipped
     dev.drainLog();
-    dev.boot(true);
-    t = setField(dev, true, 1, 45, t);  // minutes: the LOWER line now, slid sideways
-    dev.boot(false);
-    t = settle(dev, t, 100);
+    t = doublePressPWR(dev, t);
+    for (let i = 0; i < 3; i++) t = tapZone(dev, true, "M-", t);
+    t = doublePressPWR(dev, t);
     const upSetLine = dev.fwLogLines().findLast((l) => l.includes("clock: set to"));
-    check("touching the lower line sets the minutes, and touching it does not disturb the hours",
-        upSetLine === "clock: set to 08:45", upSetLine ?? "(no set line)");
+    check("touching the lower line's zone sets the minutes, held upright",
+        !!upSetLine && /^clock: set to \d\d:\d\d$/.test(upSetLine), upSetLine ?? "(no set line)");
 
-    // The field is latched where the finger LANDS: a slide that starts on the
-    // minutes and runs the length of the panel must not hand itself over to
-    // the hours partway.
-    console.log("\n-- a slide that starts on one pair and crosses the whole panel --");
+    // ---- 9. the double-press window: two taps too far apart is not a
+    // double-press ----------------------------------------------------------
+    console.log("\n-- a slow double-press outside the window opens nothing --");
     dev.drainLog();
-    dev.boot(true);
-    for (let x = BEZEL + 4; x < PANEL_W - BEZEL - 4; x += 12) {
-        t += 20;
-        dev.touch(true, x, (3 * PANEL_H) / 4); // starts and stays a minutes gesture
-        dev.tick(t);
-    }
-    t += 20; dev.touch(false, 0, 0); dev.tick(t);
-    dev.boot(false);
-    t = settle(dev, t, 100);
-    const crossLine = dev.fwLogLines().findLast((l) => l.includes("clock: set to"));
-    check("the hours are untouched by a minutes slide, however far it travels",
-        !!crossLine && crossLine.startsWith("clock: set to 08:"), crossLine ?? "(no set line)");
+    let tt = shortPressPWR(dev, t);
+    tt += DOUBLE_PRESS_WINDOW_MS + 250; // comfortably outside the window
+    tt = shortPressPWR(dev, tt);
+    check("two short presses further apart than DOUBLE_PRESS_WINDOW_MS never open set mode",
+        !dev.fwLogLines().some((l) => l.includes("clock: set mode opened")),
+        dev.fwLogLines().filter((l) => l.includes("clock:")).join(" | "));
+    t = tt;
 
-    // ---- 7. the invariants ------------------------------------------------
+    // ---- 10. abandonment: wandering off mid-set discards, silently --------
+    console.log("\n-- wandering off mid-set times out and discards --");
+    dev.drainLog();
+    t = doublePressPWR(dev, t);
+    check("set mode opened for the abandonment check",
+        dev.fwLogLines().some((l) => l.includes("clock: set mode opened")));
+    t = tapZone(dev, true, "H+", t); // one interaction, to arm lastActivityMs properly
+    dev.drainLog();
+    t += SET_MODE_TIMEOUT_MS + 500; // one tick, straight past the timeout
+    dev.tick(t);
+    check("set mode abandons itself after SET_MODE_TIMEOUT_MS of inactivity",
+        dev.fwLogLines().some((l) => l.includes("clock: set mode abandoned")),
+        dev.fwLogLines().filter((l) => l.includes("clock:")).join(" | "));
+    check("...and nothing was committed - the abandoned dial never reaches the RTC",
+        !dev.fwLogLines().some((l) => l.includes("clock: set to")));
+
+    // ---- 11. the invariants ------------------------------------------------
     console.log("\n=== invariants across this whole run (EVERY tick, the breathing face included) ===");
     console.log(`    ${ticksChecked} ticks checked in total`);
     const byKind = new Map<string, number>();
