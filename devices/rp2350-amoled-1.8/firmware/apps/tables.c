@@ -346,10 +346,22 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // function names, so what she sees magnified is what this bias chose, and
 // "what commits is what the loupe showed" still holds.
 //
-// 14px is a starting value, about a quarter of CELL_H and a millimetre of
-// glass at this panel's ~322ppi, chosen to be felt without being noticed. It
-// is a taste number and the owner's thumb is the only instrument for it.
-#define TOUCH_THUMB_BIAS_Y 14
+// 22px, raised from 14 after use. The owner: "tu peux encore augmenter le gap
+// du numpad entre le touch et la key, je me rends compte que parfois je vise
+// encore plus bas que prevu." So the first value was in the right direction
+// and short of it - which is the expected shape for this number, since nobody
+// can introspect where their own thumb lands and only trying it says.
+//
+// 22 is about 40% of CELL_H and 1.7mm of glass at this panel's ~322ppi. That
+// is a lot of a key, and it is the reason the LOUPE matters: she sees the
+// magnified digit before committing, so a bias that guesses wrong is visible
+// and correctable in the same gesture rather than silently wrong.
+//
+// The ceiling worth knowing before raising this again: at CELL_H/2 = 28 the
+// zones would sit a full half-key below their drawings, and the TOP row would
+// start losing its own upper half off the pad entirely. If 22 still reads low,
+// the honest fix stops being a bias and becomes taller keys.
+#define TOUCH_THUMB_BIAS_Y 22
 
 static int numpad_hit(int lx, int ly) {
     ly -= TOUCH_THUMB_BIAS_Y;
