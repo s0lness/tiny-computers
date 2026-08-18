@@ -1340,9 +1340,15 @@ async function cmdChord() {
   }
 }
 
-// TUNE: live-adjusts sketch.c's dropout-tolerance constants on a running
-// device with no reflash (firmware/devlink.c's TUNE command, gated behind
-// the SKETCH_LIVE_TUNE build flag - firmware/CMakeLists.txt). Five shapes:
+// TUNE: live-adjusts a running device's declared constants with no reflash
+// (firmware/devlink.c's TUNE command, backed by
+// firmware/runtime/tune_registry.h's registry, which merges sketch.c's
+// dropout-tolerance knobs, clock.c's pulse shape and tables.c's thumb bias
+// behind one name/index space - each gated behind its own build flag,
+// SKETCH_LIVE_TUNE / CLOCK_LIVE_TUNE / TABLES_LIVE_TUNE, see
+// firmware/CMakeLists.txt). This tool never names a specific tunable or
+// which app owns it; `TUNE` with no arguments is the source of truth for
+// what a given build actually declares. Five shapes:
 //
 //   tune                     list every declared tunable: name, current,
 //                            min, max, default. A row whose current value
@@ -1359,12 +1365,12 @@ async function cmdChord() {
 //                            default, same before/after reporting per line
 //   tune freeze              prints every CURRENT value as a
 //                            `#define ..._DEFAULT` line, ready to paste
-//                            over sketch.c's own constants once a value is
-//                            settled
+//                            over the owning app's own constants once a
+//                            value is settled
 //
-// A device built without SKETCH_LIVE_TUNE answers "ERR no tunables" to
+// A device built with every LIVE_TUNE flag off answers "ERR no tunables" to
 // every one of these - that is not a bug in this tool, it means the running
-// firmware does not have the knob compiled in.
+// firmware does not have any knob compiled in.
 const TUNE_LIST_RE = /^TUNE (\S+) (\S+) (\S+) (\S+) (\S+)$/;
 const TUNE_VALUE_RE = /^TUNE (\S+) (\S+)$/;
 // RESET's reply carries one more field than GET/SET's (name, applied) -
@@ -1394,7 +1400,7 @@ async function cmdTuneList(bridge: Bridge) {
   await bridge.send("TUNE");
   const lines = await readUntilEnd(bridge, (l) => TUNE_LIST_RE.test(l), "TUNE list line");
   if (lines.length === 0) {
-    console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
+    console.log("(no tunables declared - device not built with any LIVE_TUNE flag?)");
     return;
   }
   console.log("   name        value      min        max        default");
@@ -1458,7 +1464,7 @@ async function cmdTuneResetAll(bridge: Bridge) {
   await bridge.send("TUNE RESET");
   const lines = await readUntilEnd(bridge, (l) => TUNE_RESET_RE.test(l), "TUNE RESET line");
   if (lines.length === 0) {
-    console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
+    console.log("(no tunables declared - device not built with any LIVE_TUNE flag?)");
     return;
   }
   for (const line of lines) logTuneReset(line);
@@ -1468,7 +1474,7 @@ async function cmdTuneFreeze(bridge: Bridge) {
   await bridge.send("TUNE FREEZE");
   const lines = await readUntilEnd(bridge, (l) => TUNE_FREEZE_LINE_RE.test(l), "TUNE FREEZE line");
   if (lines.length === 0) {
-    console.log("(no tunables declared - device not built with SKETCH_LIVE_TUNE?)");
+    console.log("(no tunables declared - device not built with any LIVE_TUNE flag?)");
     return;
   }
   for (const line of lines) console.log(line);
@@ -1584,9 +1590,10 @@ function printUsage() {
       "pad read themselves: see tools/README-devlink.md, \"What injection",
       "cannot test\".",
       "",
-      "tune requires a device built with -DSKETCH_LIVE_TUNE=1 (off by default -",
-      "see firmware/CMakeLists.txt); a normal build answers every tune",
-      "subcommand with \"ERR no tunables\".",
+      "tune requires a device built with at least one of -DSKETCH_LIVE_TUNE=1,",
+      "-DCLOCK_LIVE_TUNE=1, -DTABLES_LIVE_TUNE=1 (all off by default - see",
+      "firmware/CMakeLists.txt); a normal build answers every tune subcommand",
+      "with \"ERR no tunables\".",
       "",
       "Port/baud: DEVLINK_PORT (default COM4), DEVLINK_BAUD (default 115200).",
     ].join("\n")

@@ -413,6 +413,216 @@ static const uint8_t DOTS_PULSE_CURVE[32] = {
      64,  17,   0,  17,  64, 127, 191, 238
 };
 
+/* ---- DEVELOPMENT: live tuning of the pulse (CLOCK_LIVE_TUNE) ------------
+ *
+ * Same mechanism as sketch.c's SKETCH_LIVE_TUNE (see that file's own
+ * comment for the full design and sensors.h's "DEVELOPMENT: live tuning"
+ * section for how this joins that same registry) applied to this file's
+ * own knob: the owner has rejected three shapes of this pulse already, by
+ * eye, from a description and a reflash each time, and asked instead for
+ * sliders he can move himself on the emulator.
+ *
+ * DOTS_PULSE_CURVE above is a precomputed BYTE TABLE, and a slider cannot
+ * edit a table - there is no single number in it a knob could turn. So
+ * this exposes the three scalars that regenerate its SHAPE instead of the
+ * table's 32 entries individually:
+ *
+ *   pulsecycle    DOTS_PULSE_CYCLE_MS - the full length of one on/off
+ *                 cycle, in ms (was DOTS_PULSE_HALF_MS*2 = 2000).
+ *   pulseplateau  DOTS_PULSE_PLATEAU_FRAC - the fraction of that cycle the
+ *                 dots stay FULLY lit before the wink begins (was 21 of
+ *                 the table's 32 steps, i.e. indices 0..20).
+ *   pulsedepth    DOTS_PULSE_WINK_DEPTH - how lit the dots still are at
+ *                 the very bottom of the wink, 0..255, "how lit" scale
+ *                 like the table above, where 0 is GONE and 255 is fully
+ *                 lit (was 0: the shipped curve goes fully gone -
+ *                 invisible, not merely dimmed - at its trough, per "GONE
+ *                 means gone, not dimmed" above).
+ *
+ * DOTS_PULSE_STEPS (32, above) is deliberately NOT one of the three: it is
+ * what keeps the fade reading as breathing rather than stepping (see that
+ * constant's own comment, "at 16 the owner could see the steps") - a
+ * quantisation choice that also bounds repaint cost, not a parameter of
+ * the pulse's shape a slider is asked to explore.
+ *
+ * THE COST. With the gate off - every shipped build, and the board's own
+ * default build even with a DIFFERENT app's gate on - dots_pulse_ink()
+ * below still runs its original branch: DOTS_PULSE_CURVE's 32 precomputed
+ * bytes and one array index, byte for byte what it always was, so this
+ * file's header comment's repaint-cost argument (the whole reason seconds
+ * are not shown) is unaffected. The sliders only exist, and only replace
+ * that table lookup with a float formula, when CLOCK_LIVE_TUNE is
+ * explicitly on - today only the emulator build turns it on by default
+ * (emulator/wasm/build.ts), the same "development tool end to end,
+ * nothing shipped to protect" reasoning emu_shim.c already gives for
+ * SKETCH_LIVE_TUNE=1 there.
+ */
+#ifndef CLOCK_LIVE_TUNE
+#define CLOCK_LIVE_TUNE 0
+#endif
+
+#define DOTS_PULSE_CYCLE_MS_DEFAULT     ((float)(DOTS_PULSE_HALF_MS * 2u))
+// 21 of the table's 32 steps were held at DOTS_PULSE_FAINT (255, fully lit)
+// before the wink began - see DOTS_PULSE_CURVE above.
+#define DOTS_PULSE_PLATEAU_FRAC_DEFAULT (21.0f / (float)DOTS_PULSE_STEPS)
+#define DOTS_PULSE_WINK_DEPTH_DEFAULT   0.0f
+
+#if CLOCK_LIVE_TUNE
+#include <math.h>
+
+// M_PI is not guaranteed under -std=c11 - same reasoning as tilt.c's own
+// TILT_PI comment. This file draws no other trig, so it gets its own small
+// copy rather than a shared header for one constant.
+#define CLOCK_PI 3.14159265358979323846f
+
+static float g_tuneDotsPulseCycleMs   = DOTS_PULSE_CYCLE_MS_DEFAULT;
+static float g_tuneDotsPulsePlateau   = DOTS_PULSE_PLATEAU_FRAC_DEFAULT;
+static float g_tuneDotsPulseWinkDepth = DOTS_PULSE_WINK_DEPTH_DEFAULT;
+
+#define DOTS_PULSE_CYCLE_MS     g_tuneDotsPulseCycleMs
+#define DOTS_PULSE_PLATEAU_FRAC g_tuneDotsPulsePlateau
+#define DOTS_PULSE_WINK_DEPTH   g_tuneDotsPulseWinkDepth
+
+typedef struct {
+    const char *protoName;  // devlink/emulator-facing identifier, same
+                             // convention as sketch.c's own sketch_tunable_t.
+    const char *defineName;
+    float *value;
+    float min, max, def;
+} clock_tunable_t;
+
+static clock_tunable_t g_clockTunables[] = {
+    // 400ms floor: much faster and a "heartbeat" reads as a shiver rather
+    // than a pulse. 6000ms ceiling: a cycle slower than that spends most
+    // of a minute mid-wink, which stops reading as a clock that is alive
+    // and starts reading as one that is stuck.
+    { "pulsecycle",   "DOTS_PULSE_CYCLE_MS",     &g_tuneDotsPulseCycleMs,   400.0f, 6000.0f, DOTS_PULSE_CYCLE_MS_DEFAULT },
+    // 0 = no plateau at all, winking from the instant the cycle starts.
+    // 0.95 rather than 1.0: a plateau of exactly one leaves no span for a
+    // wink to happen in, which is "off", not a shape - stated explicitly
+    // rather than left to divide-by-zero in the formula below.
+    { "pulseplateau", "DOTS_PULSE_PLATEAU_FRAC", &g_tuneDotsPulsePlateau,   0.0f,    0.95f,  DOTS_PULSE_PLATEAU_FRAC_DEFAULT },
+    // 0 = the shipped curve, fully GONE (invisible, not merely dimmed) at
+    // the trough. 255 = the trough never leaves fully lit, i.e. no wink is
+    // visible at all - the other way (besides pulseplateau=1) to reach
+    // "off".
+    { "pulsedepth",   "DOTS_PULSE_WINK_DEPTH",   &g_tuneDotsPulseWinkDepth, 0.0f,  255.0f,  DOTS_PULSE_WINK_DEPTH_DEFAULT },
+};
+#define CLOCK_TUNABLE_COUNT ((int)(sizeof(g_clockTunables) / sizeof(g_clockTunables[0])))
+
+// A local strcmp-equivalent, same reasoning as sketch_tune_name_eq's own
+// comment (sketch.c): this file compiles for wasm32-freestanding too
+// (shim/ stands in for stdlib.h/math.h/stdio.h but not string.h), and
+// three short hand-written names do not justify a fourth shim header.
+static bool clock_tune_name_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return false;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static clock_tunable_t *clock_tune_find(const char *name) {
+    for (int i = 0; i < CLOCK_TUNABLE_COUNT; i++) {
+        if (clock_tune_name_eq(g_clockTunables[i].protoName, name)) return &g_clockTunables[i];
+    }
+    return NULL;
+}
+
+int clock_tune_count(void) { return CLOCK_TUNABLE_COUNT; }
+
+bool clock_tune_describe(int index, const char **name, float *min, float *max, float *def) {
+    if (index < 0 || index >= CLOCK_TUNABLE_COUNT) return false;
+    *name = g_clockTunables[index].protoName;
+    *min = g_clockTunables[index].min;
+    *max = g_clockTunables[index].max;
+    *def = g_clockTunables[index].def;
+    return true;
+}
+
+const char *clock_tune_define_name(int index) {
+    if (index < 0 || index >= CLOCK_TUNABLE_COUNT) return NULL;
+    return g_clockTunables[index].defineName;
+}
+
+bool clock_tune_get(const char *name, float *out) {
+    clock_tunable_t *t = clock_tune_find(name);
+    if (!t) return false;
+    *out = *t->value;
+    return true;
+}
+
+bool clock_tune_set(const char *name, float value, float *outApplied) {
+    clock_tunable_t *t = clock_tune_find(name);
+    if (!t) return false;
+    if (value < t->min) value = t->min;
+    if (value > t->max) value = t->max;
+    *t->value = value;
+    if (outApplied) *outApplied = value;
+    return true;
+}
+
+// Regenerates the curve's SHAPE from the three tunables above rather than
+// indexing DOTS_PULSE_CURVE, so a slider actually does something - see
+// this section's own comment above for why a table cannot be the tunable
+// and what the three scalars mean. Only compiled when the gate is on: the
+// shipped/default path in dots_pulse_ink() below is untouched source, so
+// this cannot make the shipped pulse cost more (see "THE COST" above).
+static uint8_t dots_pulse_ink_tuned(uint32_t nowMs) {
+    float cycle = DOTS_PULSE_CYCLE_MS;
+    if (cycle < 1.0f) cycle = 1.0f;
+    float phase = fmodf((float)nowMs, cycle) / cycle;   // 0..1 through the cycle
+
+    // Quantised the same way the shipped table is (DOTS_PULSE_STEPS
+    // discrete levels per cycle - see that constant's own comment): a
+    // moved slider still costs a bounded number of repaints a second, not
+    // one every tick, whatever pulsecycle is set to.
+    uint32_t step = (uint32_t)(phase * (float)DOTS_PULSE_STEPS);
+    if (step >= DOTS_PULSE_STEPS) step = DOTS_PULSE_STEPS - 1u;
+    float t = (float)step / (float)DOTS_PULSE_STEPS;
+
+    float plateau = DOTS_PULSE_PLATEAU_FRAC;
+    if (plateau < 0.0f) plateau = 0.0f;
+    if (plateau > 0.999f) plateau = 0.999f;
+    float depth = DOTS_PULSE_WINK_DEPTH;
+    if (depth < 0.0f) depth = 0.0f;
+    if (depth > 255.0f) depth = 255.0f;
+
+    float level;
+    if (t < plateau) {
+        level = 255.0f;
+    } else {
+        // A raised cosine over the wink's own span: 255 at both ends,
+        // `depth` at the middle, easing into and out of both - the same
+        // "slows into both ends rather than turning a corner" shape the
+        // shipped curve's own comment (above) describes.
+        float u = (t - plateau) / (1.0f - plateau);
+        level = depth + (255.0f - depth) * (1.0f + cosf(2.0f * CLOCK_PI * u)) * 0.5f;
+    }
+    if (level < 0.0f) level = 0.0f;
+    if (level > 255.0f) level = 255.0f;
+    return (uint8_t)(DOTS_PULSE_FAINT - (uint8_t)level);
+}
+#else // !CLOCK_LIVE_TUNE
+#define DOTS_PULSE_CYCLE_MS     DOTS_PULSE_CYCLE_MS_DEFAULT
+#define DOTS_PULSE_PLATEAU_FRAC DOTS_PULSE_PLATEAU_FRAC_DEFAULT
+#define DOTS_PULSE_WINK_DEPTH   DOTS_PULSE_WINK_DEPTH_DEFAULT
+
+// Reads as empty/false in a normal build, same "0 when the gate is off"
+// contract sketch.c's own gate-off stubs use.
+int clock_tune_count(void) { return 0; }
+bool clock_tune_describe(int index, const char **name, float *min, float *max, float *def) {
+    (void)index; (void)name; (void)min; (void)max; (void)def;
+    return false;
+}
+const char *clock_tune_define_name(int index) { (void)index; return NULL; }
+bool clock_tune_get(const char *name, float *out) { (void)name; (void)out; return false; }
+bool clock_tune_set(const char *name, float value, float *outApplied) {
+    (void)name; (void)value; (void)outApplied;
+    return false;
+}
+#endif // CLOCK_LIVE_TUNE
+
 // ---- the setting gesture's chevrons: four small marks, one per direction,
 // flanking each digit pair while set mode is open -------------------------
 //
@@ -887,6 +1097,14 @@ static void draw_all_chevrons(bool upright) {
 // is the point - a pulsing clock and a breathing ghost must not read as the
 // same animation wearing two colours.
 static uint8_t dots_pulse_ink(uint32_t nowMs) {
+#if CLOCK_LIVE_TUNE
+    // CLOCK_LIVE_TUNE on: dots_pulse_ink_tuned() (above) regenerates the
+    // same shape from three sliders instead of indexing the fixed table
+    // below - see that section's own comment for why and for the cost
+    // argument. Off in every shipped build and in the board's own default
+    // build, so this branch does not exist there at all.
+    return dots_pulse_ink_tuned(nowMs);
+#else
     // A RAMP, NOT A SWITCH - the owner wants to see whether a fade reads
     // better than a hard blink ("could do a faint fade in/out of the blink?
     // just to try it out on the emulator"). Triangular over the full cycle:
@@ -910,6 +1128,7 @@ static uint8_t dots_pulse_ink(uint32_t nowMs) {
     // The table is "how lit", 0 gone and 255 fully lit; the ink level this
     // function returns runs the other way (INK_LIT is 0, black).
     return (uint8_t)(DOTS_PULSE_FAINT - DOTS_PULSE_CURVE[i]);
+#endif
 }
 
 // Turns the WHOLE panel 180 degrees in place - see "PICTURE, ROTATED, NOT

@@ -149,7 +149,7 @@ giving up the shared console's usefulness to a human.
 | anything else | `ERR unknown <cmd>` |
 
 `TUNE` (and its subcommands) answer `ERR no tunables` instead of the shapes
-above on a device built without `-DSKETCH_LIVE_TUNE=1` (off by default) -
+above on a device built with every `*_LIVE_TUNE` flag off (the default) -
 see "TUNE" below.
 
 `<version>` is the devlink protocol version (currently `1`), independent of
@@ -246,22 +246,30 @@ line is stale or unset.
 
 ### TUNE
 
-Reads and writes the firmware's live-tunable constants with no reflash -
-today, `firmware/apps/sketch.c`'s six dropout-tolerance knobs (the lift
-debounce, the stroke-start confirmation window, the pending-candidate
-dropout grace, and the three jump allowances; see that file's
-`SKETCH_LIVE_TUNE` comment). The point is turnaround: a reflash costs a
-minute and breaks the drawer's concentration, so in practice only two or
+Reads and writes the firmware's live-tunable constants with no reflash,
+merged across every app that declares any behind ONE registry
+(`firmware/runtime/tune_registry.h`) - devlink.c never names a specific app
+or knob, only the generic name/value shape `tune_registry_*` exposes. Three
+apps declare tunables today: `firmware/apps/sketch.c`'s six
+dropout-tolerance knobs (the lift debounce, the stroke-start confirmation
+window, the pending-candidate dropout grace, and the three jump
+allowances; see that file's `SKETCH_LIVE_TUNE` comment), `clock.c`'s three
+knobs for the long-ways separator's pulse shape (`CLOCK_LIVE_TUNE`), and
+`tables.c`'s one knob for the numpad's thumb-parallax bias
+(`TABLES_LIVE_TUNE`). Each app's gate is an independent build flag - a
+device can carry any subset of the three. The point is turnaround: a
+reflash costs a minute and breaks concentration, so in practice only two or
 three candidate values ever get tried by hand. `TUNE SET` costs a second and
-takes effect on the very next tick, so a value can be felt out while
-actually drawing, not guessed at from a description.
+takes effect on the very next tick, so a value can be felt out live, not
+guessed at from a description.
 
 `<name>` is the tunable's short protocol name (`lift`, `confirm`,
-`pendgrace`, `minjump`, `maxjump`, `maxspeed` today - `TUNE` with no
-arguments lists whatever the running firmware actually declares, which is
-the source of truth, not this list). `TUNE SET` clamps to the declared
-`[min, max]` on the device and echoes back what was actually applied, which
-may differ from what was asked for.
+`pendgrace`, `minjump`, `maxjump`, `maxspeed` for the sketchpad;
+`pulsecycle`, `pulseplateau`, `pulsedepth` for the clock; `thumbbias` for
+the numpad today - `TUNE` with no arguments lists whatever the running
+firmware actually declares, which is the source of truth, not this list).
+`TUNE SET` clamps to the declared `[min, max]` on the device and echoes
+back what was actually applied, which may differ from what was asked for.
 
 `TUNE RESET` is how a candidate value gets abandoned without a reboot.
 Tuning by feel means wandering: `lift`, then `pendgrace`, then `confirm`,
@@ -277,21 +285,26 @@ these am I still overriding" reads at a glance instead of by comparing the
 
 `TUNE FREEZE` is the end state: once a value is settled by feel, it prints
 every current value as a `#define <NAME>_DEFAULT <value>f` line, ready to
-paste straight over the corresponding constant in `sketch.c`. The knobs
-(and `SKETCH_LIVE_TUNE` itself) are then meant to come back out - this is a
-development affordance, not a permanent runtime control surface, and a
-shipped build carries none of it (see `firmware/CMakeLists.txt`'s
-`SKETCH_LIVE_TUNE` flag, off by default, and `sketch.c`'s own comment on why
-that is enough to guarantee no knob can ship in a bad position).
+paste straight over the corresponding constant in its owning app's source.
+The knobs (and that app's own `*_LIVE_TUNE` flag) are then meant to come
+back out - this is a development affordance, not a permanent runtime
+control surface, and a shipped build carries none of it (see
+`firmware/CMakeLists.txt`'s `SKETCH_LIVE_TUNE` / `CLOCK_LIVE_TUNE` /
+`TABLES_LIVE_TUNE` flags, each off by default, and each app's own comment
+on why that is enough to guarantee no knob can ship in a bad position).
 
-**The emulator has the same knobs, for fast iteration, but it is not
-where a value gets decided.** `TouchSim`'s dropout model is measurably
-kinder than the real FT3168 - the pre-fix stroke-start rule scored 63-83
-percent in the emulator against 3.5 percent on real hardware (see
-`emulator/wasm/tests/repro-touch-dropout-stroke-start.ts`) - so a value that
-feels right in the browser is a hypothesis about the real controller, not a
-result. Only `TUNE` against the real device, under a real finger, can
-promote it to one.
+**The emulator has the same knobs, for fast iteration, but for a
+touch-dropout knob specifically it is not where a value gets decided.**
+`TouchSim`'s dropout model is measurably kinder than the real FT3168 - the
+pre-fix stroke-start rule scored 63-83 percent in the emulator against 3.5
+percent on real hardware (see
+`emulator/wasm/tests/repro-touch-dropout-stroke-start.ts`) - so a value
+that feels right in the browser is a hypothesis about the real controller,
+not a result, for anything that depends on how touch is read. Only `TUNE`
+against the real device, under a real finger, can promote it to one. A
+purely visual knob (the clock's pulse shape) has no touch model in the
+loop at all: the emulator runs the same firmware rasteriser as the board
+(decision 0003), so what is seen there for that knob is not a hypothesis.
 
 ### Holding a finger still
 
@@ -602,9 +615,14 @@ for `APP`/`SWITCH`, and five more for `TUNE` (`tune_count`/`tune_describe`/
 `firmware/runtime/runtime.c` (see its "devlink wiring" section), the only
 file that wires devlink to the rest of the runtime; `devlink.c` itself does
 not know what an app, a touch queue, or a tunable even is - the `TUNE` hooks
-are a generic name/value shape, wired straight to `sketch.c`'s
-`sketch_tune_*` functions (`sensors.h`) rather than adapted through a
-runtime.c-owned function, since their signatures already match exactly.
+are a generic name/value shape, wired straight to
+`firmware/runtime/tune_registry.h`'s `tune_registry_*` functions rather
+than adapted through a runtime.c-owned function, since their signatures
+already match exactly. That registry is itself a thin aggregator over
+every app's own tunables (`sketch.c`'s `sketch_tune_*`, `clock.c`'s
+`clock_tune_*`, `tables.c`'s `tables_tune_*` - all declared in
+`sensors.h`), so devlink.c does not grow a new wire when a fourth app
+joins.
 `devlink_init()` is called once, right after `gfx_init()` succeeds;
 `devlink_poll()` is called once per main-loop iteration.
 

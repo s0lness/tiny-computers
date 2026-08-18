@@ -127,6 +127,15 @@ const SOURCES = [
   // them that agrees on the day it is written and drifts after.
   join(FIRMWARE, "runtime", "tilt.c"),
   join(FIRMWARE, "runtime", "sound_synth.c"),
+  // The live-tune registry (firmware/runtime/tune_registry.h's own header
+  // comment): merges sketch.c's, clock.c's and tables.c's own live-tunable
+  // knobs behind one flat name/index space. Portable like runtime_core.c/
+  // gfx.c above, so it belongs in this array the same way they do.
+  //
+  // Nothing in this array's comments may be written in capitals, per the
+  // note lower down about stubapps.c: the gate parses this literal with a
+  // regex that treats any capitalised token as a directory constant.
+  join(FIRMWARE, "runtime", "tune_registry.c"),
   join(FIRMWARE, "apps", "digits.c"),
   join(FIRMWARE, "apps", "chrono.c"),
   join(FIRMWARE, "apps", "sketch.c"),
@@ -192,14 +201,17 @@ const args = [
   "-Wl,--import-symbols", // undefined externs (js_log, the math imports)
                            // become real wasm imports instead of a hard
                            // link error - see this file's header comment.
-  // Sketchpad live tuning (firmware/apps/sketch.c's SKETCH_LIVE_TUNE),
-  // always ON for the emulator build, unlike the board's default build
-  // (off unless -DSKETCH_LIVE_TUNE=1 is passed to cmake, see
-  // firmware/CMakeLists.txt): the emulator IS a development tool, so there
-  // is no shipped-firmware state to protect here, and the tunables panel
-  // (emu_abi.h's "tunables" section) has nothing to build controls from
-  // without this.
+  // Live tuning (firmware/runtime/tune_registry.h's registry over
+  // sketch.c's SKETCH_LIVE_TUNE, clock.c's CLOCK_LIVE_TUNE and tables.c's
+  // TABLES_LIVE_TUNE), always ON for the emulator build, unlike the
+  // board's default build (each flag off unless explicitly passed to
+  // cmake, see firmware/CMakeLists.txt): the emulator IS a development
+  // tool, so there is no shipped-firmware state to protect here, and the
+  // tunables panel (emu_abi.h's "tunables" section) has nothing to build
+  // controls from without this.
   "-DSKETCH_LIVE_TUNE=1",
+  "-DCLOCK_LIVE_TUNE=1",
+  "-DTABLES_LIVE_TUNE=1",
   // Extra flags from the environment, whitespace separated. This exists for
   // firmware that carries a compile-time LAYOUT VARIANT the owner is meant
   // to judge rather than a knob to be tuned - apps/four.c's

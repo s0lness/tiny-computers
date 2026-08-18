@@ -551,32 +551,48 @@ typedef struct {
 // per-run arena, like the rest of sketch_state_t - see app.h on why).
 void sketch_debug_touch_diag(sketch_touch_diag_t *out);
 
-/* ---- DEVELOPMENT: sketchpad live tuning (SKETCH_LIVE_TUNE) --------------
+/* ---- DEVELOPMENT: live tuning (SKETCH_LIVE_TUNE / CLOCK_LIVE_TUNE /
+ * TABLES_LIVE_TUNE) --------------------------------------------------------
  *
  * Declared here rather than a new header, same reasoning as
  * sketch_debug_touch_diag() just above: this exists for the same class of
- * investigation (feeling out sketch.c's dropout-tolerance tuning against
- * real hardware, live) and is implemented in sketch.c, the only file with
- * the state to report or change. See sketch.c's own SKETCH_LIVE_TUNE
- * comment for the full design (what is tunable, why, and the freeze path).
+ * investigation (feeling out a constant against real hardware, live,
+ * instead of flash-draw-read-repeat) and each app below implements its own
+ * five functions, the only file with the state to report or change. See
+ * sketch.c's own SKETCH_LIVE_TUNE comment for the full design (what is
+ * tunable, why, and the freeze path) - clock.c's CLOCK_LIVE_TUNE and
+ * tables.c's TABLES_LIVE_TUNE follow the identical shape for their own
+ * constants.
  *
- * Unlike the TOUCH_POLL_SELFTEST diagnostics above, these are declared
- * unconditionally (not inside an #if in this header): sketch.c itself
- * always defines all five functions below, gated internally on
- * SKETCH_LIVE_TUNE - the gate-off build returns count()==0 and false from
+ * THIS WAS ONE APP'S SURFACE UNTIL THE CLOCK AND THE NUMPAD JOINED IT. What
+ * used to be a single `sketch_tune_*` set, called directly by devlink's
+ * TUNE command (runtime.c) and the emulator (emu_shim.c), is now three
+ * per-app sets - the three declared right below - merged behind ONE
+ * registry (firmware/runtime/tune_registry.h) that both of those callers
+ * address instead. Neither caller, nor this header, needs to grow again
+ * when a fourth app gets a tunable: that is one more row in
+ * tune_registry.c's own provider table.
+ *
+ * Unlike the TOUCH_POLL_SELFTEST diagnostics above, each app's five
+ * functions are declared unconditionally (not inside an #if in this
+ * header): the owning .c file always defines all five, gated internally on
+ * its own macro - the gate-off build returns count()==0 and false from
  * every describe/get/set call, the same "0 when the gate is off" contract
- * sensors_debug_touch_poll_selftest() uses. That means callers (devlink's
- * TUNE command wiring in runtime.c, the emulator's emu_tune_get/set) never
- * need to know whether the gate is on; they just see "nothing declared"
- * when it is off.
+ * sensors_debug_touch_poll_selftest() uses. That means callers (the
+ * registry, and through it devlink's TUNE wiring and emu_tune_get/set)
+ * never need to know whether any given gate is on; they just see "nothing
+ * declared" when it is off.
  *
- * Persists across app switches: the tunables are plain file-scope
- * statics in sketch.c, not part of sketch_state_t's per-run arena (app.h),
- * specifically so a TUNE command works regardless of which app is currently
- * showing on screen - the owner can be looking at the menu or the timer and
- * still dial in the sketchpad's touch tuning for the next time it is drawn
- * on.
+ * Persists across app switches: every app's tunables are plain file-scope
+ * statics in its own .c file, not part of that app's own per-run arena
+ * (app.h), specifically so a TUNE command works regardless of which app is
+ * currently showing on screen - the owner can be looking at the menu or
+ * the timer and still dial in the sketchpad's touch tuning, the clock's
+ * pulse or the numpad's thumb bias for the next time that app is on
+ * screen.
  */
+
+// ---- sketch.c: the sketchpad's dropout-tolerance knobs (six) -------------
 
 // How many tunables are declared. 0 when SKETCH_LIVE_TUNE is off.
 int sketch_tune_count(void);
@@ -602,6 +618,31 @@ bool sketch_tune_get(const char *name, float *out);
 // took effect. Returns false, applying nothing, if no tunable has that name
 // or the gate is off.
 bool sketch_tune_set(const char *name, float value, float *outApplied);
+
+// ---- clock.c: the long-ways separator's pulse (three) ---------------------
+// pulsecycle (the full on/off cycle length), pulseplateau (how much of that
+// cycle stays fully lit before the wink starts) and pulsedepth (how far the
+// wink dims at its lowest point - 0 is the shipped "goes fully gone,
+// invisible", 255 is "no wink at all"). See clock.c's own CLOCK_LIVE_TUNE
+// comment for the three scalars this regenerates DOTS_PULSE_CURVE from,
+// and why those three and not the whole table (a slider cannot edit a
+// lookup table).
+int clock_tune_count(void);
+bool clock_tune_describe(int index, const char **name, float *min, float *max, float *def);
+const char *clock_tune_define_name(int index);
+bool clock_tune_get(const char *name, float *out);
+bool clock_tune_set(const char *name, float value, float *outApplied);
+
+// ---- tables.c: the numpad's thumb-parallax bias (one) ---------------------
+// thumbbias: how far below the drawn cell the touch's reported y is taken
+// to actually mean, per Holz & Baudisch, "Understanding Touch" (CHI 2011) -
+// see tables.c's own TOUCH_THUMB_BIAS_Y comment for the full reasoning and
+// this tunable's range.
+int tables_tune_count(void);
+bool tables_tune_describe(int index, const char **name, float *min, float *max, float *def);
+const char *tables_tune_define_name(int index);
+bool tables_tune_get(const char *name, float *out);
+bool tables_tune_set(const char *name, float value, float *outApplied);
 
 /* ---- FT3168 has no pressure signal, measured -----------------------------
  *

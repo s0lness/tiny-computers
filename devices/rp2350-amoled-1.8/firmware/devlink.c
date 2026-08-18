@@ -301,14 +301,19 @@ static bool devlink_word_is(const char *s, const char *word) {
 }
 
 /* ---------------------------------------------------------------------
- * TUNE: get/set/reset/list/freeze the firmware's live-tunable constants
- * (today: sketch.c's dropout-tolerance knobs, gated behind SKETCH_LIVE_TUNE
- * - see sensors.h's "DEVELOPMENT: sketchpad live tuning" section). This
- * file never names "sketch", "lift" or any other specific tunable: it only
- * knows the generic name/value shape devlink_hooks_t's tune_* function
- * pointers declare, the same indirection app_current/app_name/app_switch
- * already use so devlink.c stays hardware- and app-blind. See
- * tools/README-devlink.md for the wire grammar this implements.
+ * TUNE: get/set/reset/list/freeze the firmware's live-tunable constants -
+ * today, sketch.c's dropout-tolerance knobs, clock.c's separator-pulse
+ * shape and tables.c's numpad thumb bias, each gated behind its own
+ * SKETCH_LIVE_TUNE / CLOCK_LIVE_TUNE / TABLES_LIVE_TUNE and merged behind
+ * ONE registry (firmware/runtime/tune_registry.h - see sensors.h's
+ * "DEVELOPMENT: live tuning" section for the full history). This file
+ * never names "sketch", "lift", any other specific tunable, or even how
+ * many apps declare any: it only knows the generic name/value shape
+ * devlink_hooks_t's tune_* function pointers declare (wired to
+ * tune_registry_* in runtime.c), the same indirection
+ * app_current/app_name/app_switch already use so devlink.c stays hardware-
+ * and app-blind. See tools/README-devlink.md for the wire grammar this
+ * implements.
  * ------------------------------------------------------------------- */
 
 // Prints a tunable value as a plain decimal with up to one fractional digit

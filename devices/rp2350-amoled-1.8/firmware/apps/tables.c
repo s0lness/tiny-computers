@@ -361,10 +361,136 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // zones would sit a full half-key below their drawings, and the TOP row would
 // start losing its own upper half off the pad entirely. If 22 still reads low,
 // the honest fix stops being a bias and becomes taller keys.
-#define TOUCH_THUMB_BIAS_Y 22
+//
+// THE LITERATURE, found after the owner had already moved this twice by
+// feel: Holz and Baudisch, "Understanding Touch" (CHI 2011). Users aim by
+// placing a point on the TOP of the fingernail over the target, while the
+// screen senses the contact patch on the underside - a parallax between
+// where you aim and what gets sensed, not a filtering problem. The
+// traditional contact-centroid model (what this controller reports, and
+// what numpad_hit() below reads) leaves about 4mm of error; their
+// projected-centre correction reduces it to 1.6mm. At this panel's
+// ~322ppi (12.7 px/mm - AGENTS.md's "a finger is about 100 pixels wide"
+// section has the same derivation), 4mm is about 51px, against a key
+// (CELL_H) that is 57px tall: the offset this bias is standing in for is
+// nearly a whole key, and this constant's own 22px is closer to the
+// LITERATURE'S RESIDUAL (1.6mm ~= 20px) than to its full correction. See
+// TOUCH_THUMB_BIAS_Y_DEFAULT's own tunable range below, which is sized off
+// these numbers rather than off the half-key ceiling two paragraphs up.
+#define TOUCH_THUMB_BIAS_Y_DEFAULT 22.0f
+
+/* ---- DEVELOPMENT: live tuning of the thumb bias (TABLES_LIVE_TUNE) ------
+ *
+ * Same mechanism as sketch.c's SKETCH_LIVE_TUNE and clock.c's
+ * CLOCK_LIVE_TUNE (see either file's own comment for the full design, and
+ * sensors.h's "DEVELOPMENT: live tuning" section for how all three join
+ * one registry): the owner has already moved this constant twice by feel,
+ * each time a source edit and a reflash, and the literature above says the
+ * honest range to explore is much wider than the half-key ceiling this
+ * file used to reason from.
+ *
+ * ONE TUNABLE: thumbbias, TOUCH_THUMB_BIAS_Y itself. Range 0..CELL_H
+ * (0..57px): 0 is the raw, uncorrected reading (no bias at all, a useful
+ * reference point to feel the difference against); 57 is one full key,
+ * "nearly a whole key" in the literature's own terms above, and a ceiling
+ * this file's own numpad_hit() enforces structurally (see that function:
+ * a bias of a whole CELL_H would push the top row's zone off the pad's own
+ * top edge). The DEFAULT does not change - that is the owner's call, made
+ * by feel, same as it has been twice already - only how far the slider can
+ * reach changes.
+ */
+#ifndef TABLES_LIVE_TUNE
+#define TABLES_LIVE_TUNE 0
+#endif
+
+#if TABLES_LIVE_TUNE
+static float g_tuneThumbBiasY = TOUCH_THUMB_BIAS_Y_DEFAULT;
+#define TOUCH_THUMB_BIAS_Y g_tuneThumbBiasY
+
+typedef struct {
+    const char *protoName;  // devlink/emulator-facing identifier, same
+                             // convention as sketch.c's own sketch_tunable_t.
+    const char *defineName;
+    float *value;
+    float min, max, def;
+} tables_tunable_t;
+
+static tables_tunable_t g_tablesTunables[] = {
+    { "thumbbias", "TOUCH_THUMB_BIAS_Y", &g_tuneThumbBiasY, 0.0f, (float)CELL_H, TOUCH_THUMB_BIAS_Y_DEFAULT },
+};
+#define TABLES_TUNABLE_COUNT ((int)(sizeof(g_tablesTunables) / sizeof(g_tablesTunables[0])))
+
+// A local strcmp-equivalent, same reasoning as sketch_tune_name_eq's own
+// comment (sketch.c): this file compiles for wasm32-freestanding too
+// (shim/ stands in for stdlib.h/math.h/stdio.h but not string.h), and one
+// short hand-written name does not justify a shim header.
+static bool tables_tune_name_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return false;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+static tables_tunable_t *tables_tune_find(const char *name) {
+    for (int i = 0; i < TABLES_TUNABLE_COUNT; i++) {
+        if (tables_tune_name_eq(g_tablesTunables[i].protoName, name)) return &g_tablesTunables[i];
+    }
+    return NULL;
+}
+
+int tables_tune_count(void) { return TABLES_TUNABLE_COUNT; }
+
+bool tables_tune_describe(int index, const char **name, float *min, float *max, float *def) {
+    if (index < 0 || index >= TABLES_TUNABLE_COUNT) return false;
+    *name = g_tablesTunables[index].protoName;
+    *min = g_tablesTunables[index].min;
+    *max = g_tablesTunables[index].max;
+    *def = g_tablesTunables[index].def;
+    return true;
+}
+
+const char *tables_tune_define_name(int index) {
+    if (index < 0 || index >= TABLES_TUNABLE_COUNT) return NULL;
+    return g_tablesTunables[index].defineName;
+}
+
+bool tables_tune_get(const char *name, float *out) {
+    tables_tunable_t *t = tables_tune_find(name);
+    if (!t) return false;
+    *out = *t->value;
+    return true;
+}
+
+bool tables_tune_set(const char *name, float value, float *outApplied) {
+    tables_tunable_t *t = tables_tune_find(name);
+    if (!t) return false;
+    if (value < t->min) value = t->min;
+    if (value > t->max) value = t->max;
+    *t->value = value;
+    if (outApplied) *outApplied = value;
+    return true;
+}
+#else // !TABLES_LIVE_TUNE
+#define TOUCH_THUMB_BIAS_Y TOUCH_THUMB_BIAS_Y_DEFAULT
+
+// Reads as empty/false in a normal build, same "0 when the gate is off"
+// contract sketch.c's own gate-off stubs use.
+int tables_tune_count(void) { return 0; }
+bool tables_tune_describe(int index, const char **name, float *min, float *max, float *def) {
+    (void)index; (void)name; (void)min; (void)max; (void)def;
+    return false;
+}
+const char *tables_tune_define_name(int index) { (void)index; return NULL; }
+bool tables_tune_get(const char *name, float *out) { (void)name; (void)out; return false; }
+bool tables_tune_set(const char *name, float value, float *outApplied) {
+    (void)name; (void)value; (void)outApplied;
+    return false;
+}
+#endif // TABLES_LIVE_TUNE
 
 static int numpad_hit(int lx, int ly) {
-    ly -= TOUCH_THUMB_BIAS_Y;
+    ly -= (int)TOUCH_THUMB_BIAS_Y;
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W) return -1;
     if (ly < NUMPAD_Y0 || ly >= NUMPAD_Y0 + NUMPAD_H) return -1;
     int col = (lx - NUMPAD_X0) / CELL_W;

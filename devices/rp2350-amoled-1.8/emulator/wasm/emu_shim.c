@@ -46,6 +46,7 @@
 #include "sound.h"
 #include "sound_synth.h"
 #include "storage.h"
+#include "tune_registry.h"
 
 /* ===========================================================================
  * What the module imports from the host (env.*). Exactly emu_abi.h's list:
@@ -784,27 +785,35 @@ int emu_arena_capacity(void) {
 }
 
 /* ===========================================================================
- * Live tunables. Thin index -> name adapters over sketch.c's sketch_tune_*
- * (sensors.h), which this file already includes. Compiled with
- * SKETCH_LIVE_TUNE=1 for this target specifically (build.ts), unlike the
- * board's default build: the emulator IS a development tool end to end, so
- * there is no "shipped, must not carry a knob" state to protect here the way
- * there is on real firmware - see emu_abi.h's tunables section for the
- * bigger caveat (this panel is for iteration speed, not for finding the
- * right value; TouchSim is kinder than the real controller).
+ * Live tunables. Thin index -> name adapters over tune_registry.h's
+ * tune_registry_* (firmware/runtime/tune_registry.c), which this file
+ * already includes. Used to call sketch.c's sketch_tune_* directly, back
+ * when the sketchpad was the only app with tunables; the registry now
+ * merges sketch.c's, clock.c's and tables.c's own sets behind one flat
+ * index space, so this file does not need to know how many apps declare
+ * tunables or grow a case for each one - see tune_registry.h's own header
+ * comment and sensors.h's "DEVELOPMENT: live tuning" section.
+ *
+ * Compiled with SKETCH_LIVE_TUNE=1, CLOCK_LIVE_TUNE=1 and TABLES_LIVE_TUNE=1
+ * for this target specifically (build.ts), unlike the board's default
+ * build: the emulator IS a development tool end to end, so there is no
+ * "shipped, must not carry a knob" state to protect here the way there is
+ * on real firmware - see emu_abi.h's tunables section for the bigger
+ * caveat (this panel is for iteration speed, not for finding the right
+ * value; TouchSim is kinder than the real controller).
  * ======================================================================= */
 float emu_tune_get(int index) {
     const char *name; float mn, mx, def;
-    if (!sketch_tune_describe(index, &name, &mn, &mx, &def)) return 0.0f;
+    if (!tune_registry_describe(index, &name, &mn, &mx, &def)) return 0.0f;
     float v = def;
-    sketch_tune_get(name, &v);
+    tune_registry_get(name, &v);
     return v;
 }
 
 void emu_tune_set(int index, float value) {
     const char *name; float mn, mx, def;
-    if (!sketch_tune_describe(index, &name, &mn, &mx, &def)) return;
-    sketch_tune_set(name, value, NULL);
+    if (!tune_registry_describe(index, &name, &mn, &mx, &def)) return;
+    tune_registry_set(name, value, NULL);
 }
 
 // Owner ask, 2026-08-14: "rajoute un moyen pour remettre chaque bouton a sa
@@ -816,8 +825,8 @@ void emu_tune_set(int index, float value) {
 // had a caller for them either.
 void emu_tune_reset(int index) {
     const char *name; float mn, mx, def;
-    if (!sketch_tune_describe(index, &name, &mn, &mx, &def)) return;
-    sketch_tune_set(name, def, NULL);
+    if (!tune_registry_describe(index, &name, &mn, &mx, &def)) return;
+    tune_registry_set(name, def, NULL);
 }
 
 int emu_sound_sample_rate(void) { return SOUND_SYNTH_SAMPLE_RATE_HZ; }
@@ -835,8 +844,12 @@ int emu_sound_frames(void) { return SOUND_PREVIEW_FRAMES; }
  * both" promise. */
 // 512 was tight even before "gestures" existed; the gesture's "how" prose
 // alone is over 200 bytes. 1024 was tight again once "tunables" joined it
-// (six entries, each with four numeric fields); 2048 leaves real headroom
-// for either array to grow without this needing to be revisited every time.
+// (six entries, each with four numeric fields, when it was sketch.c's
+// alone; ten now that clock.c's three and tables.c's one joined the same
+// registry - tune_registry.h - and still comfortably under 2048 by
+// measurement, not just by this estimate); 2048 leaves real headroom for
+// any of these arrays to grow without this needing to be revisited every
+// time.
 static char g_deviceJson[2048];
 
 static char *json_append(char *p, const char *s) {
@@ -915,16 +928,19 @@ int emu_device(void) {
     p = json_append(p, "\"how\":\"Hold BOOT, then also hold PWR. Keep both held until PWR ");
     p = json_append(p, "registers a long press (about 1.5s): that opens the app menu. ");
     p = json_append(p, "Do the same chord again to close it and return to what was running.\"}],");
-    // "tunables": sketch.c's SKETCH_LIVE_TUNE knobs, if this build has them
-    // (see emu_abi.h's tunables section). Declared the same way buttons/
-    // sensors/apps already are above: the page builds its controls from
-    // this, nothing here is hardcoded on the JS side.
+    // "tunables": every app's own LIVE_TUNE knobs, merged behind
+    // tune_registry.h's tune_registry_* (see emu_abi.h's tunables section
+    // and sensors.h's "DEVELOPMENT: live tuning" section). Declared the
+    // same way buttons/sensors/apps already are above: the page builds its
+    // controls from this, nothing here is hardcoded on the JS side, and
+    // this file has no idea (nor needs one) which app a given entry
+    // belongs to.
     p = json_append(p, "\"tunables\":[");
     {
-        int n = sketch_tune_count();
+        int n = tune_registry_count();
         for (int i = 0; i < n; i++) {
             const char *name; float mn, mx, def;
-            if (!sketch_tune_describe(i, &name, &mn, &mx, &def)) continue;
+            if (!tune_registry_describe(i, &name, &mn, &mx, &def)) continue;
             if (i > 0) p = json_append(p, ",");
             p = json_append(p, "{\"id\":\"");
             p = json_append(p, name);

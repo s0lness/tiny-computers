@@ -102,6 +102,13 @@ target_sources(main PRIVATE
     runtime/runtime.c
     runtime/gfx.c
     runtime/sensors.c
+    # The live-tune registry (tune_registry.h's own header comment): merges
+    # sketch.c's, clock.c's and tables.c's own LIVE_TUNE knobs behind one
+    # flat name/index space for devlink's TUNE command (runtime.c) and the
+    # emulator's tunables panel. Portable, same reason runtime_core.c/gfx.c
+    # are: no pico-sdk, no hardware/*, so it also compiles into emu.wasm
+    # (emulator/wasm/build.ts).
+    runtime/tune_registry.c
     # tilt.c is the orientation signal, and it is portable for the same
     # reason sound_synth.c below is: it also compiles into emu.wasm
     # unmodified, so the emulator's gravity is filtered by this firmware's
@@ -271,16 +278,26 @@ if(DEFINED TOUCH_POLL_SELFTEST)
     target_compile_definitions(main PRIVATE TOUCH_POLL_SELFTEST=${TOUCH_POLL_SELFTEST})
 endif()
 
-# Sketchpad live tuning over devlink (firmware/apps/sketch.c's
-# SKETCH_LIVE_TUNE comment, firmware/devlink.c's TUNE command). Optional,
-# off by default, same reasoning and same pattern as TOUCH_POLL_SELFTEST
-# just above: a shipped build carries the tunables as plain #define
-# constants with no runtime variable and no way to leave a knob in a bad
-# position, and turning this on is a build flag, not a source edit to
-# remember to revert:
-#   cmake -S firmware -B firmware/build-tune -DSKETCH_LIVE_TUNE=1
+# Live tuning over devlink (firmware/runtime/tune_registry.h's registry,
+# firmware/devlink.c's TUNE command): three independent flags, one per app
+# that declares tunables today (firmware/apps/sketch.c's SKETCH_LIVE_TUNE
+# comment has the full design; clock.c's CLOCK_LIVE_TUNE and tables.c's
+# TABLES_LIVE_TUNE follow the same shape for their own constants). Each is
+# optional and off by default, same reasoning and same pattern as
+# TOUCH_POLL_SELFTEST just above: a shipped build carries the tunables as
+# plain #define constants with no runtime variable and no way to leave a
+# knob in a bad position, and turning one on is a build flag, not a source
+# edit to remember to revert. Independent on purpose - a device build can
+# carry just the numpad's bias without the sketchpad's stroke knobs too:
+#   cmake -S firmware -B firmware/build-tune -DSKETCH_LIVE_TUNE=1 -DCLOCK_LIVE_TUNE=1 -DTABLES_LIVE_TUNE=1
 if(DEFINED SKETCH_LIVE_TUNE)
     target_compile_definitions(main PRIVATE SKETCH_LIVE_TUNE=${SKETCH_LIVE_TUNE})
+endif()
+if(DEFINED CLOCK_LIVE_TUNE)
+    target_compile_definitions(main PRIVATE CLOCK_LIVE_TUNE=${CLOCK_LIVE_TUNE})
+endif()
+if(DEFINED TABLES_LIVE_TUNE)
+    target_compile_definitions(main PRIVATE TABLES_LIVE_TUNE=${TABLES_LIVE_TUNE})
 endif()
 
 # firmware/linker_overrides/default_text_excludes.incl: extends pico-sdk's

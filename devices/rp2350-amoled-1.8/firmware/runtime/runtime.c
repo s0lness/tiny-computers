@@ -39,6 +39,7 @@
 #include "sound.h"
 #include "storage.h"
 #include "runtime_core.h"
+#include "tune_registry.h"
 
 // Cross-directory headers, included by relative path on purpose rather than
 // by bare filename: which directories end up on the compiler's include path
@@ -385,19 +386,24 @@ int main(void) {
         .app_name = devlink_hook_app_name,
         .app_switch = devlink_hook_app_switch,
         .tilt_read = devlink_hook_tilt_read,
-        // Wired straight to sketch.c's sketch_tune_* (sensors.h): no
-        // adapter needed, unlike the hooks above, because their signatures
-        // already match devlink_hooks_t's tune_* shape exactly (see
-        // sensors.h's "DEVELOPMENT: sketchpad live tuning" section). These
-        // are defined unconditionally in sketch.c regardless of
-        // SKETCH_LIVE_TUNE - the gate-off build's versions just return
-        // count()==0 and false, which is what makes it safe to wire them
-        // here with no #if of this file's own.
-        .tune_count = sketch_tune_count,
-        .tune_describe = sketch_tune_describe,
-        .tune_define_name = sketch_tune_define_name,
-        .tune_get = sketch_tune_get,
-        .tune_set = sketch_tune_set,
+        // Wired straight to tune_registry.h's tune_registry_* (firmware/
+        // runtime/tune_registry.c): no adapter needed, unlike the hooks
+        // above, because their signatures already match devlink_hooks_t's
+        // tune_* shape exactly. Used to be sketch.c's sketch_tune_*
+        // directly, back when the sketchpad was the only app with
+        // tunables; the registry now merges sketch.c's, clock.c's and
+        // tables.c's own sets behind one flat name/index space (see
+        // sensors.h's "DEVELOPMENT: live tuning" section and
+        // tune_registry.h's own header comment for the history and the
+        // shape). tune_registry_* is defined unconditionally regardless of
+        // any one app's own gate - a registry over every gate being off is
+        // still exactly zero tunables - which is what makes it safe to
+        // wire here with no #if of this file's own.
+        .tune_count = tune_registry_count,
+        .tune_describe = tune_registry_describe,
+        .tune_define_name = tune_registry_define_name,
+        .tune_get = tune_registry_get,
+        .tune_set = tune_registry_set,
     };
     devlink_init(&devlinkHooks);
 

@@ -1,7 +1,9 @@
 // Builds the live-tunable panel (emu_abi.h's "tunables" section:
-// development-only knobs a firmware exposes for fast iteration, today
-// sketch.c's SKETCH_LIVE_TUNE dropout-tolerance constants). Nothing here
-// names "lift" or "sketch" or any other specific knob - the row set comes
+// development-only knobs a firmware exposes for fast iteration - started
+// as sketch.c's own SKETCH_LIVE_TUNE dropout-tolerance constants, joined
+// since by clock.c's pulse shape and tables.c's thumb bias, all merged
+// behind firmware/runtime/tune_registry.h's one registry). Nothing here
+// names "lift", "sketch", or any other specific knob or app - the row set comes
 // from DeviceDescriptor.tunables (the emulator's own declaration) UNIONED,
 // when a board is connected, with whatever the board's own `TUNE` command
 // reports, the same "declare the shape, build the chrome from the
@@ -291,7 +293,7 @@ export function buildTuneControls(container: HTMLElement, wrap: HTMLElement, tun
     const last = lines[lines.length - 1];
     const errText = last ? parseErrLine(last) : null;
     if (errText !== null) {
-      statusEl.textContent = errText.startsWith("no tunables") ? "device: no live tunables in this build (SKETCH_LIVE_TUNE off)" : `device: ${errText}`;
+      statusEl.textContent = errText.startsWith("no tunables") ? "device: no live tunables in this build (every LIVE_TUNE flag off)" : `device: ${errText}`;
       showDeviceColumns(true);
       for (const state of rows.values()) renderDeviceMissing(state, "none declared");
       wrap.classList.remove("hidden");

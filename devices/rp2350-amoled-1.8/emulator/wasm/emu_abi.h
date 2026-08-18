@@ -151,9 +151,15 @@
  *                 rather than guessing at one.
  *
  *   tunables      optional. Development-only knobs a firmware exposes for
- *                 live iteration - this device's sketchpad dropout-tolerance
- *                 constants, gated behind SKETCH_LIVE_TUNE
- *                 (firmware/apps/sketch.c), are the first user of this.
+ *                 live iteration, merged across every app that declares any
+ *                 (firmware/runtime/tune_registry.h) - this device's first
+ *                 user was the sketchpad's own dropout-tolerance constants
+ *                 (SKETCH_LIVE_TUNE, firmware/apps/sketch.c); the clock's
+ *                 separator-pulse shape (CLOCK_LIVE_TUNE) and the numpad's
+ *                 thumb bias (TABLES_LIVE_TUNE) joined the same flat list
+ *                 later. This array does not say which app owns which
+ *                 entry, on purpose: neither this ABI nor the page that
+ *                 builds controls from it needs to know.
  *                 Each entry is `{ "id": "lift", "min": 20, "max": 1000,
  *                 "default": 220 }`. Read-only here (the JSON is a
  *                 declaration, not a value); the emulator reads and writes
@@ -166,16 +172,23 @@
  *                 tuning panel, same as an app-less firmware omitting
  *                 "apps".
  *
- *                 THIS PANEL IS FOR FAST ITERATION, NOT FOR FINDING THE
- *                 RIGHT VALUE. The emulator's input-defect model (TouchSim)
+ *                 THIS PANEL IS FOR FAST ITERATION, NOT ALWAYS FOR FINDING
+ *                 THE RIGHT VALUE. Where a tunable governs how touch is
+ *                 interpreted, the emulator's input-defect model (TouchSim)
  *                 is measurably kinder than a real touch controller - see
  *                 sketch.c's SKETCH_LIVE_TUNE comment for the 63-83 percent
  *                 (emulator) against 3.5 percent (hardware) figure that
- *                 proved it - so a value tuned here is a hypothesis, not a
- *                 result, until it is also tried on the device (devlink's
- *                 TUNE command, tools/README-devlink.md). The emulator's own
- *                 UI is expected to say this next to the controls, not just
- *                 this header comment.
+ *                 proved it - so a value tuned here is a hypothesis about
+ *                 touch, not a result, until it is also tried on the device
+ *                 (devlink's TUNE command, tools/README-devlink.md). That
+ *                 caveat is about the INPUT model specifically, not about
+ *                 this panel in general: a purely visual knob like the
+ *                 clock's pulse shape has no touch model to be kinder than,
+ *                 and the emulator's own pixels are the real firmware's own
+ *                 rasteriser (decision 0003), so what is SEEN here is not a
+ *                 hypothesis. The emulator's own UI is expected to make
+ *                 this distinction next to the controls, not just this
+ *                 header comment.
  */
 int emu_device(void);
 
