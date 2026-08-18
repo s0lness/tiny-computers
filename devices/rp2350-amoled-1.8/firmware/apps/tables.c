@@ -859,15 +859,20 @@ static void draw_number_lr(int cx, int cy, int digitW, int digitH, int t,
     if (value < 0) value = 0;
     if (value > 99) value = 99;
     bool twoDigits = padTo2 || value >= 10;
+    // DIGITS_ONE_CENTER everywhere here: this numpad is a self-contained
+    // widget nowhere near the panel's own edge (unlike clock.c's outer digit
+    // cells - see digits_one_style_t, digits.h), so there is no outer margin
+    // for a "1" to hug toward, and centring - this function's own behaviour
+    // before oneStyle existed - is still the right call.
     if (!twoDigits) {
-        digits_draw_soft(DIGITS_PORTRAIT, cx - digitW / 2, cy - digitH / 2, digitW, digitH, t, value, color);
+        digits_draw_soft(DIGITS_PORTRAIT, cx - digitW / 2, cy - digitH / 2, digitW, digitH, t, value, color, DIGITS_ONE_CENTER);
         return;
     }
     int tens = value / 10, ones = value % 10;
     int totalW = digitW * 2 + DIGIT_GAP;
     int x0 = cx - totalW / 2;
-    digits_draw_soft(DIGITS_PORTRAIT, x0, cy - digitH / 2, digitW, digitH, t, tens, color);
-    digits_draw_soft(DIGITS_PORTRAIT, x0 + digitW + DIGIT_GAP, cy - digitH / 2, digitW, digitH, t, ones, color);
+    digits_draw_soft(DIGITS_PORTRAIT, x0, cy - digitH / 2, digitW, digitH, t, tens, color, DIGITS_ONE_CENTER);
+    digits_draw_soft(DIGITS_PORTRAIT, x0 + digitW + DIGIT_GAP, cy - digitH / 2, digitW, digitH, t, ones, color, DIGITS_ONE_CENTER);
 }
 
 /* =========================================================================

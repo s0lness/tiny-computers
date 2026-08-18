@@ -164,7 +164,7 @@ static void soft_dot(digits_space_t space, float cx, float cy, float r, uint16_t
 #define SOFT_INSET 0.75f
 
 void digits_draw_soft(digits_space_t space, int x, int y, int w, int h,
-                      int t, int value, uint16_t colorPx) {
+                      int t, int value, uint16_t colorPx, digits_one_style_t oneStyle) {
     if (value < 0 || value > 9) return;
     uint8_t segs = SEVEN_SEG[value];
     float r = (float)t * 0.5f;
@@ -178,20 +178,32 @@ void digits_draw_soft(digits_space_t space, int x, int y, int w, int h,
     float yB = (float)(y + h) - r - SOFT_INSET;
     float yM = (float)y + (float)h * 0.5f;
 
-    // THE ONE IS CENTRED IN ITS CELL, unlike a real seven-segment display,
-    // where it lights b and c and therefore hugs the right rail. On hardware
-    // that is forced by the glass; here the numerals are drawn, so it is a
-    // choice, and hugging right is the wrong one: the owner looked at 15:00
-    // on the clock and read the whole face as off-centre. It is not - the
-    // cells are symmetric to the pixel - but the leading 1 leaves most of
-    // its own cell empty, which the eye reads as a margin.
-    //
-    // Centring the stroke does not move any other digit, so nothing shifts
-    // as the time changes; only the 1's own position inside its own box.
+    // WHERE THE ONE SITS - see digits_one_style_t (digits.h) for the full
+    // argument. A real seven-segment "1" lights only b/c and therefore
+    // hugs the right rail unconditionally (forced by the glass); drawing it
+    // lets that be a per-caller choice instead. DIGITS_ONE_HUG_RIGHT is
+    // exactly that default rail (xR, already computed above), so it needs
+    // no override at all - only CENTER and HUG_LEFT move the stroke off it.
     if (value == 1) {
-        float cx = (float)x + (float)w * 0.5f;
-        xL = cx;
-        xR = cx;
+        switch (oneStyle) {
+            case DIGITS_ONE_HUG_LEFT: {
+                float leftRail = xL; // the same rail a full digit's own e/f would use
+                xL = leftRail;
+                xR = leftRail;
+                break;
+            }
+            case DIGITS_ONE_CENTER: {
+                float cx = (float)x + (float)w * 0.5f;
+                xL = cx;
+                xR = cx;
+                break;
+            }
+            case DIGITS_ONE_HUG_RIGHT:
+            default:
+                // xR/xL already sit at the right rail (the segment table's
+                // own default position for b/c) - nothing to do.
+                break;
+        }
     }
 
     if (segs & 0x01) soft_capsule(space, xL, yT, xR, yT, r, colorPx); // a, top

@@ -1163,16 +1163,49 @@ static void cell_push(const cell_t *c) {
     else gfx_push_land(c->x, c->y, c->w, c->h);
 }
 
+// WHICH WAY A "1" HUGS ITS OWN CELL, per digit slot - see digits_one_style_t
+// (digits.h) for the shape of the fix and clock-spacing-sweep.ts
+// (tools/clock-spacing-sweep.ts) for the measurement that motivated it: a
+// centred "1" halves, but does not remove, the face's own outer margin
+// moving whenever a "1" lands in the cell that IS that margin. Measured
+// there, before this function existed: long-ways swung the outer margin by
+// 26px 43.3% of the 1440 possible times; upright swung a ROW's own outer
+// margin by 39px 45.8% (hours) / 23.3% (minutes) of the time, invisible to a
+// whole-face bounding box because the two rows can mask each other.
+//
+//   long-ways: only cell 0 (hours' tens) and cell 3 (minutes' units) touch a
+//   canvas margin at all (L_DIGIT_X = {16, 112, 256, 352} - 1 and 2 sit
+//   against the dots instead, never the bezel). Hug cell 0 LEFT, cell 3
+//   RIGHT, so their outer edge matches a full digit's own inset exactly;
+//   leave the two inner cells centred, since nothing about them ever
+//   touches an edge for a "1" to disturb.
+//
+//   upright: P_DIGIT_X is {P_X0, P_X1, P_X0, P_X1} - only two columns exist
+//   at all, so EVERY cell touches one of the face's own two outer margins
+//   (there is no inner cell the way long-ways has). Even indices sit at
+//   P_X0 (hug left), odd indices at P_X1 (hug right).
+static digits_one_style_t one_style_for(bool upright, int i) {
+    if (upright) return (i % 2 == 0) ? DIGITS_ONE_HUG_LEFT : DIGITS_ONE_HUG_RIGHT;
+    if (i == 0) return DIGITS_ONE_HUG_LEFT;
+    if (i == 3) return DIGITS_ONE_HUG_RIGHT;
+    return DIGITS_ONE_CENTER;
+}
+
 // Draws one cell's content into the framebuffer. Does not clear and does not
 // push: the two callers below do that around it, in the two different ways
 // they need (a full repaint clears the whole panel once and pushes it once;
-// a per-cell update clears and pushes exactly that cell).
-static void cell_render(const cell_t *c, int digit, uint8_t ink) {
+// a per-cell update clears and pushes exactly that cell). `oneStyle` only
+// matters when `digit` is 1 - see one_style_for() above and digits.h.
+static void cell_render(const cell_t *c, int digit, uint8_t ink, digits_one_style_t oneStyle) {
     uint16_t px = gray_to_px(ink);
     if (digit == CELL_GHOST) {
-        digits_draw_soft(c->space, c->x, c->y, c->w, c->h, GHOST_T(c->t), 8, px);
+        // The ghost draws an 8 (every segment lit, digits.h's "no number in
+        // it" face) - value 8 never triggers the one-style branch at all, so
+        // which style is passed here is arbitrary; DIGITS_ONE_CENTER states
+        // that rather than leaving it an unexplained constant.
+        digits_draw_soft(c->space, c->x, c->y, c->w, c->h, GHOST_T(c->t), 8, px, DIGITS_ONE_CENTER);
     } else {
-        digits_draw_soft(c->space, c->x, c->y, c->w, c->h, c->t, digit, px);
+        digits_draw_soft(c->space, c->x, c->y, c->w, c->h, c->t, digit, px, oneStyle);
     }
 }
 
@@ -1275,7 +1308,7 @@ static void paint_all(clock_state_t *s, bool upright, bool flip180, bool active,
     for (int i = 0; i < 4; i++) {
         cell_t c;
         cell_for(upright, i, &c);
-        cell_render(&c, digits[i], ink[i]);
+        cell_render(&c, digits[i], ink[i], one_style_for(upright, i));
         s->cellDigit[i] = digits[i];
         s->cellInk[i] = ink[i];
     }
@@ -1572,7 +1605,7 @@ static void clock_tick(const app_frame_t *f) {
                 cell_t c;
                 cell_for(upright, i, &c);
                 cell_clear(&c);
-                cell_render(&c, digits[i], ink[i]);
+                cell_render(&c, digits[i], ink[i], one_style_for(upright, i));
                 cell_push(&c);
                 s->cellDigit[i] = digits[i];
                 s->cellInk[i] = ink[i];

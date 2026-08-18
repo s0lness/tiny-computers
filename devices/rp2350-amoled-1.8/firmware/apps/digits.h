@@ -99,11 +99,45 @@ typedef enum {
     DIGITS_PORTRAIT  = 1, // (x, y) are panel coordinates, unrotated
 } digits_space_t;
 
+// WHERE A "1" SITS IN ITS OWN CELL. A seven-segment "1" lights only b and c
+// (the right-hand vertical), so on real hardware it always hugs the right
+// rail - forced by the glass, not a choice. Drawn instead of etched, it is a
+// choice, and clock.c found the first one (always hug the segment table's
+// own, unconditional right rail) wrong: a "1" leading a pair of digits left
+// most of its own cell empty on the LEFT, which read as the whole face
+// shifted off-centre even though the fixed cells never moved (see clock.c's
+// "THE ONE IS CENTRED" comment, which this enum supersedes - that comment's
+// own fix, always centring, only halves the effect: centring is correct for
+// a digit some other digit sits on both sides of, but wrong for the two
+// digits whose OWN cell IS the face's own outer margin, where the fixed
+// point that must not move is the cell's outer edge, not its centre.
+//
+//   DIGITS_ONE_CENTER     centred in the cell (both original fixes' choice
+//                         for a digit with a neighbour on both sides).
+//   DIGITS_ONE_HUG_LEFT   drawn at the same rail a full digit's own LEFT
+//                         segments (e/f) would use, so its ink starts
+//                         exactly where any other digit's would.
+//   DIGITS_ONE_HUG_RIGHT  the seven-segment table's own default: at the
+//                         same rail a full digit's own RIGHT segments (b/c)
+//                         use. Naming it explicitly (rather than leaving "no
+//                         override" implicit) is what lets a caller ask for
+//                         it on purpose instead of getting it by omission.
+typedef enum {
+    DIGITS_ONE_CENTER    = 0,
+    DIGITS_ONE_HUG_LEFT  = 1,
+    DIGITS_ONE_HUG_RIGHT = 2,
+} digits_one_style_t;
+
 // One decimal digit (0..9) filling the cell (x, y, w, h) exactly, stroke
 // thickness `t`, ink only (the caller clears). Ink stays strictly inside the
 // cell, anti-aliased fringe included, so the cell is a legal push window.
+// `oneStyle` only affects value==1 (every other digit already fills its
+// cell edge to edge, see the "TWO CORRECTIONS" section above) - callers that
+// never draw a lone "1" against a face's own margin, or don't care, pass
+// DIGITS_ONE_CENTER, which is byte-for-byte what this function always did
+// before oneStyle existed.
 void digits_draw_soft(digits_space_t space, int x, int y, int w, int h,
-                      int t, int value, uint16_t colorPx);
+                      int t, int value, uint16_t colorPx, digits_one_style_t oneStyle);
 
 // The two-dot separator, as round dots rather than squares. Same cell
 // convention as digits_draw_soft; `t` is the dot diameter.
