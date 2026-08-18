@@ -308,10 +308,13 @@ async function main() {
     // read by NAME off the real compiled g_apps[] table (appNames(), the
     // full roster) through the menu's own mapping (menuAppIndex()), not
     // assumed from either list on its own.
-    const EXPECTED_MENU_APPS = ["chrono", "draw", "timer", "four", "TABLES"];
+    // The clock joined on 2026-08-18 as the fourth slot, which at six apps is
+    // the bottom-left cell - the owner's placement, so the top row keeps the
+    // three tools he had already learned to reach for.
+    const EXPECTED_MENU_APPS = ["chrono", "draw", "timer", "clock", "four", "TABLES"];
     const names = dev.appNames();
     const menuNames = Array.from({ length: n }, (_, i) => names[dev.menuAppIndex(i)]);
-    check("the menu shows exactly the five apps the owner kept, in this order",
+    check("the menu shows exactly the six apps the owner kept, in this order",
         JSON.stringify(menuNames) === JSON.stringify(EXPECTED_MENU_APPS),
         `menu = [${menuNames.join(", ")}]`);
 

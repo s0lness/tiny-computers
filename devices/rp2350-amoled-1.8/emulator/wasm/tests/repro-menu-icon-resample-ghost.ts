@@ -68,7 +68,11 @@ const FOUR_ICON_R = 17.5;
 const FOUR_ICON_A = 25.5;
 const FOUR_ICON_B = 70.5;
 const LUCIDE_STROKE_HALF = 5.0;
-const FOUR_SLOT = 3; // g_menuAppIndex: chrono, sketch, timer, four, tables
+// Which SLOT the four-in-a-row icon occupies is roster-dependent and has
+// already moved once (the clock was inserted before it on 2026-08-18). Found
+// by asking the roster rather than written down, so the next insertion does
+// not silently point this whole file at somebody else's icon.
+const FOUR_APP_INDEX = 3; // g_apps[]: chrono, sketch, timer, four, ...
 
 function menuIconSize(cellW: number, cellH: number): number {
     return Math.max(ICON_W, Math.min(cellW, cellH) - 2 * MENU_ICON_PAD);
@@ -108,8 +112,10 @@ async function main() {
     if (exp.emu_app_current() !== APP_INDEX_MENU) throw new Error("did not land in the menu");
 
     const n = menuAppCount();
-    check("this build's roster has four at slot 3, so the geometry below applies",
-        n > FOUR_SLOT && menuAppIndex(FOUR_SLOT) === 3, `n=${n}, slot 3 -> app ${n > FOUR_SLOT ? menuAppIndex(FOUR_SLOT) : "?"}`);
+    let FOUR_SLOT = -1;
+    for (let i = 0; i < n; i++) if (menuAppIndex(i) === FOUR_APP_INDEX) { FOUR_SLOT = i; break; }
+    check("this build's roster shows the four-in-a-row app, so the geometry below applies",
+        FOUR_SLOT >= 0, `n=${n}, four found at slot ${FOUR_SLOT}`);
 
     const { bx, by, bw, bh } = cellRect(n, FOUR_SLOT);
     const size = menuIconSize(bw, bh);

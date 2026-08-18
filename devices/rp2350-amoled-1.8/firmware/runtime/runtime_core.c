@@ -145,6 +145,14 @@ const int g_menuAppIndex[] = {
     0,  // chrono
     1,  // sketch ("draw")
     2,  // timer
+    // The clock joined on 2026-08-18, once its own gesture was one a child
+    // could find (double-press to open, either button to confirm) and its
+    // face followed the edge that is up. Placed FOURTH, which at six apps is
+    // the bottom-left cell: the owner asked for it "en bas a gauche, avant le
+    // puissance 4 et les tables", so the top row stays the three tools he had
+    // learned to reach for and the new one starts the second row rather than
+    // displacing anything.
+    4,  // clock
     3,  // four
     10, // tables
 };
