@@ -141,25 +141,55 @@
  * formula on paper again; it has already been gotten backwards twice that
  * way. If it is ever in doubt, drive the emulator and read the log.
  *
- * WHICH EDGE OF EACH PAIR IS "NORMAL" AND WHICH IS UPSIDE DOWN. Two edges
- * both select the same FAMILY (portrait or landscape) but are 180 degrees
- * apart from each other, so only one of them can be the face as originally
- * laid out - the other needs the whole picture turned to still read right
- * side up. See clock_face_t and PICTURE, ROTATED below for how; this is
- * only which edge gets which treatment, also settled by driving the
- * emulator rather than assumed:
+ * WHICH EDGE OF EACH PAIR IS "NORMAL" AND WHICH IS UPSIDE DOWN, PRECISELY.
+ * Two edges both select the same FAMILY (portrait or landscape) but are 180
+ * degrees apart from each other, so only one of them can be the face as
+ * originally laid out - the other needs the whole picture turned to still
+ * read right side up. See clock_face_t and PICTURE, ROTATED below for how;
+ * this section is only which edge gets which treatment.
  *
- *   - portrait: land.up == LEFT (panel TOP up, the owner's own first
- *     example and this device's flat, unmeasured default - see below) is
- *     the face as laid out; land.up == RIGHT (panel BOTTOM up, the puck
- *     held upside down) is the same face turned 180.
- *   - landscape: land.up == TOP (panel RIGHT up) is the face as laid out -
- *     the panel's own RIGHT edge carries the buttons (AGENTS.md's board
- *     table), so "panel RIGHT up" is "held sideways with the buttons along
- *     the top edge", app.h's own documented convention for every landscape
- *     app on this device (chrono, timer, four, morpion all already assume
- *     this exact hold); land.up == BOTTOM (panel LEFT up) is that same
- *     landscape face turned 180.
+ * THE OWNER'S DEFINITION, verbatim, and the one to build every edge's answer
+ * from rather than reasoning about "which way is up" in the abstract: "in
+ * 'left' up is towards the boot and pwr button". Both buttons sit on the
+ * panel's own RIGHT edge (AGENTS.md's board table, PWR lower, BOOT upper) -
+ * a single, fixed, physical edge of the case - so his sentence is really
+ * "when the puck is turned so its own RIGHT edge points up, that pose is
+ * called LEFT" (edgeNameForTurn()'s label for a pose is which edge is
+ * pointing DOWN, resting in the hand or on the table - not, as an earlier
+ * version of this comment assumed, which edge is up). That earlier,
+ * WRONG assumption is exactly what put the flip on the wrong edge: BOTTOM
+ * and TOP are opposite panel edges 180 degrees apart, where getting the
+ * turn direction backwards cannot matter (180 has no handedness); LEFT and
+ * RIGHT-for-long-ways is the SAME 180-degree pair by the panel's own
+ * geometry, but this app anchors long-ways to land.up rather than to panel
+ * edges directly, and the panel-to-land rotation (`(panel.up + 3) % 4`,
+ * above) is a 90-degree step, where a direction mistake silently swaps
+ * which of the two answers is "normal". Confirmed against
+ * emulator/src/device.ts's actual CSS (`applyRotation()`: `rotate(totalDeg)`,
+ * standard CSS clockwise-positive), not re-reasoned on paper a third time:
+ * the buttons sit on the panel's native right edge, and TURN=LEFT is
+ * `rotate(-90deg)`, 90 degrees COUNTERCLOCKWISE - which carries that right
+ * edge to the TOP of the picture, matching the owner's screenshot exactly.
+ *
+ * So, edge by edge, what up.tilt means physically and what this app does
+ * with it:
+ *
+ *   - land.up == LEFT (panel TOP up - the owner's own first example, and
+ *     this device's flat, unmeasured default, see below): portrait, face as
+ *     laid out, unflipped.
+ *   - land.up == RIGHT (panel BOTTOM up, 180 from the above - no handedness
+ *     to get wrong here): portrait, the same face turned 180.
+ *   - land.up == BOTTOM (panel LEFT up - buttons toward the top edge, the
+ *     owner's own definition, and the same "held sideways with the buttons
+ *     along the top edge" convention app.h documents for chrono/timer/four/
+ *     morpion): long-ways, face as laid out, unflipped.
+ *   - land.up == TOP (panel RIGHT up - buttons toward the BOTTOM edge, 180
+ *     from the above): long-ways, the same face turned 180.
+ *
+ * Notice the asymmetry on purpose: portrait's unflipped edge is LEFT,
+ * long-ways's unflipped edge is BOTTOM - two different land.up values, not
+ * a pattern like "whichever is first" that a future edit could simplify
+ * into one formula without checking both against the emulator again.
  *
  * THE FLAT, UNMEASURED DEFAULT NOW READS UPRIGHT, AND THAT IS A REAL
  * BEHAVIOUR CHANGE FROM BEFORE, STATED RATHER THAN HIDDEN. tilt.c's `up`
@@ -327,39 +357,64 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
 #define BLINK_PERIOD_MS   500u
 #define DOTS_PULSE_FAINT  130
 
-// ---- the setting gesture's chevrons: four small "^"/"v" marks, one per
-// direction, flanking each digit pair while set mode is open -------------
+// ---- the setting gesture's chevrons: four small marks, one per direction,
+// flanking each digit pair while set mode is open -------------------------
 //
-// Sized and placed the same way in both layouts: CHEV_GAP clear of the
-// digit block's own edge, CHEV_H from base to apex, CHEV_HALF_W either
-// side of centre. Every position below is checked against
-// PANEL_BEZEL_MARGIN_PX by arithmetic, not by eye - see the LAYOUT
-// section's own rule about that margin - and confirmed by the gate.
+// THE OWNER'S MOCKUP (a hand-drawn "<21>" over "<06>", chevrons well clear
+// of the digits, near the bezel) settled two things that were open
+// questions before it arrived:
+//
+//   - upright: the chevrons point LEFT and RIGHT, flanking each LINE's own
+//     sides - not above/below as an earlier draft of this file had them.
+//     "<" left of a line, ">" right of it, for both the hours and the
+//     minutes.
+//   - long-ways: the up/down chevrons stay - "en mode paysage decale les
+//     fleches / mets plus d'ecart avec les chiffres, t'as de la place
+//     verticale" (the owner's own words) - just moved further from the
+//     digits, since the long-ways layout has 80px of unused margin above
+//     and below the digit row to spend on exactly that.
+//
+// A chevron that POINTS somewhere is a promise about what tapping it does,
+// which the OLD "whichever quarter you tap, tap-and-it-happens" rule did
+// not have to keep (see chevron_zone() below for the direction change this
+// forced).
+//
+// CHEV_T/CHEV_HALF_W are shared shape constants (arm thickness, arm span);
+// every position below is checked against PANEL_BEZEL_MARGIN_PX by
+// arithmetic, not by eye - see the LAYOUT section's own rule about that
+// margin - and confirmed by the gate.
 #define CHEV_HALF_W 13
-#define CHEV_H      9
 #define CHEV_T      6
-#define CHEV_GAP    3
+#define CHEV_H      9   // long-ways: base-to-apex distance (vertical)
 
-// Upright: the hours' chevrons flank y=[P_Y_HOURS, P_Y_HOURS+P_DIGIT_H),
-// the minutes' flank y=[P_Y_MINUTES, P_Y_MINUTES+P_DIGIT_H) - same x centre
-// for both, PANEL_W/2, since both rows share the same two columns.
-#define CHEV_P_HOURS_UP_BASE   (P_Y_HOURS - CHEV_GAP)
-#define CHEV_P_HOURS_UP_APEX   (CHEV_P_HOURS_UP_BASE - CHEV_H)
-#define CHEV_P_HOURS_DN_BASE   (P_Y_HOURS + P_DIGIT_H + CHEV_GAP)
-#define CHEV_P_HOURS_DN_APEX   (CHEV_P_HOURS_DN_BASE + CHEV_H)
-#define CHEV_P_MIN_UP_BASE     (P_Y_MINUTES - CHEV_GAP)
-#define CHEV_P_MIN_UP_APEX     (CHEV_P_MIN_UP_BASE - CHEV_H)
-#define CHEV_P_MIN_DN_BASE     (P_Y_MINUTES + P_DIGIT_H + CHEV_GAP)
-#define CHEV_P_MIN_DN_APEX     (CHEV_P_MIN_DN_BASE + CHEV_H)
+// Upright: each chevron sits CHEV_P_GAP clear of its line's own left/right
+// digit edge, CHEV_P_H further out from there to its point. P_X0=60 and
+// P_X1+P_DIGIT_W=308 leave 60px of margin on both sides of the two-column
+// block (368 wide total) to spend this in - comfortably inside that with
+// room to spare, matching the mockup's own clearance rather than crowding
+// the bezel.
+#define CHEV_P_GAP  6
+#define CHEV_P_H    9
+#define CHEV_P_HOURS_CY   (P_Y_HOURS + P_DIGIT_H / 2)
+#define CHEV_P_MIN_CY     (P_Y_MINUTES + P_DIGIT_H / 2)
+#define CHEV_P_LEFT_BASE  (P_X0 - CHEV_P_GAP)
+#define CHEV_P_LEFT_APEX  (CHEV_P_LEFT_BASE - CHEV_P_H)
+#define CHEV_P_RIGHT_BASE (P_X1 + P_DIGIT_W + CHEV_P_GAP)
+#define CHEV_P_RIGHT_APEX (CHEV_P_RIGHT_BASE + CHEV_P_H)
 
 // Long-ways: both pairs sit in the same single row (y=[L_Y0,
 // L_Y0+L_DIGIT_H)), so the up/down offsets are shared; only the x centre
 // differs between the hours' pair and the minutes' (computed in
 // draw_all_chevrons() from L_DIGIT_X, not duplicated here as a second set
-// of literals).
-#define CHEV_L_UP_BASE (L_Y0 - CHEV_GAP)
+// of literals). CHEV_L_GAP is deliberately far bigger than CHEV_P_GAP: the
+// owner asked specifically for long-ways to open up, and L_Y0 (80) leaves
+// 80px of paper above and below the digit row to do it in - 36 spends
+// under half of that and still leaves clear margin against
+// PANEL_BEZEL_MARGIN_PX.
+#define CHEV_L_GAP 36
+#define CHEV_L_UP_BASE (L_Y0 - CHEV_L_GAP)
 #define CHEV_L_UP_APEX (CHEV_L_UP_BASE - CHEV_H)
-#define CHEV_L_DN_BASE (L_Y0 + L_DIGIT_H + CHEV_GAP)
+#define CHEV_L_DN_BASE (L_Y0 + L_DIGIT_H + CHEV_L_GAP)
 #define CHEV_L_DN_APEX (CHEV_L_DN_BASE + CHEV_H)
 
 // How long, idle, set mode waits before giving up and returning to the
@@ -443,9 +498,9 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
  * order of magnitude clear of both other thresholds this same button
  * carries.
  *
- * THE FIRST DOUBLE-PRESS opens set mode, and chevrons appear above and below
- * BOTH the hours and the minutes AT ONCE - not one pair with a further
- * gesture to move onto the other, because the owner asked for exactly two
+ * THE FIRST DOUBLE-PRESS opens set mode, and chevrons appear on BOTH the
+ * hours and the minutes AT ONCE - not one pair with a further gesture to
+ * move onto the other, because the owner asked for exactly two
  * double-presses total, open and commit, with nothing in between (an
  * earlier draft of this feature had a middle double-press to move a cursor
  * from the hours to the minutes; the owner cut it, in his own words: "on
@@ -453,13 +508,27 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
  * does she reach both fields with only one opening gesture" has to be
  * answered by WHERE she taps, not by a mode step, and this app already had
  * the rule: the hold-and-slide gesture this replaces picked its pair the
- * same way - "the axis that SEPARATES the two pairs chooses which pair" -
- * and that sentence survives the redesign unchanged, it now just picks a
- * chevron zone instead of a slide's starting field. Held upright the hours
- * sit above the minutes, so touching the top half of the glass reaches the
- * hours' chevrons and the bottom half the minutes'; held long-ways the hours
- * are the left pair and the minutes the right, so touching left reaches the
- * hours and touching right the minutes. Nothing to learn twice.
+ * same way - "the axis that SEPARATES the two pairs chooses which pair; the
+ * other axis carries the value" - and that sentence survives the redesign
+ * unchanged in BOTH halves, not just the first: held upright the hours sit
+ * above the minutes, so Y still separates them, and now X (left/right)
+ * carries the direction instead of a slide's absolute value; held long-ways
+ * the hours are the left pair and the minutes the right, so X still
+ * separates them, and Y (up/down) carries the direction, same as it always
+ * did here. Nothing to learn twice, in either the OLD gesture or between
+ * this app's own two layouts.
+ *
+ * THE CHEVRONS, per the owner's own mockup (a hand-drawn "<21>" over "<06>"):
+ * upright, a "<" sits left of each line and a ">" right of it - tap the left
+ * side of a line to decrease it, the right side to increase; long-ways, the
+ * "^"/"v" pair stays above and below each pair as it always did, moved
+ * further from the digits than an earlier draft had them ("mets plus
+ * d'ecart avec les chiffres, t'as de la place verticale", the owner's own
+ * words) - tap above to increase, below to decrease. A drawn arrow is a
+ * promise about what tapping it does; the OLD "whichever quarter, one
+ * direction" rule was fine when nothing on screen implied a direction, and
+ * stopped being fine the moment arrows appeared, so the direction follows
+ * the arrow exactly, both ways.
  *
  * WHAT SAYS THE OTHER FIELD IS ALSO LIVE: the other field's own chevrons,
  * on screen at the same time, in the same ink, from the moment set mode
@@ -472,21 +541,22 @@ static const int P_DIGIT_Y[4] = { P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES
  * drag left to latch anything against; each tap is independent and takes
  * effect immediately.
  *
- * THE TAP TARGET is NOT the chevron ink. Each chevron pair marks a few dozen
+ * THE TAP TARGET is NOT the chevron ink. Each chevron mark is a few dozen
  * pixels, far smaller than the ~100px an adult fingertip or the ~75px a
  * child's covers (AGENTS.md's "a finger is about 100 pixels wide" section),
- * so the actual target is the whole quarter of the glass that chevron sits
- * in: held upright, the panel's own four quarters (top to bottom) are
- * hours-up, hours-down, minutes-up, minutes-down; held long-ways, each pair
- * gets the full half of the panel nearer it, split again into an upper and
- * a lower half for the two directions. Every zone is well over 100px in
- * both dimensions, and together they cover the ENTIRE glass - there is no
- * dead area to miss, which is the more forgiving of the two options this
- * task posed (tap the chevrons themselves, or tap anywhere above/below) and
- * the one every other touch target on this device already prefers over a
- * small, precise one (AGENTS.md's "a finger also HIDES what it is choosing"
- * section; four.c and morpion.c made the same choice already, for the same
- * reason).
+ * so the actual target is the whole quarter of the glass the axis rule above
+ * assigns it: upright, the panel's own four quarters (top/bottom halves
+ * split again into left/right) are hours-decrease, hours-increase,
+ * minutes-decrease, minutes-increase; long-ways, each pair gets the full
+ * half of the panel nearer it, split again into an upper and a lower half
+ * for the two directions. Every zone is well over 100px in both dimensions,
+ * and together they cover the ENTIRE glass - there is no dead area to miss,
+ * which is the more forgiving of the two options an earlier draft of this
+ * task posed (tap the chevrons themselves, or tap anywhere in their own
+ * quarter of the glass) and the one every other touch target on this device
+ * already prefers over a small, precise one (AGENTS.md's "a finger also
+ * HIDES what it is choosing" section; four.c and morpion.c made the same
+ * choice already, for the same reason).
  *
  * THE SECOND DOUBLE-PRESS commits, exactly the way releasing BOOT used to:
  * one sensors_set_clock() call, seconds zeroed so the owner can line it up
@@ -599,11 +669,21 @@ static clock_state_t *s_state;
 // THE ONE PLACE THE ORIENTATION SIGNAL ENTERS THIS APP. See "THE
 // ORIENTATION SIGNAL" at the top of this file for the full reasoning on the
 // mapping, on which edge of each pair is flipped, on coasting, and on
-// !valid; the short version, MEASURED against the real emulator rather than
-// reasoned out on paper: LEFT/RIGHT is upright (LEFT, the flat default,
-// unflipped; RIGHT flipped), TOP/BOTTOM is long-ways (TOP unflipped,
-// BOTTOM flipped), and an invalid reading holds whatever is already on
-// screen.
+// !valid; the short version, MEASURED against the real emulator (twice now
+// - see "WHICH WAY IS UP, PRECISELY" below for what was wrong the first
+// time) rather than reasoned out on paper:
+//
+//     land.up   family      flipped?
+//     LEFT      portrait    no  (the flat, unmeasured default)
+//     RIGHT     portrait    yes
+//     BOTTOM    long-ways   no  (buttons toward the top edge)
+//     TOP       long-ways   yes
+//
+// and an invalid reading holds whatever is already on screen. Note the
+// asymmetry: portrait's UNFLIPPED edge is LEFT, long-ways's UNFLIPPED edge
+// is BOTTOM - two DIFFERENT names, not "whichever edge is first
+// alphabetically" or some other pattern that would make one formula cover
+// both without checking two distinct values.
 static clock_face_t clock_face(clock_state_t *s, const app_frame_t *f) {
     clock_face_t out;
     if (!f->tilt.valid) {
@@ -613,7 +693,7 @@ static clock_face_t clock_face(clock_state_t *s, const app_frame_t *f) {
     }
     uint8_t up = f->tilt.up;
     out.upright = (up == TILT_UP_LEFT || up == TILT_UP_RIGHT);
-    out.flip180 = out.upright ? (up == TILT_UP_RIGHT) : (up == TILT_UP_BOTTOM);
+    out.flip180 = (up == TILT_UP_RIGHT || up == TILT_UP_TOP);
     return out;
 }
 
@@ -684,12 +764,26 @@ static void chevron_capsule(digits_space_t space, float x0, float y0,
 // Two capsules meeting at (cx, apexY), base spanning cx-halfW..cx+halfW at
 // baseY. apexY above baseY draws an up chevron (increase), apexY below
 // baseY a down chevron (decrease) - the sign of apexY-baseY says which, so
-// no caller needs to say it twice.
+// no caller needs to say it twice. Used for the long-ways face's up/down
+// marks.
 static void draw_chevron(digits_space_t space, int cx, int apexY, int baseY,
                          int halfW, int t, uint16_t colorPx) {
     float r = (float)t * 0.5f;
     chevron_capsule(space, (float)(cx - halfW), (float)baseY, (float)cx, (float)apexY, r, colorPx);
     chevron_capsule(space, (float)cx, (float)apexY, (float)(cx + halfW), (float)baseY, r, colorPx);
+}
+
+// The same shape, turned 90 degrees: two capsules meeting at (apexX, cy),
+// base spanning cy-halfH..cy+halfH at baseX. apexX left of baseX draws a
+// "<" (decrease, per the owner's mockup); apexX right of baseX draws a ">"
+// (increase). Used for the upright face's left/right marks - see "THE
+// OWNER'S MOCKUP" above for why upright points sideways while long-ways
+// still points up/down.
+static void draw_chevron_h(digits_space_t space, int cy, int apexX, int baseX,
+                           int halfH, int t, uint16_t colorPx) {
+    float r = (float)t * 0.5f;
+    chevron_capsule(space, (float)baseX, (float)(cy - halfH), (float)apexX, (float)cy, r, colorPx);
+    chevron_capsule(space, (float)apexX, (float)cy, (float)baseX, (float)(cy + halfH), r, colorPx);
 }
 
 // All four, for whichever layout is showing. Positions come from the
@@ -700,11 +794,14 @@ static void draw_chevron(digits_space_t space, int cx, int apexY, int baseY,
 static void draw_all_chevrons(bool upright) {
     uint16_t px = gray_to_px(INK_LIT);
     if (upright) {
-        int cx = PANEL_W / 2;
-        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_HOURS_UP_APEX, CHEV_P_HOURS_UP_BASE, CHEV_HALF_W, CHEV_T, px);
-        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_HOURS_DN_APEX, CHEV_P_HOURS_DN_BASE, CHEV_HALF_W, CHEV_T, px);
-        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_MIN_UP_APEX,   CHEV_P_MIN_UP_BASE,   CHEV_HALF_W, CHEV_T, px);
-        draw_chevron(DIGITS_PORTRAIT, cx, CHEV_P_MIN_DN_APEX,   CHEV_P_MIN_DN_BASE,   CHEV_HALF_W, CHEV_T, px);
+        // "<" left of each line (decrease), ">" right of it (increase) -
+        // the owner's own mockup. Both lines share the same left/right X
+        // positions, since both columns line up between the hours and the
+        // minutes; only the Y centre differs.
+        draw_chevron_h(DIGITS_PORTRAIT, CHEV_P_HOURS_CY, CHEV_P_LEFT_APEX,  CHEV_P_LEFT_BASE,  CHEV_HALF_W, CHEV_T, px);
+        draw_chevron_h(DIGITS_PORTRAIT, CHEV_P_HOURS_CY, CHEV_P_RIGHT_APEX, CHEV_P_RIGHT_BASE, CHEV_HALF_W, CHEV_T, px);
+        draw_chevron_h(DIGITS_PORTRAIT, CHEV_P_MIN_CY,   CHEV_P_LEFT_APEX,  CHEV_P_LEFT_BASE,  CHEV_HALF_W, CHEV_T, px);
+        draw_chevron_h(DIGITS_PORTRAIT, CHEV_P_MIN_CY,   CHEV_P_RIGHT_APEX, CHEV_P_RIGHT_BASE, CHEV_HALF_W, CHEV_T, px);
     } else {
         int cxHours   = (L_DIGIT_X[0] + L_DIGIT_X[1] + L_DIGIT_W) / 2;
         int cxMinutes = (L_DIGIT_X[2] + L_DIGIT_X[3] + L_DIGIT_W) / 2;
@@ -909,28 +1006,39 @@ static bool pwr_double_press(clock_state_t *s, uint32_t nowMs, uint8_t key) {
 }
 
 // Which field a tap at (touchX, touchY) adjusts, and which way - see "THE
-// TAP TARGET" above. Every point on the glass lands in exactly one of the
-// four zones; there is no miss case, deliberately, because a target a
-// child can fail to hit is worse than one that is occasionally the coarser
-// of two reasonable choices.
+// TAP TARGET" above, and "THE OWNER'S MOCKUP" by the CHEV_* constants for
+// what the chevrons now promise: a left arrow decreases, a right arrow
+// increases (upright); an up arrow increases, a down arrow decreases
+// (long-ways). Both layouts follow the same rule this file's own header
+// already states for the gesture this one replaced - "the axis that
+// SEPARATES the two pairs chooses which pair you are setting; the other
+// axis carries the value" - checked against that header rather than
+// invented fresh: upright already used Y to separate hours from minutes
+// and X to carry the value, long-ways already used the opposite, and both
+// still do here, direction included. Every point on the glass lands in
+// exactly one of the four zones; there is no miss case, deliberately,
+// because a target a child can fail to hit is worse than one that is
+// occasionally the coarser of two reasonable choices.
 static void chevron_zone(bool upright, int touchX, int touchY, int *field, int *dir) {
     if (upright) {
-        // The panel's own four quarters, top to bottom. X is unscoped - the
-        // full 368px width counts as one target - which is what makes this
-        // more forgiving than aiming at either pair's own narrower column.
-        int y = touchY;
-        if (y < PANEL_H / 4)          { *field = FIELD_HOURS;   *dir = +1; }
-        else if (y < PANEL_H / 2)     { *field = FIELD_HOURS;   *dir = -1; }
-        else if (y < 3 * PANEL_H / 4) { *field = FIELD_MINUTES; *dir = +1; }
-        else                          { *field = FIELD_MINUTES; *dir = -1; }
+        // Y separates the pair (top half hours, bottom half minutes, same
+        // as the digits themselves are laid out); X carries the direction
+        // (left half decreases, right half increases, matching "<" left of
+        // a line and ">" right of it). Y is unscoped within its half and X
+        // within its half - the full panel, quartered into four HALF-height,
+        // HALF-width zones, each comfortably over 100px in both dimensions.
+        *field = (touchY < PANEL_H / 2) ? FIELD_HOURS : FIELD_MINUTES;
+        *dir = (touchX < PANEL_W / 2) ? -1 : +1;
     } else {
         // Panel coordinates map to landscape as (lx, ly) = (touchY,
         // PANEL_W-1-touchX) - gfx.h's own mapping, inverted, the same
-        // conversion the old positional gesture used. lx (which pair, left
-        // or right) and ly (which direction, above or below the digit row)
-        // are independent axes here, so each pair gets the FULL height for
-        // its own up/down split rather than sharing one axis for both jobs
-        // the way the upright layout has to.
+        // conversion the old positional gesture used. lx separates the pair
+        // (left half hours, right half minutes); ly carries the direction
+        // (smaller ly - toward the digit row's own top edge, where the "^"
+        // sits - increases; larger ly, where the "v" sits, decreases). lx
+        // and ly are independent axes here, so each pair gets the FULL
+        // height for its own up/down split rather than sharing one axis for
+        // both jobs the way the upright layout has to.
         int lx = touchY;
         int ly = PANEL_W - 1 - touchX;
         *field = (lx < LAND_W / 2) ? FIELD_HOURS : FIELD_MINUTES;

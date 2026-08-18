@@ -77,15 +77,19 @@ const GHOST_T = (t: number) => Math.floor((t * 2) / 5);
 const SOFT_INSET = 0.75;
 const DOUBLE_PRESS_WINDOW_MS = 500; // clock.c DOUBLE_PRESS_WINDOW_MS
 const SET_MODE_TIMEOUT_MS = 60000;  // clock.c SET_MODE_TIMEOUT_MS
-const CHEV_GAP = 3, CHEV_H = 9;     // clock.c CHEV_GAP / CHEV_H
+const CHEV_H = 9;       // clock.c CHEV_H (long-ways base-to-apex)
+const CHEV_P_GAP = 6, CHEV_P_H = 9;   // clock.c CHEV_P_GAP / CHEV_P_H
+const CHEV_L_GAP = 36;                // clock.c CHEV_L_GAP
 // clock.c's CHEV_P_*/CHEV_L_* macros, evaluated here the same way the C
-// preprocessor evaluates them there.
-const CHEV_P_HOURS_UP_BASE = P_Y_HOURS - CHEV_GAP, CHEV_P_HOURS_UP_APEX = CHEV_P_HOURS_UP_BASE - CHEV_H;
-const CHEV_P_HOURS_DN_BASE = P_Y_HOURS + P_DIGIT_H + CHEV_GAP, CHEV_P_HOURS_DN_APEX = CHEV_P_HOURS_DN_BASE + CHEV_H;
-const CHEV_P_MIN_UP_BASE = P_Y_MINUTES - CHEV_GAP, CHEV_P_MIN_UP_APEX = CHEV_P_MIN_UP_BASE - CHEV_H;
-const CHEV_P_MIN_DN_BASE = P_Y_MINUTES + P_DIGIT_H + CHEV_GAP, CHEV_P_MIN_DN_APEX = CHEV_P_MIN_DN_BASE + CHEV_H;
-const CHEV_L_UP_BASE = L_Y0 - CHEV_GAP, CHEV_L_UP_APEX = CHEV_L_UP_BASE - CHEV_H;
-const CHEV_L_DN_BASE = L_Y0 + L_DIGIT_H + CHEV_GAP, CHEV_L_DN_APEX = CHEV_L_DN_BASE + CHEV_H;
+// preprocessor evaluates them there. Upright now points left/right (the
+// owner's mockup - a "<" left of each line, a ">" right of it), so the two
+// positions that matter are the shared left/right X offsets, not a per-line
+// Y offset the way the old up/down layout needed.
+const CHEV_P_HOURS_CY = P_Y_HOURS + P_DIGIT_H / 2, CHEV_P_MIN_CY = P_Y_MINUTES + P_DIGIT_H / 2;
+const CHEV_P_LEFT_BASE = P_DIGIT_X[0]! - CHEV_P_GAP, CHEV_P_LEFT_APEX = CHEV_P_LEFT_BASE - CHEV_P_H;
+const CHEV_P_RIGHT_BASE = P_DIGIT_X[1]! + P_DIGIT_W + CHEV_P_GAP, CHEV_P_RIGHT_APEX = CHEV_P_RIGHT_BASE + CHEV_P_H;
+const CHEV_L_UP_BASE = L_Y0 - CHEV_L_GAP, CHEV_L_UP_APEX = CHEV_L_UP_BASE - CHEV_H;
+const CHEV_L_DN_BASE = L_Y0 + L_DIGIT_H + CHEV_L_GAP, CHEV_L_DN_APEX = CHEV_L_DN_BASE + CHEV_H;
 
 // digits.c's SEVEN_SEG, so the test can say "cell 0 is showing an 8" by
 // looking at which segments are lit rather than by trusting a log line.
@@ -347,6 +351,19 @@ function chevronDarkest(fb: Uint8Array, upright: boolean, cx: number, apexY: num
     }
     return darkest;
 }
+// Same, for the upright face's LEFT/RIGHT-pointing chevrons (the owner's
+// mockup): probes around the arrow's own midpoint (midX, cy) instead.
+function chevronDarkestH(fb: Uint8Array, cy: number, apexX: number, baseX: number): number {
+    const midX = (apexX + baseX) / 2;
+    let darkest = 255;
+    for (let dy = -10; dy <= 10; dy++) {
+        for (let dx = -6; dx <= 6; dx++) {
+            const g = panelGray(fb, midX + dx, cy + dy);
+            if (g < darkest) darkest = g;
+        }
+    }
+    return darkest;
+}
 
 // ---- the setting gesture: double-press PWR to open/commit, tap a chevron
 // zone to step a field - mirrored from clock.c's pwr_double_press() and
@@ -381,9 +398,11 @@ type Field = "H+" | "H-" | "M+" | "M-";
 function tapZone(dev: Device, upright: boolean, field: Field, t0: number): number {
     let px: number, py: number;
     if (upright) {
-        const bandY = { "H+": 0.125, "H-": 0.375, "M+": 0.625, "M-": 0.875 }[field];
-        px = PANEL_W / 2;
-        py = PANEL_H * bandY;
+        // Y separates the pair (top half hours, bottom half minutes); X
+        // carries the direction (left half decreases, right half increases -
+        // the owner's mockup, "<" left of a line, ">" right of it).
+        py = field[0] === "H" ? PANEL_H * 0.25 : PANEL_H * 0.75;
+        px = field[1] === "+" ? PANEL_W * 0.75 : PANEL_W * 0.25;
     } else {
         const lx = field[0] === "H" ? LAND_W * 0.25 : LAND_W * 0.75;
         const ly = field[1] === "+" ? LAND_H * 0.25 : LAND_H * 0.75;
@@ -555,7 +574,7 @@ async function main() {
     // described first and the one "reads like the stopwatch" is about.
     console.log("\n-- a clock that has never been told the time, held long-ways --");
     let t = 125;
-    t = settleGravity(dev, t, [-1, 0, 0]); // panel RIGHT edge up -> land.up=TOP -> long-ways, unflipped
+    t = settleGravity(dev, t, [1, 0, 0]); // panel LEFT edge up -> land.up=BOTTOM -> long-ways, unflipped (buttons toward the top edge - the owner's own definition)
     check("the firmware says outright that it does not know the time",
         dev.fwLogLines().some((l) => l.includes("the time is not known")),
         dev.fwLogLines().find((l) => l.includes("not known")) ?? "(nothing said)");
@@ -627,7 +646,16 @@ async function main() {
     for (let i = 0; i < 4; i++) t = tapZone(dev, false, "H-", t); // 12 -> 8
     await writeShot("clock-set-hours.png", dev.fbSnapshot(), false,
         "set mode, long-ways: chevrons flank both pairs; the hours have just been tapped down to 08, the minutes still seeded at 00");
+    // A LONG run in one direction - the shape of tap the owner asked to have
+    // checked against TAP_COOLDOWN_MS: 22 consecutive decrements, back to
+    // back, at tapZone()'s own just-past-cooldown pace (280ms/tap: 20ms down
+    // + 20ms up + 260ms to clear TAP_COOLDOWN_MS's 250ms - the minimum gap
+    // that still registers every tap, not a leisurely one).
+    const minutesRunStart = t;
     for (let i = 0; i < 22; i++) t = tapZone(dev, false, "M-", t); // 0 -> 38 (wraps: 60-22=38)
+    const minutesRunMs = t - minutesRunStart;
+    console.log(`    22 consecutive decrements took ${minutesRunMs}ms of simulated time ` +
+        `(${(minutesRunMs / 22).toFixed(0)}ms/tap) and all landed - see the segment check below`);
     await writeShot("clock-set-minutes.png", dev.fbSnapshot(), false,
         "set mode, long-ways: the minutes have just been tapped down (wrapping) to 38, the hours untouched at 08");
 
@@ -705,12 +733,18 @@ async function main() {
     // Panel-space g per puckpose.ts's own documented poses (turn=0,90,180,-90
     // at tilt=90): TOP=(0,1,0), RIGHT=(-1,0,0), BOTTOM=(0,-1,0), LEFT=(1,0,0).
     // Mapping and flip verified empirically against this emu.wasm on
-    // 2026-08-18 (see clock.c's "THE ORIENTATION SIGNAL"), not re-derived.
+    // 2026-08-18 (see clock.c's "THE ORIENTATION SIGNAL"), not re-derived -
+    // TWICE now: the first pass had LEFT/RIGHT's flip backwards (the owner's
+    // own definition, "in LEFT up is towards the boot and pwr button", both
+    // on the panel's native RIGHT edge per AGENTS.md, settled via
+    // emulator/src/device.ts's actual CSS - applyRotation()'s
+    // rotate(totalDeg), standard clockwise-positive - rather than reasoned
+    // out on paper a third time).
     const edgePoses: { name: string; g: [number, number, number]; upright: boolean; flip: boolean }[] = [
         { name: "TOP up (panel)",    g: [0, 1, 0],  upright: true,  flip: false },
         { name: "BOTTOM up (panel)", g: [0, -1, 0], upright: true,  flip: true },
-        { name: "RIGHT up (panel)",  g: [-1, 0, 0], upright: false, flip: false },
-        { name: "LEFT up (panel)",   g: [1, 0, 0],  upright: false, flip: true },
+        { name: "RIGHT up (panel)",  g: [-1, 0, 0], upright: false, flip: true },
+        { name: "LEFT up (panel)",   g: [1, 0, 0],  upright: false, flip: false },
     ];
     let topFb: Uint8Array | null = null;
     for (const pose of edgePoses) {
@@ -776,8 +810,23 @@ async function main() {
         "the whole picture is turned 180 so it still reads hours-over-minutes " +
         "right side up once the panel itself is physically upside down");
 
+    // The long-ways flip, the one that was wrong: panel RIGHT edge up puts
+    // the buttons toward the BOTTOM of the panel (opposite the owner's own
+    // "up is towards the buttons" LEFT example), so this is the half of the
+    // long-ways pair that gets turned. Shown through the STANDARD landscape
+    // mapping (upright=false), the same "buttons-at-top" viewing convention
+    // clock-running.png (panel LEFT edge up) uses - if the internal flip is
+    // correct, this same viewer should show the picture turned end for end
+    // relative to that one, buttons-toward-the-glass-bottom instead.
+    t = settleGravity(dev, t, [-1, 0, 0]);
+    await writeShot("clock-turned-longways-flipped.png", dev.fbSnapshot(), false,
+        "panel RIGHT edge up (buttons toward the bottom of the glass): the same " +
+        "buttons-at-top landscape viewer clock-running.png uses, so the 180 turn " +
+        "shows as the whole HH:MM reading upside down in THIS picture - that is " +
+        "correct here, it is the half of the pair that needed the flip");
+
     // ---- 7. the bezel -----------------------------------------------------
-    t = settleGravity(dev, t, [-1, 0, 0]); // back to long-ways, unflipped, for the rest of this file
+    t = settleGravity(dev, t, [1, 0, 0]); // back to long-ways, unflipped (panel LEFT up), for the rest of this file
     fb = dev.fbSnapshot();
     let outside: string | null = null;
     for (let y = 0; y < PANEL_H && !outside; y++) {
@@ -789,16 +838,45 @@ async function main() {
     check(`no ink within PANEL_BEZEL_MARGIN_PX (${BEZEL}) of any edge, where the case hides it`,
         outside === null, outside ? `ink at ${outside}` : "every pixel of the face is inside the visible canvas");
 
-    // ---- 8. the same gesture, upright --------------------------------------
-    console.log("\n-- the same gesture upright: the axes swap, the rule does not --");
+    // ---- 8. the same gesture, upright: chevrons point left/right ----------
+    console.log("\n-- the same gesture upright: chevrons point left/right, and the direction follows the arrow --");
     t = settleGravity(dev, t, [0, 1, 0]); // panel TOP up -> upright, unflipped
     dev.drainLog();
     t = doublePressPWR(dev, t);
-    for (let i = 0; i < 3; i++) t = tapZone(dev, true, "M-", t);
+    const openLine = dev.fwLogLines().findLast((l) => l.includes("clock: set mode opened, seeded at"));
+    const seedMatch = openLine?.match(/seeded at (\d+):(\d+)/);
+    check("set mode opened upright, seeded from the running clock", !!seedMatch, openLine ?? "(no open line)");
+    let seedH = seedMatch ? Number(seedMatch[1]) : 0;
+    let seedM = seedMatch ? Number(seedMatch[2]) : 0;
+
+    fb = dev.fbSnapshot();
+    let chevOkP = true;
+    const chevDetailP: string[] = [];
+    for (const cy of [CHEV_P_HOURS_CY, CHEV_P_MIN_CY]) {
+        for (const [apexX, baseX] of [[CHEV_P_LEFT_APEX, CHEV_P_LEFT_BASE], [CHEV_P_RIGHT_APEX, CHEV_P_RIGHT_BASE]] as const) {
+            const d = chevronDarkestH(fb, cy, apexX, baseX);
+            if (d > 140) chevOkP = false;
+            chevDetailP.push(`cy=${cy} x~${(apexX + baseX) / 2}: darkest ${d}`);
+        }
+    }
+    check("upright: all four left/right chevrons are visible - \"<\" left of each line, \">\" right",
+        chevOkP, chevDetailP.join("; "));
+    await writeShot("clock-set-portrait.png", fb, true,
+        "set mode, upright: \"<\" outside the left edge of each line, \">\" outside the right, well clear of the digits near the bezel");
+
+    // Left of a line decreases it, right increases - the owner's mockup,
+    // checked in BOTH directions, on BOTH fields, not assumed symmetric.
+    t = tapZone(dev, true, "M-", t);
+    seedM = (seedM + 60 - 1) % 60;
+    await writeShot("clock-set-portrait-after.png", dev.fbSnapshot(), true,
+        "set mode, upright, after one tap left of the minutes: only the minutes moved, one step down");
+    t = tapZone(dev, true, "H+", t);
+    seedH = (seedH + 24 + 1) % 24;
     t = doublePressPWR(dev, t);
     const upSetLine = dev.fwLogLines().findLast((l) => l.includes("clock: set to"));
-    check("touching the lower line's zone sets the minutes, held upright",
-        !!upSetLine && /^clock: set to \d\d:\d\d$/.test(upSetLine), upSetLine ?? "(no set line)");
+    const wantUpSet = `clock: set to ${String(seedH).padStart(2, "0")}:${String(seedM).padStart(2, "0")}`;
+    check("tapping left of a line decrements it and right increments it, upright, exactly as the mockup's arrows promise",
+        upSetLine === wantUpSet, `${upSetLine ?? "(no set line)"} (wanted ${wantUpSet})`);
 
     // ---- 9. the double-press window: two taps too far apart is not a
     // double-press ----------------------------------------------------------
