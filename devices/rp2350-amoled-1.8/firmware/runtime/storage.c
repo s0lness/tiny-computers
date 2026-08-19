@@ -264,6 +264,32 @@ static int s_nextFreeSlot = -2;
 // lines down needs none of this - it stays partition-relative on purpose.
 static uint32_t s_absoluteSectorOffset = 0;
 
+// THE READ OFFSET, kept as its own variable rather than reusing
+// STORAGE_SECTOR_OFFSET, because the two address spaces decision 0018 is
+// about do not agree in both of the ways this board can boot:
+//
+//   PARTITIONED. The XIP window IS the active partition, so an XIP read is
+//   partition-relative (STORAGE_SECTOR_OFFSET) while flash_range_erase/
+//   program take chip-absolute offsets (partition base + that). Two
+//   different numbers for one sector - the whole of decision 0018.
+//
+//   UNPARTITIONED, which is how this puck actually boots today: there is no
+//   partition table (confirmed on silicon, `picotool partition info`), the
+//   image is linked at 0x10000000, and the XIP window maps the whole chip.
+//   Read and write then use the SAME chip-absolute number.
+//
+// Writing that as one constant plus a conditional base was what produced the
+// white-screen freeze the first time. Two named variables, each set once,
+// cannot drift apart the same way.
+static uint32_t s_xipReadOffset = STORAGE_SECTOR_OFFSET;
+
+// Where storage lives when no partition table exists. The LAST sector of the
+// 16MB chip: past slot_b's end (0x800000..0xF00000) and past the manifest
+// (0xF00000), so it is in unpartitioned space under store/partitions.json
+// and cannot collide with any partition if one is ever installed. It is also
+// nowhere near the linked image, which ends around 0x1002a9f0 (~171KB).
+#define STORAGE_UNPARTITIONED_SECTOR (0x1000000u - FLASH_SECTOR_SIZE) // 0xFFF000
+
 // Resolves the CHIP-ABSOLUTE base of the partition THIS BOOT is actually
 // running from, via two bootrom ROM calls (pico/bootrom.h) rather than a
 // hardcoded 0x100000 (slot_a) or 0x800000 (slot_b, store/partitions.json):
@@ -333,15 +359,33 @@ void storage_init(void) {
         // "nothing can be read this boot" without this line existing
         // somewhere; this is that somewhere, printed once, at the only
         // moment storage.c itself knows which case it is.
-        printf("storage: no partition table found this boot (rom_get_boot_info/"
-               "partition-table lookup failed) - flash storage disabled until "
-               "a valid partition table is present again\r\n");
-        s_nextFreeSlot = -2;
-        return;
+        // NO LONGER FATAL, since 2026-08-19. Refusing here was the right
+        // instinct - guessing a chip-absolute address while actually booted
+        // from a partition is precisely the white-screen freeze - but it
+        // turned out to be the NORMAL case on this puck, not the exotic one:
+        // there is no partition table, because the image links at 0x10000000
+        // and every ordinary reflash overwrites whatever table sat there (see
+        // AGENTS.md's flash notes). So this branch fired on every boot and
+        // took all of storage with it, silently, until the line above was
+        // added and the owner lost a calibration to it.
+        //
+        // Unpartitioned is not a guess: it is a KNOWN layout. The image is at
+        // the chip's start and the XIP window maps the whole chip, so read and
+        // write share one chip-absolute offset, and there is no second address
+        // space to get wrong. What made the freeze possible was a partition
+        // whose base was not zero while the code assumed it was; here there is
+        // no partition at all.
+        printf("storage: no partition table this boot - using the chip's last "
+               "sector at 0x%08lx (unpartitioned layout)\r\n",
+               (unsigned long)STORAGE_UNPARTITIONED_SECTOR);
+        s_absoluteSectorOffset = STORAGE_UNPARTITIONED_SECTOR;
+        s_xipReadOffset        = STORAGE_UNPARTITIONED_SECTOR;
+    } else {
+        s_absoluteSectorOffset = partitionBase + STORAGE_SECTOR_OFFSET;
+        s_xipReadOffset        = STORAGE_SECTOR_OFFSET;
     }
-    s_absoluteSectorOffset = partitionBase + STORAGE_SECTOR_OFFSET;
 
-    const uint8_t *base = (const uint8_t *)(XIP_BASE + STORAGE_SECTOR_OFFSET);
+    const uint8_t *base = (const uint8_t *)(XIP_BASE + s_xipReadOffset);
     for (int i = 0; i < STORAGE_TOTAL_RECORDS; i++) {
         storage_record_t rec;
         memcpy(&rec, base + (size_t)i * STORAGE_RECORD_SIZE, STORAGE_RECORD_SIZE);
@@ -435,7 +479,7 @@ void storage_save_u32_tagged(uint8_t kind, uint32_t value, uint8_t tag) {
     uint32_t pageOffset = pageIndex * FLASH_PAGE_SIZE;
 
     uint8_t page[FLASH_PAGE_SIZE];
-    const uint8_t *pageFlash = (const uint8_t *)(XIP_BASE + STORAGE_SECTOR_OFFSET + pageOffset);
+    const uint8_t *pageFlash = (const uint8_t *)(XIP_BASE + s_xipReadOffset + pageOffset);
     memcpy(page, pageFlash, FLASH_PAGE_SIZE);
     memcpy(page + slotInPage * STORAGE_RECORD_SIZE, &rec, STORAGE_RECORD_SIZE);
 
