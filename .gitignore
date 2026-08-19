@@ -30,3 +30,6 @@ emulator/traces/
 # Secrets, per the house convention
 .secrets.env
 *.secrets.env
+
+# Session-local agent state and worktrees, never committed
+/.claude/
