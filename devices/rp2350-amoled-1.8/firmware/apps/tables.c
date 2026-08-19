@@ -126,6 +126,7 @@
  * which key she was looking at when she let go.
  * ==========================================================================
  */
+#include <math.h>
 #include <stdio.h>
 
 #include "app.h"
@@ -133,6 +134,7 @@
 #include "gfx.h"
 #include "sensors.h"
 #include "shapes.h"
+#include "storage.h"
 
 /* =========================================================================
  * LAYOUT. Portrait 368x448 - the panel's own native space, unrotated.
@@ -218,6 +220,13 @@ static void shapes_fill_capsule_aa(float x0, float y0, float r0,
 static void shapes_fill_disc_aa(float cx, float cy, float r, uint16_t color) {
     shapes_fill_disc_aa_land(cy, (float)PANEL_W - cx, r, color);
 }
+// Same portrait<->landscape isometry as the two wrappers above, for the
+// calibration crosshair's own ring (see FIVE-POINT TOUCH CALIBRATION below
+// numpad_hit()) - the only caller today, but grouped here with its two
+// siblings rather than beside that caller, per this block's own header.
+static void shapes_fill_annulus_aa(float cx, float cy, float rOuter, float rInner, uint16_t color) {
+    shapes_fill_annulus_aa_land(cy, (float)PANEL_W - cx, rOuter, rInner, color);
+}
 
 // gfx_push() takes an INCLUSIVE panel rectangle (minX,minY,maxX,maxY); every
 // call site in this file thinks in (x,y,w,h), the same shape gfx_push_land()
@@ -232,6 +241,14 @@ static void shapes_fill_disc_aa(float cx, float cy, float r, uint16_t color) {
 static void gfx_push_wh(int x, int y, int w, int h) {
     gfx_push(x, y, x + w - 1, y + h - 1);
 }
+
+// A plain round-half-up to the nearest int. Used wherever a float bias -
+// which, since FIVE-POINT TOUCH CALIBRATION below, may be a fitted line's
+// value rather than just the old flat TOUCH_THUMB_BIAS_Y constant - has to
+// become an integer pixel offset (numpad_hit() below). floorf is already
+// an available math function on both targets (emu_abi.h's import list /
+// pico-sdk's libm), so this needs nothing this file does not already have.
+static int32_t tables_round_i32(float v) { return (int32_t)floorf(v + 0.5f); }
 
 /* ---- THE QUESTION BAND ---------------------------------------------------
  *
@@ -397,6 +414,14 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 // the key ABOVE it, which is the point.
 #define TOUCH_THUMB_BIAS_Y_DEFAULT 40.0f
 
+// THIS IS NOW A FALLBACK, NOT THE LAST WORD. 40 was picked by feel, twice
+// (this constant's own history above). FIVE-POINT TOUCH CALIBRATION, right
+// after numpad_hit() below, replaces it with a MEASURED line once the owner
+// runs that mode; TOUCH_THUMB_BIAS_Y_DEFAULT remains exactly what a
+// never-calibrated puck falls back to - see tables_effective_bias() for the
+// precedence between this constant, a stored calibration, and the
+// TABLES_LIVE_TUNE bench slider just below.
+
 /* ---- DEVELOPMENT: live tuning of the thumb bias (TABLES_LIVE_TUNE) ------
  *
  * Same mechanism as sketch.c's SKETCH_LIVE_TUNE and clock.c's
@@ -424,6 +449,18 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 #if TABLES_LIVE_TUNE
 static float g_tuneThumbBiasY = TOUCH_THUMB_BIAS_Y_DEFAULT;
 #define TOUCH_THUMB_BIAS_Y g_tuneThumbBiasY
+
+// WHETHER THE SLIDER HAS ACTUALLY BEEN TOUCHED THIS SESSION - see
+// tables_effective_bias() (past tables_state_t, below) for why this exists
+// at all: TABLES_LIVE_TUNE is compiled into EVERY emulator build (the
+// devlink tuning registry serves sketch.c/clock.c/tables.c from the same
+// binary), so "TABLES_LIVE_TUNE is on" cannot by itself mean "the owner is
+// at this instant moving the slider" - it is true on every single run,
+// including every automated test. Set the moment tables_tune_set() is
+// actually called for THIS tunable (not merely because the build has the
+// gate compiled in), cleared again on tables_enter() (a fresh session) -
+// see tables_tune_reset_moved() below.
+static bool g_tuneThumbBiasMoved = false;
 
 typedef struct {
     const char *protoName;  // devlink/emulator-facing identifier, same
@@ -487,8 +524,20 @@ bool tables_tune_set(const char *name, float value, float *outApplied) {
     if (value > t->max) value = t->max;
     *t->value = value;
     if (outApplied) *outApplied = value;
+    // THE SLIDER IS NOW ACTIVELY IN USE - see g_tuneThumbBiasMoved's own
+    // comment. Compares by POINTER (which tunable's storage this call just
+    // wrote), not by name, so a future second tunable added to
+    // g_tablesTunables does not silently start tripping this flag too.
+    if (t->value == &g_tuneThumbBiasY) g_tuneThumbBiasMoved = true;
     return true;
 }
+
+// A fresh session (tables_enter()) starts by trusting a stored calibration
+// (or the default) again - "while it is being moved" (this file's own
+// CALIBRATION section, on the tunable-vs-calibration precedence) does not
+// mean "was ever moved in a session that ended", or a slider nudged once
+// during development would silently outrank every calibration forever.
+static void tables_tune_reset_moved(void) { g_tuneThumbBiasMoved = false; }
 #else // !TABLES_LIVE_TUNE
 #define TOUCH_THUMB_BIAS_Y TOUCH_THUMB_BIAS_Y_DEFAULT
 
@@ -505,10 +554,17 @@ bool tables_tune_set(const char *name, float value, float *outApplied) {
     (void)name; (void)value; (void)outApplied;
     return false;
 }
+static void tables_tune_reset_moved(void) {} // no tunable exists to have moved
 #endif // TABLES_LIVE_TUNE
 
-static int numpad_hit(int lx, int ly) {
-    const int biased = ly - (int)TOUCH_THUMB_BIAS_Y;
+// `biasY` is TOUCH_THUMB_BIAS_Y by default, but see tables_effective_bias()
+// (FIVE-POINT TOUCH CALIBRATION below): once a calibration has been run,
+// the caller passes a value that is itself a function of `ly` (a fitted
+// `alpha + beta*y` line, not a flat constant), computed once by the caller
+// before this function ever sees it - numpad_hit() itself stays exactly as
+// blind to where the number came from as it always was.
+static int numpad_hit(int lx, int ly, float biasY) {
+    const int biased = ly - tables_round_i32(biasY);
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W) return -1;
     // THE TWO EDGES ARE NOT SYMMETRIC, on purpose.
     //
@@ -537,6 +593,131 @@ static int numpad_hit(int lx, int ly) {
     // which suits the digit a child reaches for last and least confidently.
     if (row == NUMPAD_ROWS - 1) return CELL_ZERO;
     return row * NUMPAD_COLS + col;
+}
+
+/* =========================================================================
+ * FIVE-POINT TOUCH CALIBRATION - what TOUCH_THUMB_BIAS_Y_DEFAULT above is
+ * a stand-in for until this mode has run once.
+ *
+ * THE MODEL. numpad_hit()'s bias used to be one hand-picked constant
+ * (twice moved by feel - see that constant's own history and its
+ * literature citation, Holz & Baudisch, "Understanding Touch", CHI 2011).
+ * That paper's own account of the effect - a parallax between where a
+ * finger AIMS (roughly the top of the fingernail) and where the panel
+ * senses the CONTACT (the pad underneath) - has no reason to be the same
+ * size everywhere on the panel: near the top of the pad a finger reaching
+ * up is more extended and lands flatter; near the bottom, more curled,
+ * more perpendicular. So the quantity this mode measures is a LINE, not a
+ * point:
+ *
+ *     offset_y = alpha + beta * y          (y = the RAW touch y, panel space)
+ *
+ * not a second hand-picked constant. alpha is the number a flat bias
+ * already approximates; beta is how much that offset changes per pixel of
+ * y - zero if the geometry really is uniform down the panel, and PRINTED,
+ * not assumed, either way (tables_calib_finish() below never silently
+ * trusts the fit over what it actually measured).
+ *
+ * MEASURE FIRST, PRINT, THEN FIT. Five targets - four near the numpad's
+ * own corners, one at its centre (CALIB_TARGET_X/Y below) - chosen to span
+ * both the pad's height (which is what gives beta any leverage at all) and
+ * its width. Five taps per target, not one: this board's own measured
+ * noise (34 touch dropouts/sec, a STILL finger's own reported centroid
+ * wandering 80-250px - AGENTS.md, the repro-touch-dropout-*.ts tests)
+ * means a single tap mostly measures that noise, not the parallax. The
+ * MEDIAN of the five raw deltas is kept for the fit, not the mean: a mean
+ * is dragged toward whichever one of the five taps happened to land inside
+ * a jitter episode; a median is not. Every raw delta is printed as it
+ * lands (tables_calib_record_tap() below), and the five per-target medians
+ * are printed together again, BEFORE the fit is ever computed - so the
+ * owner can look at five plain numbers and judge for himself whether they
+ * actually vary enough to justify a line, or whether they agree within a
+ * few pixels and a constant remains the honest answer.
+ *
+ * THE GESTURE. PWR double-press, the same shape as clock.c's own
+ * pwr_double_press() (tables_calib_pwr_double_press() below is a private
+ * copy, not a shared one - this file has no dependency on clock.c for four
+ * lines of logic). Opens calibration from any phase, feedback pauses
+ * included (checked every tick, before the phase dispatch - see
+ * tables_tick()); a SECOND double-press while calibrating ABORTS outright,
+ * saving nothing. A two-press gesture on purpose: a child tapping the
+ * glass fast enough to double-tap a KEY does not also double-press the
+ * physical PWR button by accident.
+ *
+ * STORAGE. ONE record (storage.h's own rule: two separate saves, alpha
+ * then beta, would risk a power cut leaving a fresh alpha beside a stale
+ * beta). Both are packed into the single uint32_t storage_save_u32() takes
+ * - see tables_calib_pack()/tables_calib_unpack() just below for the exact
+ * fixed-point layout - and saved exactly once, at the end of a COMPLETED
+ * pass (tables_calib_finish()), never per tap, never per target.
+ *
+ * THE TUNABLE VS. A STORED CALIBRATION. See tables_effective_bias() (past
+ * tables_state_t below) for the exact rule and why: in short, the bench
+ * slider wins ONLY once it has actually been moved THIS session (not just
+ * because TABLES_LIVE_TUNE happens to be compiled in - it is, in every
+ * emulator build, this mode's own test included), and every session that
+ * never touches it prefers a completed calibration over the shipped
+ * constant, which remains only the never-calibrated fallback.
+ * ========================================================================= */
+#define CALIB_TARGET_COUNT    5
+#define CALIB_TAPS_PER_TARGET 5
+
+// Four near the numpad's own corners, one at its centre - inset from the
+// pad's own edges by CALIB_MARGIN_X/Y so the crosshair's own ring
+// (tables_calib_draw_crosshair() below) has room to draw without touching
+// the panel's own bezel, and still spans nearly the whole pad: 240 of its
+// 300px width, 168 of its 228px height - which is what gives a fitted beta
+// any real leverage (see this section's own header above).
+#define CALIB_MARGIN_X 30
+#define CALIB_MARGIN_Y 30
+#define CALIB_LEFT_X   (NUMPAD_X0 + CALIB_MARGIN_X)             // 64
+#define CALIB_RIGHT_X  (NUMPAD_X0 + NUMPAD_W - CALIB_MARGIN_X)  // 304
+#define CALIB_TOP_Y    (NUMPAD_Y0 + CALIB_MARGIN_Y)             // 184
+#define CALIB_BOTTOM_Y (NUMPAD_Y0 + NUMPAD_H - CALIB_MARGIN_Y)  // 352
+#define CALIB_CENTER_X (NUMPAD_X0 + NUMPAD_W / 2)               // 184
+#define CALIB_CENTER_Y (NUMPAD_Y0 + NUMPAD_H / 2)               // 268
+
+static const int CALIB_TARGET_X[CALIB_TARGET_COUNT] = {
+    CALIB_LEFT_X, CALIB_RIGHT_X, CALIB_LEFT_X, CALIB_RIGHT_X, CALIB_CENTER_X,
+};
+static const int CALIB_TARGET_Y[CALIB_TARGET_COUNT] = {
+    CALIB_TOP_Y, CALIB_TOP_Y, CALIB_BOTTOM_Y, CALIB_BOTTOM_Y, CALIB_CENTER_Y,
+};
+
+#define CALIB_DOUBLE_PRESS_WINDOW_MS 500u // clock.c's own DOUBLE_PRESS_WINDOW_MS, same reasoning
+
+// PACKING (storage.h's ONE-record rule). alpha as a signed Q11.4 fixed
+// point (1/16 px per count, range +-2048px - the shipped constant is 40px,
+// so this is two orders of magnitude of headroom); beta as a signed Q1.14
+// (1/16384 per count, range +-2.0 - five taps spanning CALIB_MARGIN_Y's
+// own 168px of the pad's own height, so a slope this fit could plausibly
+// produce is well under +-1.0, another order of magnitude of headroom past
+// that). Both ranges were sized AFTER running this mode by hand and
+// reading what the fitted numbers actually looked like (see this app's own
+// report), not guessed - and tables_calib_pack() below LOGS rather than
+// silently saturates if a fit somehow lands outside either range anyway.
+#define CALIB_ALPHA_SCALE 16.0f
+#define CALIB_BETA_SCALE  16384.0f
+
+static uint32_t tables_calib_pack(float alpha, float beta) {
+    int32_t a = tables_round_i32(alpha * CALIB_ALPHA_SCALE);
+    int32_t b = tables_round_i32(beta * CALIB_BETA_SCALE);
+    bool clippedA = a > 32767 || a < -32768;
+    bool clippedB = b > 32767 || b < -32768;
+    if (a > 32767) a = 32767; else if (a < -32768) a = -32768;
+    if (b > 32767) b = 32767; else if (b < -32768) b = -32768;
+    if (clippedA || clippedB) {
+        printf("tables: calib WARNING - fit exceeded the packed range and was clamped (alpha_clamped=%d beta_clamped=%d)\r\n",
+               clippedA ? 1 : 0, clippedB ? 1 : 0);
+    }
+    return ((uint32_t)(uint16_t)(int16_t)b << 16) | (uint32_t)(uint16_t)(int16_t)a;
+}
+
+static void tables_calib_unpack(uint32_t packed, float *outAlpha, float *outBeta) {
+    int16_t a = (int16_t)(packed & 0xFFFFu);
+    int16_t b = (int16_t)((packed >> 16) & 0xFFFFu);
+    *outAlpha = (float)a / CALIB_ALPHA_SCALE;
+    *outBeta = (float)b / CALIB_BETA_SCALE;
 }
 
 /* ---- THE LOUPE ------------------------------------------------------------
@@ -1145,6 +1326,44 @@ typedef struct {
     // function of nowMs, s->answerLen and phase.
     bool     cursorDrawn;
     int      cursorX;
+
+    // FIVE-POINT TOUCH CALIBRATION (see that section above numpad_hit()).
+    // PWR double-press opens/aborts it, independent of `phase` - it can
+    // interrupt a question in progress; nothing about the question's own
+    // state below is touched, calibration just borrows the screen and the
+    // touch input for a few taps.
+    bool     calibActive;
+    int      calibTargetIdx;                        // 0..CALIB_TARGET_COUNT-1
+    int      calibTapCount;                          // taps landed on the CURRENT target
+    int      calibRawDelta[CALIB_TAPS_PER_TARGET];   // this target's own raw (touchY - targetY), pre-bias
+    int      calibMedianDelta[CALIB_TARGET_COUNT];   // filled in as each target finishes
+
+    // A private double-press detector for the PWR gesture - clock.c's
+    // pwr_double_press() idiom, its own copy of the bookkeeping (see that
+    // function's own comment for why a shared one is not worth it here).
+    bool     calibHavePendingShort;
+    uint32_t calibPendingShortMs;
+
+    // A private tap detector for calibration input - the SAME arm/
+    // release-grace idiom the numpad's own gesture uses just above
+    // (ARM_SAMPLES/ARM_MS/RELEASE_GRACE_MS), a separate copy of the
+    // bookkeeping because calibration and the numpad are never both
+    // waiting for a gesture at once (calibActive routes every tick to
+    // exactly one of them - see tables_tick()) but each needs its own
+    // contactSeen/armed/last-raw-position state.
+    bool     calibContactSeen;
+    bool     calibArmed;
+    uint32_t calibGestureStartMs;
+    uint32_t calibLastContactMs;
+    int      calibContactCount;
+    int      calibLastRawX, calibLastRawY;
+
+    // The fitted/stored calibration THIS RUN is using (loaded once, on
+    // enter() - see tables_effective_bias()). Independent of calibActive:
+    // this is what numpad_hit() reads on every ordinary touch, not just
+    // while a calibration pass is in progress.
+    bool     calibHave;
+    float    calibAlpha, calibBeta;
 } tables_state_t;
 
 static tables_state_t *s_tables;
@@ -1561,6 +1780,302 @@ static void action_digit(tables_state_t *s, int digit, uint32_t nowMs) {
 }
 
 /* =========================================================================
+ * CALIBRATION MODE - LOGIC. See "FIVE-POINT TOUCH CALIBRATION" above (just
+ * after numpad_hit()) for the model, the measurement discipline and the
+ * storage rule; this is where all of it is actually driven and drawn.
+ * ========================================================================= */
+
+// The double-press detector - clock.c's pwr_double_press(), copied rather
+// than shared (this file has no dependency on clock.c, and the shape is
+// four lines - a shared header for four lines is not worth the coupling).
+static bool tables_calib_pwr_double_press(tables_state_t *s, uint32_t nowMs, uint8_t key) {
+    if (!(key & KEY_SHORT)) return false;
+    if (s->calibHavePendingShort && (nowMs - s->calibPendingShortMs) <= CALIB_DOUBLE_PRESS_WINDOW_MS) {
+        s->calibHavePendingShort = false;
+        return true;
+    }
+    s->calibHavePendingShort = true;
+    s->calibPendingShortMs = nowMs;
+    return false;
+}
+
+// THE TUNABLE VS. A STORED CALIBRATION. TABLES_LIVE_TUNE being COMPILED IN
+// is not the same question as the slider being MOVED - the devlink tuning
+// registry is built into every emulator image regardless (sketch.c/
+// clock.c/tables.c share one binary), so "the gate is on" is true on every
+// automated run too, calibration's own test included; if that alone made
+// the tunable win, no test could ever observe a calibration actually being
+// used, and this app's calibration mode would be unfalsifiable in the
+// emulator by construction. So the precedence is checked against whether
+// tables_tune_set() has actually been called for THIS tunable THIS session
+// (g_tuneThumbBiasMoved, cleared on every tables_enter()) - a slider that
+// only sometimes reflects what it says would be worse than one that always
+// does, so ONCE moved it keeps winning for the rest of the session, but a
+// session that never touched it defers to whatever is actually stored. In
+// every normal build (TABLES_LIVE_TUNE off, what ships) there is no
+// tunable to move at all, so this always falls through to the calibration/
+// default check below.
+static float tables_effective_bias(int rawY) {
+#if TABLES_LIVE_TUNE
+    if (g_tuneThumbBiasMoved) return TOUCH_THUMB_BIAS_Y;
+#endif
+    if (s_tables != NULL && s_tables->calibHave) {
+        return s_tables->calibAlpha + s_tables->calibBeta * (float)rawY;
+    }
+    return TOUCH_THUMB_BIAS_Y_DEFAULT;
+}
+
+// Insertion-sort median of 5 - cheap, no qsort needed (this build has no
+// <stdlib.h> qsort to call anyway). The MEDIAN, not the mean - see this
+// file's CALIBRATION header for why a mean would be dragged by one bad tap.
+static int tables_calib_median5(const int v[CALIB_TAPS_PER_TARGET]) {
+    int a[CALIB_TAPS_PER_TARGET];
+    for (int i = 0; i < CALIB_TAPS_PER_TARGET; i++) a[i] = v[i];
+    for (int i = 1; i < CALIB_TAPS_PER_TARGET; i++) {
+        int key = a[i], j = i - 1;
+        while (j >= 0 && a[j] > key) { a[j + 1] = a[j]; j--; }
+        a[j + 1] = key;
+    }
+    return a[CALIB_TAPS_PER_TARGET / 2];
+}
+
+// Ordinary least squares, offset_y = alpha + beta*y, over the five
+// PER-TARGET medians (not the 25 raw taps) - the median already picked one
+// honest number per target, and the fit runs on those five.
+static void tables_calib_fit(const int targetY[CALIB_TARGET_COUNT], const int delta[CALIB_TARGET_COUNT],
+                              float *outAlpha, float *outBeta) {
+    float n = (float)CALIB_TARGET_COUNT;
+    float sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
+    for (int i = 0; i < CALIB_TARGET_COUNT; i++) {
+        float x = (float)targetY[i], y = (float)delta[i];
+        sumX += x; sumY += y; sumXY += x * y; sumXX += x * x;
+    }
+    float denom = n * sumXX - sumX * sumX;
+    float beta = (denom != 0.0f) ? (n * sumXY - sumX * sumY) / denom : 0.0f;
+    float alpha = (sumY - beta * sumX) / n;
+    *outAlpha = alpha;
+    *outBeta = beta;
+}
+
+// Renders a value already scaled by 1000 (e.g. tables_round_i32(x*1000.0f))
+// as a three-decimal string ("-12.345", "0.000") into `out` (>= 12 bytes) -
+// this build's printf has no %f (emu_shim.c's own header: grepped, not
+// guessed, and no firmware source needs one), so a fitted float is turned
+// into text here and handed to printf as a plain %s.
+static void tables_fmt_milli(int32_t milli, char *out) {
+    bool neg = milli < 0;
+    int32_t m = neg ? -milli : milli;
+    int32_t whole = m / 1000, frac = m % 1000;
+    char rev[12]; int rn = 0;
+    if (whole == 0) rev[rn++] = '0';
+    else while (whole > 0) { rev[rn++] = (char)('0' + whole % 10); whole /= 10; }
+    int oi = 0;
+    if (neg) out[oi++] = '-';
+    while (rn > 0) out[oi++] = rev[--rn];
+    out[oi++] = '.';
+    out[oi++] = (char)('0' + (frac / 100) % 10);
+    out[oi++] = (char)('0' + (frac / 10) % 10);
+    out[oi++] = (char)('0' + frac % 10);
+    out[oi] = '\0';
+}
+
+#define CALIB_DOT_R    6.0f
+#define CALIB_DOT_GAP  20
+#define CALIB_CROSS_R  24.0f
+#define CALIB_CROSS_T  3.0f
+#define CALIB_RING_R   34.0f
+#define CALIB_RING_T   3.0f
+
+// The five taps-so-far on the CURRENT target, as a row of dots centred
+// under the target-index digit - drawn in the loupe's own reserved zone,
+// otherwise unused while calibrating (see THE LOUPE above for why that
+// band is always blank paper apart from whatever draws in it). Filled for
+// a tap already landed, a hollow ring for one still to come.
+static void tables_calib_draw_progress(tables_state_t *s) {
+    int totalW = (CALIB_TAPS_PER_TARGET - 1) * CALIB_DOT_GAP;
+    int x0 = PANEL_W / 2 - totalW / 2;
+    for (int i = 0; i < CALIB_TAPS_PER_TARGET; i++) {
+        int cx = x0 + i * CALIB_DOT_GAP;
+        if (i < s->calibTapCount) shapes_fill_disc_aa((float)cx, (float)LOUPE_CY, CALIB_DOT_R, PX_BLACK);
+        else shapes_fill_annulus_aa((float)cx, (float)LOUPE_CY, CALIB_DOT_R, CALIB_DOT_R - 2.0f, PX_BLACK);
+    }
+}
+
+// A "+" of two crossing capsules plus a ring, at the target's own (tx,ty) -
+// decision 0009's curves-and-capsules brush, same as every other icon in
+// this file; nothing here is a bare rectangle standing in for a shape.
+static void tables_calib_draw_crosshair(int tx, int ty) {
+    shapes_fill_capsule_aa((float)(tx - CALIB_CROSS_R), (float)ty, CALIB_CROSS_T,
+                            (float)(tx + CALIB_CROSS_R), (float)ty, CALIB_CROSS_T, PX_BLACK);
+    shapes_fill_capsule_aa((float)tx, (float)(ty - CALIB_CROSS_R), CALIB_CROSS_T,
+                            (float)tx, (float)(ty + CALIB_CROSS_R), CALIB_CROSS_T, PX_BLACK);
+    shapes_fill_annulus_aa((float)tx, (float)ty, CALIB_RING_R, CALIB_RING_R - CALIB_RING_T, PX_BLACK);
+}
+
+// A full repaint: the target-index digit (top band, where the question
+// normally sits), the tap-progress dots (loupe band) and the crosshair
+// itself. Called only on entry and after each tap lands - a handful of
+// times over a whole calibration pass, not per tick, so a whole-panel
+// clear-and-push (gfx_push_all(), the same "rare, big transition" cost
+// clock.c's own paint_all() accepts for set mode) is the honest cost here.
+static void tables_calib_draw_screen(tables_state_t *s) {
+    gfx_fill_rect(0, 0, PANEL_W, PANEL_H, PX_WHITE);
+    draw_number_lr(PANEL_W / 2, QROW_CY, QDIGIT_W, QDIGIT_H, QDIGIT_T, s->calibTargetIdx + 1, false, PX_BLACK);
+    tables_calib_draw_progress(s);
+    tables_calib_draw_crosshair(CALIB_TARGET_X[s->calibTargetIdx], CALIB_TARGET_Y[s->calibTargetIdx]);
+    gfx_push_all();
+}
+
+// Repaints the ORDINARY practice screen - what calibration drew over.
+// Shared by abort (nothing about the session changed) and finish (a
+// calibration just landed); neither touches factIndex/answerLen/the
+// counters, so this is exactly what tables_enter() itself draws, minus the
+// parts that reset a fresh session.
+static void tables_calib_redraw_practice_screen(tables_state_t *s) {
+    draw_numpad_all();
+    redraw_question(s);
+    redraw_answer(s, PX_WHITE, false);
+    redraw_wrong(s);
+    redraw_correct(s);
+    gfx_push_all();
+}
+
+static void tables_calib_enter(tables_state_t *s) {
+    s->calibActive = true;
+    s->calibTargetIdx = 0;
+    s->calibTapCount = 0;
+    s->calibContactSeen = false;
+    s->calibArmed = false;
+    s->calibContactCount = 0;
+    // Nothing half-seen from the ordinary numpad gesture may survive into
+    // calibration - same reasoning clock.c's own set-mode-open comment
+    // gives for its own double-press.
+    s->contactSeen = false;
+    s->armed = false;
+    s->pendingCell = -1;
+    loupe_hide(s);
+    set_hover(s, -1);
+    printf("tables: calibration opened\r\n");
+    tables_calib_draw_screen(s);
+}
+
+static void tables_calib_abort(tables_state_t *s) {
+    s->calibActive = false;
+    printf("tables: calibration aborted, nothing saved\r\n");
+    tables_calib_redraw_practice_screen(s);
+}
+
+// All five targets done. Prints the five per-target medians TOGETHER (the
+// "do these actually vary" comparison this file's CALIBRATION header
+// promises the owner - if they agree within a few pixels, beta is noise
+// and a constant remains the honest answer), THEN the fit, THEN saves -
+// one storage_save_u32() call, here, once, per storage.h's own rule.
+static void tables_calib_finish(tables_state_t *s) {
+    printf("tables: calib SUMMARY - five per-target median deltas (raw, before any fit):\r\n");
+    for (int i = 0; i < CALIB_TARGET_COUNT; i++) {
+        printf("tables: calib   target %d: y=%d delta=%d px\r\n", i + 1, CALIB_TARGET_Y[i], s->calibMedianDelta[i]);
+    }
+
+    float alpha, beta;
+    tables_calib_fit(CALIB_TARGET_Y, s->calibMedianDelta, &alpha, &beta);
+
+    char alphaStr[16], betaStr[16];
+    tables_fmt_milli(tables_round_i32(alpha * 1000.0f), alphaStr);
+    tables_fmt_milli(tables_round_i32(beta * 1000.0f), betaStr);
+    printf("tables: calib FIT (least squares): offset_y = alpha + beta*y\r\n");
+    printf("tables: calib   alpha = %s px\r\n", alphaStr);
+    printf("tables: calib   beta  = %s px/px\r\n", betaStr);
+
+    uint32_t packed = tables_calib_pack(alpha, beta);
+    storage_save_u32(STORAGE_KIND_TABLES_CALIB, packed);
+    s->calibHave = true;
+    s->calibAlpha = alpha;
+    s->calibBeta = beta;
+    printf("tables: calibration saved\r\n");
+
+    s->calibActive = false;
+    tables_calib_redraw_practice_screen(s);
+}
+
+// One tap's raw delta is recorded and printed immediately (see this file's
+// CALIBRATION header - the raw numbers are printed before and independently
+// of any fit), and once the fifth lands for this target, the median is
+// taken and printed too before moving on. The value recorded here is rawY
+// minus the target's own y, straight off the touch report BEFORE any bias
+// - checked against tables_calib_tick() below, which passes the raw
+// f->touchY it read while armed, never a biased one.
+static void tables_calib_record_tap(tables_state_t *s, int rawY) {
+    int idx = s->calibTargetIdx;
+    int targetY = CALIB_TARGET_Y[idx];
+    int delta = rawY - targetY;
+    s->calibRawDelta[s->calibTapCount] = delta;
+    s->calibTapCount++;
+    printf("tables: calib target %d/%d tap %d/%d - raw y=%d target y=%d delta=%d px\r\n",
+           idx + 1, CALIB_TARGET_COUNT, s->calibTapCount, CALIB_TAPS_PER_TARGET, rawY, targetY, delta);
+
+    if (s->calibTapCount < CALIB_TAPS_PER_TARGET) {
+        tables_calib_draw_screen(s); // just the progress dots changed
+        return;
+    }
+
+    int median = tables_calib_median5(s->calibRawDelta);
+    s->calibMedianDelta[idx] = median;
+    printf("tables: calib target %d/%d (y=%d) done - five raw deltas = %d %d %d %d %d px, median = %d px\r\n",
+           idx + 1, CALIB_TARGET_COUNT, targetY,
+           s->calibRawDelta[0], s->calibRawDelta[1], s->calibRawDelta[2], s->calibRawDelta[3], s->calibRawDelta[4],
+           median);
+
+    s->calibTargetIdx++;
+    s->calibTapCount = 0;
+    if (s->calibTargetIdx < CALIB_TARGET_COUNT) {
+        tables_calib_draw_screen(s);
+        return;
+    }
+    tables_calib_finish(s);
+}
+
+// The gesture: the SAME arm/release-grace idiom the numpad's own touch
+// handling uses (ARM_SAMPLES/ARM_MS/RELEASE_GRACE_MS, defined above THE
+// GESTURE) - a private copy of the bookkeeping fields, not a shared one,
+// because the two are never both in flight at once (calibActive routes
+// every tick to exactly one of tables_calib_tick()/the ordinary numpad
+// path, never both - see tables_tick() below). No hover, no loupe, no
+// commit-confirm debounce: calibration wants one raw sample per completed
+// tap, not a tracked, correctable cell selection.
+static void tables_calib_tick(tables_state_t *s, const app_frame_t *f) {
+    if (f->touchDown) {
+        if (!s->calibContactSeen) {
+            s->calibContactSeen = true;
+            s->calibGestureStartMs = f->nowMs;
+            s->calibContactCount = 0;
+        }
+        s->calibLastContactMs = f->nowMs;
+        s->calibContactCount++;
+        s->calibLastRawX = f->touchX;
+        s->calibLastRawY = f->touchY;
+
+        uint32_t elapsed = f->nowMs - s->calibGestureStartMs;
+        if (!s->calibArmed && s->calibContactCount >= ARM_SAMPLES && elapsed >= ARM_MS &&
+            (uint32_t)s->calibContactCount * 1000u >= ARM_RATE_HZ * elapsed) {
+            s->calibArmed = true;
+        }
+        return;
+    }
+
+    if (!s->calibContactSeen) return;
+    if ((f->nowMs - s->calibLastContactMs) < RELEASE_GRACE_MS) return;
+
+    bool wasArmed = s->calibArmed;
+    int rawY = s->calibLastRawY;
+    s->calibContactSeen = false;
+    s->calibArmed = false;
+    s->calibContactCount = 0;
+    if (!wasArmed) return; // too short to count as a real tap - try again
+
+    tables_calib_record_tap(s, rawY);
+}
+
+/* =========================================================================
  * app_t callbacks
  * ========================================================================= */
 static void tables_enter(void) {
@@ -1568,6 +2083,16 @@ static void tables_enter(void) {
     s->factIndex = -1;
     s->hoverCell = -1;
     s->pendingCell = -1;
+
+    tables_tune_reset_moved(); // a fresh session trusts calibration/default again - see its own comment
+    uint32_t calibRaw = 0;
+    s->calibHave = storage_get_u32(STORAGE_KIND_TABLES_CALIB, &calibRaw);
+    if (s->calibHave) {
+        tables_calib_unpack(calibRaw, &s->calibAlpha, &s->calibBeta);
+        printf("tables: loaded stored calibration\r\n");
+    } else {
+        printf("tables: no stored calibration, using the default bias\r\n");
+    }
 
     draw_numpad_all();
     start_new_question(s);
@@ -1585,6 +2110,19 @@ static void tables_tick(const app_frame_t *f) {
         s->rngSeeded = true;
         s->enterMs = f->nowMs;
         s->enterMsSet = true;
+    }
+
+    // THE CALIBRATION GESTURE, checked before anything else so it can open
+    // (or abort) calibration from any phase, feedback pauses included -
+    // see FIVE-POINT TOUCH CALIBRATION above numpad_hit() for the design.
+    if (tables_calib_pwr_double_press(s, f->nowMs, f->key)) {
+        if (s->calibActive) tables_calib_abort(s);
+        else tables_calib_enter(s);
+        return; // the double-press itself is not also a touch/tick action
+    }
+    if (s->calibActive) {
+        tables_calib_tick(s, f);
+        return;
     }
 
     if (s->phase != PHASE_ASK) {
@@ -1615,7 +2153,7 @@ static void tables_tick(const app_frame_t *f) {
             // apps map through panel_to_land() first; this one does not
             // need or have such a function.
             int lx = f->touchX, ly = f->touchY;
-            int cell = numpad_hit(lx, ly);
+            int cell = numpad_hit(lx, ly, tables_effective_bias(ly));
             if (s->hoverCell < 0) {
                 // The FIRST cell of this gesture. COMMIT_CONFIRM_MS exists to
                 // filter jitter against an already-shown cell (see THE

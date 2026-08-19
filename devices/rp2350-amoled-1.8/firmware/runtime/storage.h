@@ -42,6 +42,14 @@
 // misread by whatever claims that number next.
 #define STORAGE_KIND_DINO_HISCORE 1
 
+// tables.c's five-point touch calibration: a fitted `offset_y = alpha +
+// beta*y` line replacing the app's own hand-picked TOUCH_THUMB_BIAS_Y_
+// DEFAULT constant. ONE record for both coefficients, per this file's own
+// "one shared sector, one 16-byte record shape" - see tables.c's
+// tables_calib_pack()/tables_calib_unpack() for how alpha and beta are
+// packed into the single uint32_t this kind carries.
+#define STORAGE_KIND_TABLES_CALIB 2
+
 // Core0, once, at boot, before sensors_start() - see storage.c's own
 // comment for why. On the board this scans the sector; in the emulator it
 // just resets the in-RAM stand-in (emu_shim.c).

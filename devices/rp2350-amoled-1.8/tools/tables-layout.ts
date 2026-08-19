@@ -189,3 +189,19 @@ export const PILL_ICON_CX_OFF = 42, PILL_NUM_CX_OFF = 100;
 export function panelPoint(x: number, y: number): [number, number] {
   return [Math.round(x), Math.round(y)];
 }
+
+// ---- FIVE-POINT TOUCH CALIBRATION (tables.c's own CALIB_* constants) ------
+// Four near the numpad's own corners, one at its centre - the same values
+// tables.c's CALIB_MARGIN_X/Y and CALIB_TARGET_X/Y use, hand-mirrored here
+// per this file's own standing discipline (see the header above): there is
+// no build step that extracts a C #define into TypeScript on this project.
+export const CALIB_TARGET_COUNT = 5;
+export const CALIB_MARGIN_X = 30, CALIB_MARGIN_Y = 30;
+export const CALIB_LEFT_X = NUMPAD_X0 + CALIB_MARGIN_X;             // 64
+export const CALIB_RIGHT_X = NUMPAD_X0 + NUMPAD_W - CALIB_MARGIN_X; // 304
+export const CALIB_TOP_Y = NUMPAD_Y0 + CALIB_MARGIN_Y;              // 184
+export const CALIB_BOTTOM_Y = NUMPAD_Y0 + NUMPAD_H - CALIB_MARGIN_Y; // 352
+export const CALIB_CENTER_X = NUMPAD_X0 + NUMPAD_W / 2;             // 184
+export const CALIB_CENTER_Y = NUMPAD_Y0 + NUMPAD_H / 2;             // 268
+export const CALIB_TARGET_X = [CALIB_LEFT_X, CALIB_RIGHT_X, CALIB_LEFT_X, CALIB_RIGHT_X, CALIB_CENTER_X];
+export const CALIB_TARGET_Y = [CALIB_TOP_Y, CALIB_TOP_Y, CALIB_BOTTOM_Y, CALIB_BOTTOM_Y, CALIB_CENTER_Y];
