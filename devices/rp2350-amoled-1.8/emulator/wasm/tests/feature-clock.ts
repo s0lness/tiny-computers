@@ -66,12 +66,18 @@ const BTN_PWR = 1;
 
 // ---- mirrors of clock.c's own constants. Lifted, not re-derived: the same
 // convention every other test in this directory uses for the app it drives.
-const L_DIGIT_W = 80, L_DIGIT_H = 208, L_SEG_T = 20, L_Y0 = 80;
-const L_DIGIT_X = [16, 112, 256, 352];
+// SAME DIGIT, BOTH FACES (W=88, H=160, stroke=26) - clock.c's LAYOUT
+// section. L_SEG_T/P_SEG_T here are deliberately smaller than the real
+// stroke (26): they are the PROBE radius segmentProbes() uses to land a
+// sample well inside the real, thicker stroke rather than exactly on its
+// centre line - see segmentProbes()'s own comment below. Both are now the
+// same value since both real strokes are.
+const L_DIGIT_W = 88, L_DIGIT_H = 160, L_SEG_T = 20, L_Y0 = 104;
+const L_DIGIT_X = [10, 106, 254, 350];
 const L_DOTS_X = 208, L_DOTS_W = 32;
-const P_DIGIT_W = 112, P_DIGIT_H = 168, P_SEG_T = 28;
-const P_DIGIT_X = [60, 196, 60, 196];
-const P_Y_HOURS = 28, P_Y_MINUTES = 252;
+const P_DIGIT_W = 88, P_DIGIT_H = 160, P_SEG_T = 20;
+const P_DIGIT_X = [84, 196, 84, 196];
+const P_Y_HOURS = 36, P_Y_MINUTES = 252;
 const P_DIGIT_Y = [P_Y_HOURS, P_Y_HOURS, P_Y_MINUTES, P_Y_MINUTES];
 const GHOST_T = (t: number) => Math.floor((t * 2) / 5);
 const SOFT_INSET = 0.75;

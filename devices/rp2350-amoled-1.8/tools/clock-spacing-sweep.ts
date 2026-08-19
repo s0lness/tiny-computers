@@ -81,11 +81,11 @@ const BTN_PWR = 1;
 // working on this same day (clock.c's tunables), and this tool never needs
 // them - it finds ink by scanning for dark pixels, not by predicting where
 // a stroke of a particular thickness would be.
-const L_DIGIT_W = 80, L_DIGIT_H = 208, L_Y0 = 80;
-const L_DIGIT_X = [16, 112, 256, 352];
-const P_DIGIT_W = 112, P_DIGIT_H = 168;
-const P_X0 = 60, P_X1 = 196;
-const P_Y_HOURS = 28, P_Y_MINUTES = 252;
+const L_DIGIT_W = 88, L_DIGIT_H = 160, L_Y0 = 104;
+const L_DIGIT_X = [10, 106, 254, 350];
+const P_DIGIT_W = 88, P_DIGIT_H = 160;
+const P_X0 = 84, P_X1 = 196;
+const P_Y_HOURS = 36, P_Y_MINUTES = 252;
 const DOUBLE_PRESS_WINDOW_MS = 500;
 const TAP_COOLDOWN_MS = 250;
 

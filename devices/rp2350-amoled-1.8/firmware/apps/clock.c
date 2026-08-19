@@ -74,10 +74,10 @@
  * (1000ms - a second visible, a second gone, the owner's own wording and
  * the convention every mains clock has used for fifty years), and every
  * toggle redraws exactly the cell dots_cell() already owned before this
- * feature existed (32 x 208 landscape px, the separator's own bounding box,
+ * feature existed (32 x 160 landscape px, the separator's own bounding box,
  * sized for the known/unknown transition it always had to redraw for). That
- * is about 6,656 px pushed per toggle, roughly 6,650 px/sec at one toggle a
- * second - under a twenty-fourth of one full-panel repaint (368*448 =
+ * is about 5,120 px pushed per toggle, roughly 5,100 px/sec at one toggle a
+ * second - under a thirty-second of one full-panel repaint (368*448 =
  * 164,864 px) per second, and confined to a cell already being pushed. Two
  * faster rates were tried first, at four and two toggles a second, and both
  * were rejected by eye as flicker rather than heartbeat; each halving
@@ -261,7 +261,7 @@
  * the same bound this file already holds everywhere else. The pulsing
  * dots need NONE of this: their cell sits exactly on the panel's own
  * rotational centre (proven in "THE PULSE" - digits.h and this file's own
- * geometry put dots_cell() at (80,208,208,32) in panel space, whose centre
+ * geometry put dots_cell() at (104,208,160,32) in panel space, whose centre
  * is (184,224), the panel's own (PANEL_W/2, PANEL_H/2)) and two identical
  * round dots are unchanged by swapping which one is "the upper one", so
  * the pulse's existing small, cheap, unconditional per-cell update is
@@ -302,27 +302,45 @@ static clock_face_t clock_face(clock_state_t *s, const app_frame_t *f);
  * ========================================================================= */
 
 // ---- held long-ways: 448 x 368, one line, laid out like the stopwatch ----
-// [80][80] [32 dots] [80][80], 16px between every element, 16px margin each
-// side: 4*80 + 32 + 4*16 = 416, plus two 16px margins = 448 exactly.
-#define L_DIGIT_W 80
-#define L_DIGIT_H 208   // multiple of 8: this is the pushed row length here
+//
+// SAME DIGIT AS PORTRAIT, ON PURPOSE. The owner: "i'd like to have the same
+// width between the portrait and paysage mode of the clock" - turning the
+// puck used to swap in a second, narrower and thinner-stroked typeface
+// (was 80x208 at a 26px stroke here, 112x168 at a 32px stroke upright); now
+// both faces draw the one W=88, H=160, stroke=26 digit. This layout is the
+// BINDING one: four digits plus a separator across 448px, so 88 is what
+// still leaves a real bezel margin. Portrait (below) is sized to match.
+//
+// [88][88] [60px separator zone] [88][88], 8px between the two digits of a
+// pair, 10px margin each side: 10+88=98, gap 8 -> 106 (start of the second
+// digit); 106+88=194 (end of the hour pair); separator zone 194..254 (60
+// wide); 254+88=342, gap 8 -> 350; 350+88=438; right margin 448-438=10.
+#define L_DIGIT_W 88
+#define L_DIGIT_H 160   // multiple of 8: this is the pushed row length here
 #define L_SEG_T   26
 #define L_DOTS_W  32
-#define L_Y0      80    // (368 - 208) / 2, vertically centred
+#define L_Y0      104   // (368 - 160) / 2, vertically centred
 #define L_DOTS_X  208
 
-static const int L_DIGIT_X[4] = { 16, 112, 256, 352 };
+static const int L_DIGIT_X[4] = { 10, 106, 254, 350 };
 
 // ---- held upright: 368 x 448, hours over minutes, no separator ----------
-// Two 112px cells 24px apart = 248 wide, centred at x=60. Two 168px lines
-// 56px apart = 392 tall, centred at y=28. See the header comment for why
-// those two gaps are the numbers they are.
-#define P_DIGIT_W 112   // multiple of 8: the pushed row length here
-#define P_DIGIT_H 168
-#define P_SEG_T   32
-#define P_X0      60
+// The same W=88, H=160, stroke=26 digit as long-ways, above - this costs
+// portrait some presence it had room for (it used to run wider, 112px
+// cells), which is exactly the trade the owner's ask makes: same digit,
+// both faces, even where one face had slack to be bigger.
+//
+// Two 88px cells 24px apart = 200 wide, centred (84 + 200 + 84 = 368):
+// 84+88=172, gap 24 -> 196; 196+88=284; margins 84 each side. Two 160px
+// lines 56px apart = 376 tall, centred (36 + 376 + 36 = 448): 36+160=196,
+// gap 56 -> 252; 252+160=412; margins 36 each side. See the header comment
+// for why those two gaps are the numbers they are.
+#define P_DIGIT_W 88   // multiple of 8: the pushed row length here
+#define P_DIGIT_H 160
+#define P_SEG_T   26
+#define P_X0      84
 #define P_X1      196
-#define P_Y_HOURS   28
+#define P_Y_HOURS   36
 #define P_Y_MINUTES 252
 
 static const int P_DIGIT_X[4] = { P_X0, P_X1, P_X0, P_X1 };
@@ -659,10 +677,11 @@ bool clock_tune_set(const char *name, float value, float *outApplied) {
 // have in mind) and the numbers."
 //
 // The free space on each side runs from the bezel margin to the digit block:
-// left is [PANEL_BEZEL_MARGIN_PX, P_X0] = [10, 60], right is
-// [P_X1+P_DIGIT_W, PANEL_W-PANEL_BEZEL_MARGIN_PX] = [308, 358]. Fifty pixels
-// each, so each chevron's own midpoint lands at 35 and 333 and it stands
-// alone in its column rather than reading as an ornament hung off a digit.
+// left is [PANEL_BEZEL_MARGIN_PX, P_X0] = [10, 84], right is
+// [P_X1+P_DIGIT_W, PANEL_W-PANEL_BEZEL_MARGIN_PX] = [284, 358]. Seventy-four
+// pixels each, so each chevron's own midpoint lands at 47 and 321 and it
+// stands alone in its column rather than reading as an ornament hung off a
+// digit.
 //
 // Written as the midpoint of a span rather than as an offset from the digits,
 // so it stays right if either the digit block or the bezel margin ever moves.
@@ -681,9 +700,9 @@ bool clock_tune_set(const char *name, float value, float *outApplied) {
 // differs between the hours' pair and the minutes' (computed in
 // draw_all_chevrons() from L_DIGIT_X, not duplicated here as a second set
 // of literals). CHEV_L_GAP is deliberately far bigger than CHEV_P_GAP: the
-// owner asked specifically for long-ways to open up, and L_Y0 (80) leaves
-// 80px of paper above and below the digit row to do it in - 36 spends
-// under half of that and still leaves clear margin against
+// owner asked specifically for long-ways to open up, and L_Y0 (104) leaves
+// 104px of paper above and below the digit row to do it in - 36 spends
+// well under half of that and still leaves clear margin against
 // PANEL_BEZEL_MARGIN_PX.
 #define CHEV_L_GAP 36
 #define CHEV_L_UP_BASE (L_Y0 - CHEV_L_GAP)
@@ -1114,9 +1133,9 @@ static uint8_t dots_pulse_ink(uint32_t nowMs) {
     //
     // THE COST, since that is the whole reason this app refuses to show
     // seconds: a hard blink repaints the separator's cell twice per two-second
-    // cycle, about 6,650 px/sec. This repaints it DOTS_PULSE_STEPS times per
+    // cycle, about 5,100 px/sec. This repaints it DOTS_PULSE_STEPS times per
     // cycle instead - at 32, that is sixteen repaints a second, roughly
-    // 106,000 px/sec. That is about two thirds of one full-panel repaint per
+    // 82,000 px/sec. That is about half of one full-panel repaint per
     // second, eight times the hard blink's cost, and still confined to a cell
     // that was already being pushed. It is the price of a fade that reads as
     // breathing rather than as stepping, and it is stated here rather than
@@ -1166,7 +1185,7 @@ static void cell_push(const cell_t *c) {
 // A "1" IS CENTRED IN ITS OWN CELL, always, in both layouts.
 //
 // THE CONSTRAINT THAT DECIDES THIS. The four cells are a FIXED grid
-// (L_DIGIT_X = {16, 112, 256, 352} long-ways, P_DIGIT_X = {P_X0, P_X1, P_X0,
+// (L_DIGIT_X = {10, 106, 254, 350} long-ways, P_DIGIT_X = {P_X0, P_X1, P_X0,
 // P_X1} upright). That is what makes the owner's original complaint - "c'est
 // surtout quand les chiffres changent que parfois ça bouge" - structurally
 // impossible: a cell never moves, so no digit can shift when the minute
