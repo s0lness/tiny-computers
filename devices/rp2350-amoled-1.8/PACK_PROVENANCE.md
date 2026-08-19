@@ -17,47 +17,10 @@ comment for what is synced, what is not, and why each line falls where it does.
 |---|---|
 | synced on | 2026-08-19 |
 | pack path | `C:/Users/sylve/projects/puck/packs/rp2350-touch-amoled-18` |
-| puck commit | `fb81ec1a3b7a84fe0704fb99a869f8efbc87dc68` |
-| commit date | 2026-08-19T17:44:47+02:00 |
-| commit subject | Fluidbox comes home: the esp32-s3 port closes the matrix |
-| pack worktree | **DIRTY, 32 path(s)** - the commit above does NOT describe what was copied |
-
-The pack had uncommitted changes when this ran, so the bytes below came from a
-working tree, not from that commit. That is fine while a change is in flight and
-a problem the moment anyone tries to reproduce this sync. Uncommitted paths:
-
-- `M packs/rp2350-touch-amoled-18/AGENTS.md`
-- `M packs/rp2350-touch-amoled-18/device.json`
-- `M packs/rp2350-touch-amoled-18/firmware/CMakeLists.txt`
-- `M packs/rp2350-touch-amoled-18/firmware/apps/sketch.c`
-- `M packs/rp2350-touch-amoled-18/firmware/devlink.c`
-- `M packs/rp2350-touch-amoled-18/firmware/devlink.h`
-- `M packs/rp2350-touch-amoled-18/firmware/lib/AMOLED/AMOLED_1in8.c`
-- `M packs/rp2350-touch-amoled-18/firmware/lib/QSPI_PIO/qspi.pio`
-- `M packs/rp2350-touch-amoled-18/firmware/lib/QSPI_PIO/qspi.pio.h`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/app.h`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/gfx.h`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/runtime.c`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/runtime_core.c`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/runtime_core.h`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/sensors.c`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/sensors.h`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/sound.c`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/sound.h`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/sound_synth.c`
-- `M packs/rp2350-touch-amoled-18/firmware/runtime/sound_synth.h`
-- `M packs/rp2350-touch-amoled-18/tools/build-native.ts`
-- `M packs/rp2350-touch-amoled-18/wasm/build.ts`
-- `M packs/rp2350-touch-amoled-18/wasm/emu_shim.c`
-- `M packs/rp2350-touch-amoled-18/wasm/tests/repro-poweroff-gesture.ts`
-- `?? packs/rp2350-touch-amoled-18/firmware/apps/app_roster.inc`
-- `?? packs/rp2350-touch-amoled-18/firmware/apps/app_tunables.inc`
-- `?? packs/rp2350-touch-amoled-18/firmware/runtime/storage.c`
-- `?? packs/rp2350-touch-amoled-18/firmware/runtime/storage.h`
-- `?? packs/rp2350-touch-amoled-18/firmware/runtime/tilt.c`
-- `?? packs/rp2350-touch-amoled-18/firmware/runtime/tilt.h`
-- `?? packs/rp2350-touch-amoled-18/firmware/runtime/tune_registry.c`
-- `?? packs/rp2350-touch-amoled-18/firmware/runtime/tune_registry.h`
+| puck commit | `3e2434a57aab94911eb7159b631a842eb8915c1f` |
+| commit date | 2026-08-19T18:22:32+02:00 |
+| commit subject | The pack catches up with its device: tiny-computers runtime converges |
+| pack worktree | clean |
 
 ## Files
 
