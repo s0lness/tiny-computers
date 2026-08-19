@@ -1911,26 +1911,37 @@ static void tables_fmt_milli(int32_t milli, char *out) {
     out[oi] = '\0';
 }
 
-#define CALIB_DOT_R    6.0f
-#define CALIB_DOT_GAP  20
+#define CALIB_DOT_R    9.0f
+#define CALIB_DOT_GAP  30
 
-// The nine samples-so-far, as a row of dots centred under the prompted
-// digit - drawn in the loupe's own reserved zone, the same "otherwise
-// blank paper" band THE LOUPE above describes. Filled for a sample already
-// landed, a hollow ring for one still to come. Temporarily painted over by
-// the REAL loupe bubble while a finger is actually down (loupe_update()/
-// loupe_hide() own that band exactly as they do during ordinary gameplay -
-// see NUMPAD TOUCH CALIBRATION above numpad_hit() for why calibration
-// shares that machinery rather than avoiding it) and repainted fresh the
-// moment tables_calib_draw_screen() runs again after the commit, which is
-// harmless: nothing here is load-bearing while a gesture is in flight.
+// The nine samples-so-far, as a row of dots. Filled for a sample already
+// landed, a hollow ring for one still to come.
+//
+// THEY LIVE UNDER THE PAD, NOT IN THE LOUPE'S BAND, and that is the whole
+// point of this comment. They started in the loupe zone, which is blank
+// paper during calibration - except that the REAL loupe bubble paints over
+// exactly that band whenever a finger is down, because calibration
+// deliberately shares gameplay's gesture machinery. So the only feedback
+// that a sample had landed was hidden at the precise moment the owner was
+// looking for it, and at 6px it was faint even when visible.
+//
+// The sequence prompts 5 six times in a row (see CALIB_SEQ_DIGITS): across
+// those six samples the prompted digit does not change, so these dots are
+// the ONLY thing on screen that moves. With them covered, a working
+// calibration reads as a frozen one - and it did: "the calibration gets
+// stuck on 5". It had in fact finished and saved, twice.
+//
+// The counters' band below the pad is free for the whole pass (calibration
+// draws no pills), the loupe never reaches it, and nine dots at this size
+// span 240px inside 348 of usable width.
 static void tables_calib_draw_progress(tables_state_t *s) {
     int totalW = (CALIB_SEQ_LEN - 1) * CALIB_DOT_GAP;
     int x0 = PANEL_W / 2 - totalW / 2;
+    int cy = COUNTERS_Y0 + COUNTERS_H / 2;
     for (int i = 0; i < CALIB_SEQ_LEN; i++) {
         int cx = x0 + i * CALIB_DOT_GAP;
-        if (i < s->calibSeqIdx) shapes_fill_disc_aa((float)cx, (float)LOUPE_CY, CALIB_DOT_R, PX_BLACK);
-        else shapes_fill_annulus_aa((float)cx, (float)LOUPE_CY, CALIB_DOT_R, CALIB_DOT_R - 2.0f, PX_BLACK);
+        if (i < s->calibSeqIdx) shapes_fill_disc_aa((float)cx, (float)cy, CALIB_DOT_R, PX_BLACK);
+        else shapes_fill_annulus_aa((float)cx, (float)cy, CALIB_DOT_R, CALIB_DOT_R - 2.5f, PX_BLACK);
     }
 }
 
