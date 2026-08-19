@@ -266,7 +266,25 @@ static int menu_cell_h(void) {
     // below the six-app grid while the icons sit 10px from the side bezels -
     // the asymmetry the owner reads as unsatisfying.
     int byWidth = (menu_min_row_width(rows) * 6) / 5;
+    // A THIRD BOUND: leave room to actually centre. menu_grid_y0() below
+    // centres the block and then clamps so centring never spends the cancel
+    // floor - but a grid can grow tall enough that the clamp ALWAYS binds,
+    // and then "centred" quietly means "packed against the top inset". That
+    // is what six apps did: byHeight gave 168, the grid came to 336, and
+    // centring 32px of slack would have left 16 below against a floor of 22,
+    // so the clamp pinned it at 10 top / 22 bottom. Measured off the rendered
+    // panel: 31px of paper above the ink, 43 below. The owner, unprompted:
+    // "je crois que le menu est pas très centré".
+    //
+    // So cap the height at what leaves a cancel floor's worth on BOTH sides.
+    // Six apps now get 160 instead of 168: the grid is 320, the slack 48, and
+    // the block sits 24/24 with no clamping at all. Rosters that already
+    // filled the panel are untouched - at three rows this term computes 108,
+    // below MENU_CELL_FLOOR, so the floor wins exactly as before and the
+    // eleven- and twelve-app layouts do not move.
+    int byCentred = (LAND_H - 2 * MENU_CANCEL_FLOOR) / rows;
     int h = byHeight < byWidth ? byHeight : byWidth;
+    if (byCentred < h) h = byCentred;
     h = (h / 8) * 8;
     if (h < MENU_CELL_FLOOR) h = MENU_CELL_FLOOR;
     return h;

@@ -57,7 +57,12 @@ export function menuCellH(n: number): number {
     narrowest = Math.min(narrowest, Math.floor(LAND_W / rowSpan(n, r).cols));
   }
   const byWidth = Math.floor((narrowest * 6) / 5); // menu.c: up to 1.2x width
-  return Math.max(Math.floor(Math.min(byHeight, byWidth) / 8) * 8, MENU_CELL_FLOOR);
+  // menu.c's third bound: never grow so tall that menu_grid_y0()'s clamp is
+  // forced to bind, which would silently turn "centred" into "packed against
+  // the top inset". See menu_cell_h()'s own comment for the six-app case that
+  // exposed it.
+  const byCentred = Math.floor((LAND_H - 2 * MENU_CANCEL_FLOOR) / rows);
+  return Math.max(Math.floor(Math.min(byHeight, byWidth, byCentred) / 8) * 8, MENU_CELL_FLOOR);
 }
 
 // menu_grid_y0(): the block of rows is centred in the full landscape height,
