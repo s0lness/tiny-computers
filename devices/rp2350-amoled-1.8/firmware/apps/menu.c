@@ -1344,6 +1344,74 @@ static void draw_icon_timer_coil(int ox, int oy, uint16_t color) {
  * ======================================================================= */
 #define LUCIDE_STROKE_HALF 5.0f
 
+/* =======================================================================
+ * SIX-ICON FAMILY PASS, 2026-08-19. The owner: "les apps ont pas toutes
+ * la meme taille" - true of the six the home menu actually shows (chrono,
+ * sketch/"draw", timer, clock, four, tables), on both size and weight;
+ * weight ("l'epaisseur du trait") turned out to be the bigger of the two,
+ * even though every one of these six already draws at the same
+ * LUCIDE_STROKE_HALF. The target below is stated once, in one place, so
+ * every constant it drives can be checked against it rather than tuned by
+ * eye a second time.
+ *
+ * TARGET:
+ *   - RING RADIUS. chrono's stopwatch face and clock's clock face are both
+ *     literal circles and are meant to read as the same OBJECT, so they
+ *     share one centreline radius, FAMILY_RING_R, rather than each having
+ *     its own. Matching the circles, not the boxes: chrono's ink reaches
+ *     the full box height only because of its crown+hand sitting above the
+ *     ring, not because its ring is any bigger - see draw_icon_lucide_chrono
+ *     below. clock has no crown, so at the SAME ring radius its own ink is
+ *     honestly shorter, and that is correct, not a mismatch to fix.
+ *     FAMILY_RING_R keeps chrono's own pre-existing 32px: clock's ring
+ *     (previously 29px, 3px narrower) grows up to meet it, not the other
+ *     way, since chrono's crown/hand geometry was already tuned against 32.
+ *   - STROKE WEIGHT. FAMILY_STROKE_HALF is every stroke's default half-
+ *     width - restating LUCIDE_STROKE_HALF under this pass's own name,
+ *     same 5.0f, not a new number - EXCEPT a stroke that runs close to 45
+ *     degrees for its own FULL length, which draws at
+ *     FAMILY_STROKE_HALF_DIAG instead. That is not a second, weaker family
+ *     value chosen by eye: at the identical nominal FAMILY_STROKE_HALF, a
+ *     diagonal stroke reads heavier than one that runs through a ring or
+ *     near an axis, because a cut at 45 degrees through a round pen
+ *     exposes more ink per unit of horizontal/vertical extent than a
+ *     perpendicular cut does - the same reason a typeface thins a diagonal
+ *     stem relative to a vertical one. Measured, not assumed: at
+ *     FAMILY_STROKE_HALF on every one of the six, tools/scratch-measure-
+ *     six.ts's mode-of-ink-run-length metric (menu_icon_size()'s own grown
+ *     geometry, not the stale emu_device()-apps-length grid tools/measure-
+ *     menu-icons.ts assumes) read chrono/clock/four/timer at 14px and read
+ *     the pencil's body and the tables X - both straight diagonals for
+ *     their whole length - at 19px and 18px. FAMILY_STROKE_HALF_DIAG scales
+ *     the SAME constant down by that measured ratio (14/19) so the READING
+ *     converges rather than the number in the source; timer's hourglass
+ *     wedges are diagonal too but sweep through a wide range of angles
+ *     (near-flat at each cap, steep only near the waist) rather than
+ *     holding 45 degrees for their whole length, which is exactly why they
+ *     already measured in the light group and are left on
+ *     FAMILY_STROKE_HALF, untouched.
+ *   - DIAGONAL SIZE. Standard icon practice, on top of the stroke
+ *     correction above: a shape whose own silhouette IS a diagonal reads
+ *     larger than an axis-aligned shape of the identical bounding box,
+ *     because the eye weighs the diagonal's reach across the box more than
+ *     it weighs a box edge. The pencil (draw_icon_lucide_sketch_pencil)
+ *     was the one actually oversized by this - at 90x90 (native units) it
+ *     tied FOUR for the single largest icon in the set, well past the
+ *     rings' own 74px reach - so its baked Lucide coordinates are scaled
+ *     down around the icon's own centre by PENCIL_DIAG_SCALE. The tables X
+ *     was already the smaller of the two diagonal icons (70x70) and is
+ *     left at its own size; only its stroke needed correcting.
+ *   - FILLED WEIGHT. four's two solid counters are the only pure fills in
+ *     the set and read heaviest even at an identical footprint - filled
+ *     ink reads heavier than an outline of the same silhouette, not a bug
+ *     to chase to zero - so FOUR_ICON_R comes down rather than matching the
+ *     outline icons' own reach; see that icon's own comment for the number.
+ * ======================================================================= */
+#define FAMILY_RING_R            32.0f                          // chrono's own pre-existing radius
+#define FAMILY_STROKE_HALF       LUCIDE_STROKE_HALF              // 5.0f, this pass's name for it
+#define FAMILY_STROKE_HALF_DIAG  (FAMILY_STROKE_HALF * 14.0f / 19.0f) // ~3.68px, see header above
+#define PENCIL_DIAG_SCALE        0.85f                           // see "DIAGONAL SIZE" above
+
 // ---- chrono candidate: timer.svg (Lucide), sole candidate. alarm-clock.svg
 // and watch.svg were also fetched and considered - rejected because both
 // carry a specific OTHER object's silhouette (an alarm clock's bell-ear
@@ -1352,7 +1420,8 @@ static void draw_icon_timer_coil(int ox, int oy, uint16_t color) {
 // rejected for the opposite reason, too generic (a bare clock face reads
 // as "tells the time", not "counts elapsed time"). timer.svg's own dial +
 // crown + hand is the closest thing Lucide has to a stopwatch pictogram.
-static const float s_lucideChronoRingCx = 48.00f, s_lucideChronoRingCy = 56.00f, s_lucideChronoRingR = 32.00f;
+static const float s_lucideChronoRingCx = 48.00f, s_lucideChronoRingCy = 56.00f;
+static const float s_lucideChronoRingR = FAMILY_RING_R;
 static const float s_lucideChronoCrownX[2] = { 40.00f, 56.00f };
 static const float s_lucideChronoCrownY[2] = { 8.00f, 8.00f };
 static const float s_lucideChronoHandX[2] = { 48.00f, 60.00f };
@@ -1433,14 +1502,32 @@ static const float s_lucidePencilBodyY[69] = { 27.25f, 25.54f, 23.59f, 21.48f, 1
 static const float s_lucidePencilTickX[2] = { 60.00f, 76.00f };
 static const float s_lucidePencilTickY[2] = { 20.00f, 36.00f };
 
+// PENCIL_DIAG_SCALE applied around the icon's own centre (48,48), same
+// centre draw_icon_tables below scales its X around - see the "SIX-ICON
+// FAMILY PASS" header comment above LUCIDE_STROKE_HALF for why: this
+// glyph, traced straight from Lucide's own pencil.svg, ran corner to
+// corner (8..88 on both axes) and measured the single largest icon in the
+// set, tied with four's own footprint. Scaling every baked coordinate in
+// by the same factor keeps the silhouette faithful to the source, just
+// smaller. Stroked at FAMILY_STROKE_HALF_DIAG rather than
+// FAMILY_STROKE_HALF for the same reason: this outline runs close to 45
+// degrees for its entire length, and at the family's own nominal width it
+// measured heavier than every other icon but four's solid fill - see this
+// pass's own header comment for the measurement.
 static void draw_icon_lucide_sketch_pencil(int ox, int oy, uint16_t color) {
     float dx = (float)ox, dy = (float)oy;
     float bx[69], by[69];
-    for (int i = 0; i < 69; i++) { bx[i] = dx + s_lucidePencilBodyX[i]; by[i] = dy + s_lucidePencilBodyY[i]; }
-    shapes_stroke_polyline_aa_land(bx, by, 69, LUCIDE_STROKE_HALF, color);
-    float tx[2] = { dx + s_lucidePencilTickX[0], dx + s_lucidePencilTickX[1] };
-    float ty[2] = { dy + s_lucidePencilTickY[0], dy + s_lucidePencilTickY[1] };
-    shapes_stroke_polyline_aa_land(tx, ty, 2, LUCIDE_STROKE_HALF, color);
+    for (int i = 0; i < 69; i++) {
+        bx[i] = dx + 48.0f + (s_lucidePencilBodyX[i] - 48.0f) * PENCIL_DIAG_SCALE;
+        by[i] = dy + 48.0f + (s_lucidePencilBodyY[i] - 48.0f) * PENCIL_DIAG_SCALE;
+    }
+    shapes_stroke_polyline_aa_land(bx, by, 69, FAMILY_STROKE_HALF_DIAG, color);
+    float tx[2], ty[2];
+    for (int i = 0; i < 2; i++) {
+        tx[i] = dx + 48.0f + (s_lucidePencilTickX[i] - 48.0f) * PENCIL_DIAG_SCALE;
+        ty[i] = dy + 48.0f + (s_lucidePencilTickY[i] - 48.0f) * PENCIL_DIAG_SCALE;
+    }
+    shapes_stroke_polyline_aa_land(tx, ty, 2, FAMILY_STROKE_HALF_DIAG, color);
 }
 
 static const float s_lucidePencilLineMarkX[2] = { 52.00f, 84.00f };
@@ -1584,9 +1671,23 @@ static void draw_icon_lucide_timer_loadercircle(int ox, int oy, uint16_t color) 
 // 22.5 for the four to remain tangent inside a 90px optical box, so the
 // CENTRELINE moves in instead: 22.5 - LUCIDE_STROKE_HALF = 17.5, leaving a
 // 25px hole in each empty ring.
-#define FOUR_ICON_R      17.5f    // centreline; outer edge is +LUCIDE_STROKE_HALF
-#define FOUR_ICON_A      25.5f    // first centre, in icon-box coords
-#define FOUR_ICON_B      70.5f    // second: 45 apart, so the rings are tangent
+//
+// SIX-ICON FAMILY PASS, 2026-08-19: four's two solid counters made it read
+// as the heaviest icon in the set even at a footprint merely EQUAL to the
+// outline icons' own (see this pass's header comment above
+// LUCIDE_STROKE_HALF - filled ink reads heavier than an outline at an
+// identical silhouette). FOUR_ICON_SCALE pulls the whole configuration -
+// both centres and the radius - in around the box centre by the same
+// factor, which is the one lever here that shrinks the icon WITHOUT
+// breaking tangency: this exact failure mode was already tried and
+// rejected once (see the header above, "four rings tangent along a
+// diagonal... read as BEADS ON A STRING" - shrinking the radius alone,
+// leaving the centres where they were, is exactly that mistake again).
+#define FOUR_ICON_SCALE       0.90f
+#define FOUR_ICON_HALF_SPAN   (22.5f * FOUR_ICON_SCALE)  // half the centre-to-centre spacing
+#define FOUR_ICON_R           (FOUR_ICON_HALF_SPAN - FAMILY_STROKE_HALF) // centreline; outer edge is +FAMILY_STROKE_HALF = FOUR_ICON_HALF_SPAN, so still exactly tangent
+#define FOUR_ICON_A           (48.0f - FOUR_ICON_HALF_SPAN)  // first centre, in icon-box coords
+#define FOUR_ICON_B           (48.0f + FOUR_ICON_HALF_SPAN)  // second
 
 /* TWO OF THE FOUR ARE FILLED, ON THE DIAGONAL: bottom-left and top-right.
  * The owner's own instruction - "ce serait bien d'en colorier en noir plein
@@ -1709,15 +1810,23 @@ static void draw_icon_morpion(int ox, int oy, uint16_t color) {
  * from across a room, decision 0009's own standard for everything in this
  * file, so it gets the bow.
  * ------------------------------------------------------------------- */
+// SIX-ICON FAMILY PASS, 2026-08-19: stroked at FAMILY_STROKE_HALF_DIAG, not
+// FAMILY_STROKE_HALF - this X runs close to 45 degrees for its whole
+// length, the same condition the pencil's body is corrected for above, and
+// it measured heavier the same way (see this pass's own header comment,
+// above LUCIDE_STROKE_HALF, for the reading and the ratio). Left at its own
+// existing reach/bow: at 70x70 (native units) this was already the smaller
+// of the two diagonal icons, so only its weight needed correcting, not its
+// size.
 static void draw_icon_tables(int ox, int oy, uint16_t color) {
     float cx = (float)ox + 48.0f, cy = (float)oy + 48.0f;
     float reach = 30.0f, bow = 4.0f;
-    shapes_fill_tapered_quad_aa_land(cx - reach, cy - reach, LUCIDE_STROKE_HALF,
+    shapes_fill_tapered_quad_aa_land(cx - reach, cy - reach, FAMILY_STROKE_HALF_DIAG,
                                       cx + bow, cy - bow,
-                                      cx + reach, cy + reach, LUCIDE_STROKE_HALF, color);
-    shapes_fill_tapered_quad_aa_land(cx - reach, cy + reach, LUCIDE_STROKE_HALF,
+                                      cx + reach, cy + reach, FAMILY_STROKE_HALF_DIAG, color);
+    shapes_fill_tapered_quad_aa_land(cx - reach, cy + reach, FAMILY_STROKE_HALF_DIAG,
                                       cx + bow, cy + bow,
-                                      cx + reach, cy - reach, LUCIDE_STROKE_HALF, color);
+                                      cx + reach, cy - reach, FAMILY_STROKE_HALF_DIAG, color);
 }
 
 /* ---------------------------------------------------------------------
@@ -1766,7 +1875,15 @@ static void draw_icon_tables(int ox, int oy, uint16_t color) {
  * short hands, wide angle, a visible gap of white between their tips and
  * the ring on every side.
  */
-#define CLOCK_ICON_R       29.0f  // centreline; outer edge is +LUCIDE_STROKE_HALF, same family size as chrono's ring
+// SIX-ICON FAMILY PASS, 2026-08-19: was 29.0f, 3px narrower than chrono's
+// own ring - this comment already claimed "same family size as chrono's
+// ring" before that was true. Now it actually is: FAMILY_RING_R, chrono's
+// own pre-existing radius, so the two circles in this six-icon set read as
+// the same object rather than two different ones that happen to share a
+// box. The hands below (tuned against the old, smaller ring) still clear
+// the ring's own inner edge with room to spare at the new radius - see
+// their own comment for the margin this depends on.
+#define CLOCK_ICON_R       FAMILY_RING_R  // centreline; outer edge is +LUCIDE_STROKE_HALF
 // Twelve o'clock, hour hand: straight up, 11px, short. Four o'clock, minute
 // hand: 13px, angled well clear of the hour hand rather than mirroring it -
 // a symmetric pair (tried first) reads as a checkmark, not as two hands of
