@@ -492,6 +492,27 @@ void emu_sensor_vector(int index, float x, float y, float z) {
     g_gravZ = accel_as_hardware_would(z);
 }
 
+// Private, non-ABI: not declared in emu_abi.h, not part of the contract a
+// firmware author reads there. It exists for a single-app port compiled
+// alongside this shim (wasm/build.ts's --app flag) that wants the raw
+// submitted vector without going through app_frame_t - the fluidbox port is
+// the one caller. Everything else, every real app included, reads
+// app_frame_t.tilt, which is the filtered, axis-mapped, app-space signal
+// firmware/runtime/tilt.c publishes; this is the unfiltered device-axes
+// reading and is deliberately NOT a shortcut to that.
+//
+// Its default moved with the rest of this section: it used to read (0,0,0)
+// until the host sent something, and now reads the same "lying flat, screen
+// up" pose the filter is seeded with. A caller whose fallback tested for a
+// near-zero magnitude therefore sees a valid flat pose instead of "no data" -
+// which is the better answer either way, since a flat pose has no in-plane
+// gravity and drives nothing.
+void emu_shim_tilt_get(float *x, float *y, float *z) {
+    *x = g_gravX;
+    *y = g_gravY;
+    *z = g_gravZ;
+}
+
 float emu_tilt(int field) {
     app_tilt_t t;
     rtcore_last_tilt(&t);
@@ -874,6 +895,19 @@ static char *json_append(char *p, const char *s) {
     return p;
 }
 
+// Plain char-by-char equality, not strcmp: this target is freestanding and
+// carries no libc (see this file's own header comment), so a comparison this
+// small is a loop, not an import. Used only by emu_device()'s apps-array
+// dedup below.
+static int str_eq(const char *a, const char *b) {
+    while (*a && *b) {
+        if (*a != *b) return 0;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
 // Formats a non-negative float as a plain JSON number, at most two
 // fractional digits, trailing zero fractional digits trimmed (250 prints as
 // "250", 0.5 prints as "0.5"). Not a general float formatter - every
@@ -928,8 +962,22 @@ int emu_device(void) {
     p = json_append(p, "{\"id\":\"gravity\",\"kind\":\"gravity\",\"label\":\"tilt\",\"unit\":\"g\"}");
     p = json_append(p, "],");
     p = json_append(p, "\"apps\":[");
+    // Deduplicated by name, because a single-app build aliases every slot of
+    // its generated roster (firmware/apps/app_roster.inc, written by
+    // wasm/build.ts's --app flag) onto the SAME app, so g_apps[] can hold
+    // repeated names there. Several identical "switch to fluid" buttons on the
+    // page would be nonsense, so a name that already appeared earlier in this
+    // array is skipped. A roster whose apps have distinct names - every real
+    // firmware - makes this loop a no-op.
+    int wroteApp = 0;
     for (int i = 0; i < g_appCount; i++) {
-        if (i > 0) p = json_append(p, ",");
+        int dup = 0;
+        for (int j = 0; j < i; j++) {
+            if (str_eq(g_apps[j]->name, g_apps[i]->name)) { dup = 1; break; }
+        }
+        if (dup) continue;
+        if (wroteApp) p = json_append(p, ",");
+        wroteApp = 1;
         p = json_append(p, "\"");
         p = json_append(p, g_apps[i]->name);
         p = json_append(p, "\"");

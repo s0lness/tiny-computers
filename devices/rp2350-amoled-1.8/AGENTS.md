@@ -3,6 +3,13 @@
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED in a
 small plastic puck.
 
+> **The runtime here is a copy. The apps are ours.** `firmware/runtime/`,
+> `firmware/lib/`, `firmware/devlink.*`, `firmware/bootbtn.*` and
+> `emulator/wasm/{shim/,emu_shim.c}` are synced from the puck device pack by
+> `bun run tools/sync-pack.ts`. Editing one of them here is work that gets
+> thrown away. Read "The runtime is not ours" below before touching anything
+> under those paths.
+
 **One binary, eleven apps built, five on the menu.** This is a single-binary
 runtime (`firmware/runtime/`) holding an app table (`firmware/apps/`): a
 stopwatch (`chrono.c`, index 0, what boots), a sketchpad (`sketch.c`,
@@ -197,8 +204,22 @@ as gospel; the ratio is what matters and it is not close to the edge.
 
 ## Layout
 
+Paths marked **[pack]** are synced copies, owned by the puck device pack -
+see "The runtime is not ours" above. Everything else is this repo's.
+
 ```
-firmware/runtime/    the runtime: runtime.c (board entry point, startup,
+tools/sync-pack.ts    copies the [pack] paths in from puck and writes
+                      PACK_PROVENANCE.md. `--check` fails if this tree drifted
+PACK_PROVENANCE.md    generated: which puck commit the copies came from
+firmware/apps/app_roster.inc
+                      OURS, and the seam that lets the runtime be a copy:
+                      g_apps[], g_appCount, the menu's g_menuAppIndex[]
+                      roster, and one extern per app. Included by
+                      runtime_core.c, which never names an app itself
+firmware/apps/app_tunables.inc
+                      OURS, same idea one layer along: which apps expose live
+                      tunables, included by runtime/tune_registry.c
+firmware/runtime/    [pack] the runtime: runtime.c (board entry point, startup,
                       watchdog, devlink wiring, profiler), runtime_core.c
                       (portable: arena, app table, switching, frame dispatch -
                       compiles for both the board and wasm32-freestanding, see
@@ -261,10 +282,11 @@ firmware/apps/        one file per app plus shared helpers: chrono.c
                       (shared seven-segment numerals), shapes.c (round
                       silhouettes built from rectangles, used by menu.c's
                       icons)
-firmware/lib/         Waveshare drivers, copied from the vendor demo (with our
+firmware/lib/         [pack] Waveshare drivers, from the vendor demo (with our
                       patches - see "Gotchas that bite" below)
-firmware/bootbtn.c    reads the BOOT button by borrowing the flash chip select
-firmware/devlink.c    the USB screenshot/touch-injection/app-switch link an
+firmware/bootbtn.c    [pack] reads the BOOT button by borrowing the flash chip
+                      select
+firmware/devlink.c    [pack] the USB screenshot/touch-injection/app-switch link an
                       agent uses to drive the board without a human - see
                       tools/README-devlink.md
 firmware/CMakeLists.txt   what actually builds; also documents what does NOT
@@ -274,6 +296,11 @@ docs/decisions/       why things are the way they are (AGENTS says how, this
                       says why): 0001 (the 8-pixel push rule), 0002 (the
                       single-binary runtime), 0003 (the emulator runs the real
                       apps)
+emulator/wasm/shim/   [pack] the headers that let the real firmware compile for
+                      wasm32-freestanding
+emulator/wasm/emu_shim.c
+                      [pack] the emulator's stand-in for everything the board's
+                      silicon does
 emulator/             runs the firmware's own C, compiled to WebAssembly, in a
                       browser - see "The emulator" below
 emulator/wasm/tests/  regression tests that run against the real compiled
@@ -303,6 +330,81 @@ preview/              host-rendered PNGs, for judging the handwriting look
                       without flashing
 backup/                factory firmware pulled off the board before first flash
 ```
+
+## The runtime is not ours
+
+`firmware/runtime/`, `firmware/lib/`, `firmware/devlink.*`,
+`firmware/bootbtn.*`, `emulator/wasm/shim/` and `emulator/wasm/emu_shim.c` are
+**copies of the puck device pack** `packs/rp2350-touch-amoled-18`. They are
+committed here, so this repo builds with no puck checkout present, and they
+are updated by one command:
+
+```powershell
+bun run tools/sync-pack.ts            # copy, and record which puck commit
+bun run tools/sync-pack.ts --check    # exit 1 if this tree has drifted
+bun run tools/sync-pack.ts --pack <path>
+```
+
+`PACK_PROVENANCE.md` (generated, do not edit) says which puck commit is
+currently carried, whether that pack worktree was clean when it was taken, and
+lists every file the sync owns.
+
+**To change the runtime, change it in puck and sync.** An edit made here is
+silently overwritten on the next run. `--check` is the mechanical version of
+that sentence and is cheap enough to run before believing a runtime change
+took.
+
+### Why, and what it cost to learn
+
+In August the runtime, the drivers and the shim were copied out of this repo
+into puck, and from that day there were two living copies of one firmware.
+Both kept moving, nobody diffed them, and by 2026-08-19 this repo had grown an
+orientation signal, a flash key/value store, a wall clock, a second sound, a
+bezel margin, an arena oracle, a live-tune registry and a retuned power-off
+gesture that puck had never heard of, while puck had grown a single-app roster
+build, an apps dedup in its device descriptor and a portable zig lookup that
+this repo had never heard of. Neither divergence was anybody's decision. Both
+were two people editing two files.
+
+### What is deliberately NOT synced, and why
+
+- **`firmware/apps/`** - ours, and the whole point.
+- **`firmware/apps/app_roster.inc`** - the app table and the menu's roster.
+  This is the seam that made the sync possible: `g_apps[]` used to live inside
+  `runtime_core.c`, so taking that file meant taking somebody else's app list.
+  It is `#include`d by `runtime_core.c` rather than compiled separately, so a
+  single-app build elsewhere can generate one into a temp directory and put it
+  first on the include path without a new translation unit.
+- **`firmware/apps/app_tunables.inc`** - the same shape one layer along:
+  `tune_registry.c` used to name `sketch_`/`clock_`/`tables_tune_*` in a
+  provider array, which is a LINK ERROR rather than a stale comment in a
+  firmware that does not build those apps.
+- **`firmware/CMakeLists.txt`** and **`emulator/wasm/build.ts`** - both name
+  this repo's own app sources, and `build.ts` also encodes this repo's
+  directory shape (puck's writes its module to its own repo root). A change to
+  the zig invocation has to be made in both trees by hand.
+- **`emulator/wasm/emu_abi.h`** - the emulator's contract, not the pack's.
+  Puck keeps its copy at its repo root, deliberately device-neutral.
+- **`tools/`, `emulator/src/`, `emulator/wasm/tests/`, `docs/`** - ours.
+
+**A "which app is this" test inside the runtime is now a bug, not a
+shortcut.** `runtime_core.c` used to decide who drains raw touch by comparing
+the running app against `&g_sketchApp`; that is `app_t.wantsRawTouch` now,
+beside the `wantsShake` flag that already existed for the same reason. The
+symptom that the old shape was wrong was not aesthetic: the runtime failed to
+COMPILE against a valid roster with no sketchpad in it. If a future runtime
+behaviour needs to apply to some apps and not others, it gets a flag in
+`app_t`.
+
+### Paths inside synced files point HERE
+
+A comment in a synced file naming `emulator/wasm/build.ts`, `store/`,
+`tools/gate/` or `docs/decisions/0018` resolves in this repo and does not
+resolve in puck. That is the documented state of affairs on both sides: the
+pack's own `AGENTS.md` has a standing section saying its firmware sources
+carry paths from the monorepo they were extracted from, which is this one. Do
+not "fix" them in either direction, and expect the mirror case too - a synced
+file may name something that only exists over there.
 
 ## Never kill a process by image name
 
@@ -872,7 +974,11 @@ three times while nothing improves.
   updated. The same file's `Display()`/`Clear()` use the correct bound, which
   is what makes it a bug rather than a convention. `lib/AMOLED/AMOLED_1in8.c`
   is fixed here to `i < Yend`. **If you ever re-copy the driver from the
-  Waveshare zip, this patch is lost** and partial updates will start dropping
+  Waveshare zip, this patch is lost** (`tools/sync-pack.ts` is NOT that
+  hazard: the pack's copies are the patched ones, `vendor-baseline/` still
+  holds the untouched originals to diff against, and the pack's own
+  `firmware/lib/NOTICE.md` records every patch - the zip is the danger, the
+  pack is where the patch now lives) and partial updates will start dropping
   their last row again.
 - **Every pushed window's row length must be a multiple of 8 pixels (16
   bytes), or `AMOLED_1IN8_DisplayWindows` corrupts the transfer.** This lives

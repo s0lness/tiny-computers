@@ -38,7 +38,14 @@ const INPUT_DIRS = [
   join(DEVICE_ROOT, "firmware", "apps"),
 ];
 const INPUT_FILES = [join(DEVICE_ROOT, "firmware", "CMakeLists.txt")];
-const EXTENSIONS = [".c", ".h", ".pio"];
+// .inc is here for firmware/apps/app_roster.inc (the app table) and
+// firmware/apps/app_tunables.inc (the live-tune provider list): since
+// 2026-08-19 both live outside the synced, pack-owned runtime sources that
+// include them. They compile into the image like any other source, so a
+// fingerprint that ignored them would report the same hash for two
+// firmwares with different apps in them - which is the precise question
+// this hash is asked ("is the board running THIS tree").
+const EXTENSIONS = [".c", ".h", ".pio", ".inc"];
 
 export interface Fingerprint {
   /** The full digest. */

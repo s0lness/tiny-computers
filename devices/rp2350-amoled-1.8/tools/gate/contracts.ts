@@ -5,7 +5,7 @@
 // caught by a human reading reports. Each collision had the same shape - a
 // contract that exists as several hand-maintained copies with no comparator:
 //
-//   - the app table exists three times (runtime_core.c's g_apps[], build.ts
+//   - the app table exists three times (app_roster.inc's g_apps[], build.ts
 //     SOURCES, CMakeLists.txt target_sources), and commit 7a15a80 ("unbreak
 //     main, which I broke by committing another agent's file") is what a
 //     dropped copy looks like;
@@ -36,7 +36,14 @@ import type { Violation } from "./rules";
 const DEVICE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const FIRMWARE = join(DEVICE_ROOT, "firmware");
 const APPS_DIR = join(FIRMWARE, "apps");
-const RUNTIME_CORE = join(FIRMWARE, "runtime", "runtime_core.c");
+// The app table used to live in runtime_core.c. It moved to
+// firmware/apps/app_roster.inc on 2026-08-19, when the runtime became a
+// SYNCED COPY of the puck device pack (tools/sync-pack.ts): a shared runtime
+// cannot carry one consumer's app list, and this parser has to follow the
+// contract, not the old address. runtime_core.c is not read here at all any
+// more - if a future edit puts a g_apps[] back into it, this file will not
+// see it, and the app-wiring rule below is the thing that would go quiet.
+const APP_ROSTER = join(APPS_DIR, "app_roster.inc");
 const CMAKELISTS = join(FIRMWARE, "CMakeLists.txt");
 const BUILD_TS = join(DEVICE_ROOT, "emulator", "wasm", "build.ts");
 const EMU_ABI_H = join(DEVICE_ROOT, "emulator", "wasm", "emu_abi.h");
@@ -124,14 +131,14 @@ export function parseAppWiring(): AppWiring {
     }
   }
 
-  // The table, from runtime_core.c, with #if nesting tracked so a gated
+  // The table, from firmware/apps/app_roster.inc, with #if nesting tracked so a gated
   // entry is known to be gated.
-  const core = stripC(readFileSync(RUNTIME_CORE, "utf8"));
+  const core = stripC(readFileSync(APP_ROSTER, "utf8"));
   const tableStart = core.search(/const\s+app_t\s*\*\s*const\s+g_apps\s*\[\s*\]\s*=/);
-  if (tableStart < 0) throw new Error("runtime_core.c: no `const app_t *const g_apps[] =` to parse");
+  if (tableStart < 0) throw new Error("firmware/apps/app_roster.inc: no `const app_t *const g_apps[] =` to parse");
   const open = core.indexOf("{", tableStart);
   const close = core.indexOf("}", open);
-  if (open < 0 || close < 0) throw new Error("runtime_core.c: g_apps[] initialiser is not brace-delimited the way this parser expects");
+  if (open < 0 || close < 0) throw new Error("firmware/apps/app_roster.inc: g_apps[] initialiser is not brace-delimited the way this parser expects");
   const body = core.slice(open + 1, close);
 
   const table: TableEntry[] = [];
@@ -153,7 +160,7 @@ export function parseAppWiring(): AppWiring {
     for (const m of line.matchAll(/&g_(\w+)App\b/g)) table.push({ token: m[1]!, gatedBy });
     for (const m of line.matchAll(/&g_stubApps\s*\[\s*(\d+)\s*\]/g)) table.push({ token: `stub[${m[1]}]`, gatedBy });
   }
-  if (table.length === 0) throw new Error("runtime_core.c: parsed g_apps[] as empty, which cannot be right");
+  if (table.length === 0) throw new Error("firmware/apps/app_roster.inc: parsed g_apps[] as empty, which cannot be right");
 
   // build.ts SOURCES.
   const buildSrc = readFileSync(BUILD_TS, "utf8");
@@ -203,7 +210,7 @@ export function diffAppWiring(w: AppWiring): Violation[] {
   for (const [token, file] of w.defined) {
     if (tableTokens.has(token)) continue;
     if (token in TABLE_EXEMPT) continue;
-    v(`firmware/apps/${file} defines g_${token}App and g_apps[] (runtime_core.c) never references it: the app compiles and is unreachable. If a merge dropped the table entry, this is it.`);
+    v(`firmware/apps/${file} defines g_${token}App and g_apps[] (firmware/apps/app_roster.inc) never references it: the app compiles and is unreachable. If a merge dropped the table entry, this is it.`);
   }
 
   for (const t of w.table) {
@@ -548,7 +555,7 @@ export interface ContractsReport {
 }
 
 export function runContracts(appNames: string[], appCountMax: number): ContractsReport {
-  for (const p of [RUNTIME_CORE, CMAKELISTS, BUILD_TS, EMU_ABI_H, EMU_SHIM_C]) {
+  for (const p of [APP_ROSTER, CMAKELISTS, BUILD_TS, EMU_ABI_H, EMU_SHIM_C]) {
     if (!existsSync(p)) throw new Error(`contracts: required input missing: ${p}`);
   }
 

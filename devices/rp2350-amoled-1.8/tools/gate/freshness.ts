@@ -110,6 +110,15 @@ function parseArrayLiteral(src: string, name: string): string[] {
 // through #include, deliberately: a coarse over-approximation costs a
 // rebuild that was not strictly needed, and following includes properly
 // means writing a preprocessor.
+//
+// `.inc` counts as a header here, and that is not a formality: since
+// 2026-08-19 the app table lives in firmware/apps/app_roster.inc and the
+// live-tune provider list in firmware/apps/app_tunables.inc, both included
+// by synced, pack-owned runtime sources. Neither is named by any SOURCES
+// array and both change what the module contains, so a sweep that only knew
+// about .c and .h would call a module fresh after the app table itself had
+// been edited - which is the exact failure this whole file exists to stop,
+// just one file extension out of reach.
 export function moduleSources(): string[] {
   if (!existsSync(BUILD_TS)) throw new Error(`no build.ts at ${BUILD_TS}`);
   const src = readFileSync(BUILD_TS, "utf8");
@@ -120,7 +129,7 @@ export function moduleSources(): string[] {
   for (const dir of includes) {
     if (!existsSync(dir)) throw new Error(`emulator/wasm/build.ts puts ${dir} on the include path and it does not exist`);
     for (const name of readdirSync(dir)) {
-      if (name.endsWith(".h") || name.endsWith(".c")) files.add(join(dir, name));
+      if (name.endsWith(".h") || name.endsWith(".c") || name.endsWith(".inc")) files.add(join(dir, name));
     }
   }
   for (const f of files) {

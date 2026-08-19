@@ -203,6 +203,27 @@ typedef struct {
 
     // Opt in to shake. Off by default, deliberately: see sensors.h.
     bool wantsShake;
+
+    // Opt out of the runtime's touch resolution and drain the raw sample
+    // stream yourself (sensors_touch_next(), sensors.h). Off by default,
+    // because the resolved down/pressed/released/x/y shape below is what
+    // almost every app wants and it is the runtime's job to produce it.
+    //
+    // An app that sets this gets touchDown/touchX/touchY left alone and takes
+    // on one further obligation in exchange: the runtime only calls
+    // sensors_set_finger_down() from inside the branch it is skipping, so an
+    // app draining the queue itself must keep that signal fresh (it is what
+    // suppresses shake while a finger is down).
+    //
+    // This replaces a hardcoded `g_currentApp != &g_sketchApp` in
+    // runtime_core.c, which named one specific app inside the runtime and
+    // whose own comment called it a wart. The wart survived as long as it did
+    // because it served exactly one consumer - stroke reconstruction from the
+    // raw stream is the sketchpad's whole reason for existing - and it stopped
+    // being tolerable the moment a firmware could be built without a sketchpad
+    // in it at all: the runtime then failed to COMPILE against a perfectly
+    // valid app roster, which is not a wart, it is a leak.
+    bool wantsRawTouch;
 } app_t;
 
 /* ---- the app table -----------------------------------------------------

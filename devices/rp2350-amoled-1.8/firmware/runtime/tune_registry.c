@@ -20,15 +20,23 @@ typedef struct {
     tune_set_fn set;
 } tune_provider_t;
 
-// One row per app that declares live tunables. Order here is the order
-// `TUNE` (bare list) and the emulator's tunables panel present them in -
-// nothing downstream depends on that order beyond it being stable within
-// one build.
-static const tune_provider_t g_tuneProviders[] = {
-    { sketch_tune_count, sketch_tune_describe, sketch_tune_define_name, sketch_tune_get, sketch_tune_set },
-    { clock_tune_count,  clock_tune_describe,  clock_tune_define_name,  clock_tune_get,  clock_tune_set },
-    { tables_tune_count, tables_tune_describe, tables_tune_define_name, tables_tune_get, tables_tune_set },
-};
+// WHICH APPS DECLARE TUNABLES IS THE CONSUMER'S, NOT THE PACK'S, for exactly
+// the reason runtime_core.c's app table is: this file is a device pack source,
+// shared verbatim with every firmware built on this board, and the set of apps
+// is the one thing that differs between them. A provider row naming an app
+// that a given firmware does not compile is not a stale comment, it is a link
+// error, so the array lives in firmware/apps/app_tunables.inc and this file
+// only aggregates whatever it finds there.
+//
+// That file defines exactly one thing:
+//
+//   static const tune_provider_t g_tuneProviders[] = { ... };
+//
+// one row per app, in the order `TUNE` (bare list) and the emulator's tunables
+// panel present them. Nothing downstream depends on that order beyond it being
+// stable within one build. An empty array is legal and means "this firmware
+// has no live tunables".
+#include "app_tunables.inc"
 #define TUNE_PROVIDER_COUNT ((int)(sizeof(g_tuneProviders) / sizeof(g_tuneProviders[0])))
 
 int tune_registry_count(void) {

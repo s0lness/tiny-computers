@@ -2702,6 +2702,10 @@ const app_t g_sketchApp = {
     .tick = sketch_tick,
     .landscape = false,     // the sketchpad draws portrait
     .wantsShake = true,     // shake-to-erase IS this app's identity
+    // This app reconstructs strokes from the raw sample stream itself
+    // (sensors_touch_next(), and the sensors_set_finger_down() call that
+    // goes with it), which is its whole reason for existing - see app.h.
+    .wantsRawTouch = true,
 };
 
 // TEMPORARY diagnostic accessor - see sensors.h's sketch_touch_diag_t.
