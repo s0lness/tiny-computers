@@ -1,0 +1,26 @@
+# Synced device-pack sources: stored EXACTLY as they sit on disk.
+#
+# devices/rp2350-amoled-1.8/tools/sync-pack.ts copies these byte for byte out
+# of the puck device pack, and `sync-pack.ts --check` compares them byte for
+# byte to decide whether this tree has drifted. That comparison is the whole
+# value of having one living copy, and `core.autocrlf` quietly destroys it:
+# with autocrlf on, git stores LF, checks out CRLF, and a file that arrived
+# from the pack as LF comes back out of a clone as CRLF. The check then
+# reports permanent drift on files nobody touched, or - worse, because it is
+# silent - agrees on this machine and disagrees on the next one.
+#
+# -text turns the conversion off for these paths only. It is not a claim that
+# they are binary; it is a claim that their bytes are the contract. The rest
+# of the repo keeps whatever the developer's own autocrlf does.
+#
+# The line endings themselves are a mix (some CRLF, some LF) because the
+# vendor drivers arrived that way and the pack kept them. That is fine. What
+# is not fine is git changing them on the way through.
+devices/rp2350-amoled-1.8/firmware/runtime/**  -text
+devices/rp2350-amoled-1.8/firmware/lib/**      -text
+devices/rp2350-amoled-1.8/firmware/devlink.c   -text
+devices/rp2350-amoled-1.8/firmware/devlink.h   -text
+devices/rp2350-amoled-1.8/firmware/bootbtn.c   -text
+devices/rp2350-amoled-1.8/firmware/bootbtn.h   -text
+devices/rp2350-amoled-1.8/emulator/wasm/shim/** -text
+devices/rp2350-amoled-1.8/emulator/wasm/emu_shim.c -text
