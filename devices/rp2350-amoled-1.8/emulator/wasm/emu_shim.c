@@ -576,10 +576,11 @@ void sensors_stats(sensors_stats_t *out) {
  * sector erase, or core1's lockout. Only the board answers those
  * questions; see docs/decisions/0011 and firmware/runtime/storage.c.
  * ======================================================================= */
-// 6, not 4: DINO_HISCORE (1), the retired TABLES_CALIB (2), and the new
-// TABLES_CALIB_LO/_HI (3, 4) - same bump storage.c's own real-flash stand-in
-// took, for the same reason (storage.h).
-#define EMU_STORAGE_MAX_KINDS 6
+// 10, not 4 or 6: DINO_HISCORE (1), the retired TABLES_CALIB (2), the
+// retired TABLES_CALIB_LO/_HI (3, 4) and the live TABLES_CALIB10_LO/_MID/_HI
+// (5, 6, 7) - same bump storage.c's own real-flash implementation took, for
+// the same reason (storage.h).
+#define EMU_STORAGE_MAX_KINDS 10
 static uint8_t  s_storageKind[EMU_STORAGE_MAX_KINDS];
 static uint32_t s_storageValue[EMU_STORAGE_MAX_KINDS];
 static uint8_t  s_storageTag[EMU_STORAGE_MAX_KINDS];

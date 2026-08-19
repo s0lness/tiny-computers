@@ -319,11 +319,11 @@ static int32_t tables_round_i32(float v) { return (int32_t)floorf(v + 0.5f); }
 
 static bool cell_is_digit(int cell) { return (cell >= 0 && cell <= 8) || cell == CELL_ZERO; }
 static int  cell_digit_value(int cell) { return cell == CELL_ZERO ? 0 : cell + 1; }
-// NUMPAD TOUCH CALIBRATION (below numpad_hit()) prompts only digits 1..9
-// (CELL_ZERO is never one of the nine learned keys), so "which cell does
-// this prompted digit draw as" is always cell = digit - 1 there - no
-// separate digit-to-cell inverse is needed the way an earlier version of
-// this file (when calibration could still land on 0) once carried one.
+// NUMPAD TOUCH CALIBRATION (below numpad_hit()) prompts all TEN digit keys,
+// the zero included, so "which cell does this prompted digit draw as" is
+// cell = digit - 1 for 1..9 and CELL_ZERO for 0 - the inverse an earlier
+// nine-key version of this file was able to do without, and which
+// calib_key_cell()/calib_key_digit() (that section) now own in one place.
 
 static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
     // The zero owns the whole bottom row, so its rect is three cells wide -
@@ -422,7 +422,7 @@ static void cell_rect(int cell, int *bx, int *by, int *bw, int *bh) {
 
 // THIS IS NOW A FALLBACK, NOT THE LAST WORD. 40 was picked by feel, twice
 // (this constant's own history above). NUMPAD TOUCH CALIBRATION, right
-// after numpad_hit() below, replaces it with nine MEASURED per-key centres
+// after numpad_hit() below, replaces it with ten MEASURED per-key centres
 // once the owner runs that mode; TOUCH_THUMB_BIAS_Y_DEFAULT remains exactly
 // what a never-calibrated puck falls back to - see tables_uncalibrated_bias()/
 // tables_tunable_moved() for the precedence between this constant, a
@@ -567,11 +567,11 @@ static void tables_tune_reset_moved(void) {} // no tunable exists to have moved
 // once it has actually been moved (tables_uncalibrated_bias(), NUMPAD
 // TOUCH CALIBRATION below) - this function is the UNCALIBRATED rectangle
 // path only, now. Once a calibration has actually been run, the gesture
-// tick calls numpad_hit_calibrated() instead (nearest of nine learned
-// centres, no bias at all) rather than passing this function a fitted
-// value - see that function's own comment, right after this one, for why
-// a shared rectangle grid cannot represent nine independently learned
-// centres in the first place.
+// tick calls numpad_hit_calibrated() instead (nearest learned centre, no
+// bias at all) rather than passing this function a fitted value - see that
+// function's own comment, right after this one, for why a shared rectangle
+// grid cannot represent ten independently learned centres in the first
+// place.
 static int numpad_hit(int lx, int ly, float biasY) {
     const int biased = ly - tables_round_i32(biasY);
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W) return -1;
@@ -607,6 +607,18 @@ static int numpad_hit(int lx, int ly, float biasY) {
 /* =========================================================================
  * NUMPAD TOUCH CALIBRATION - what TOUCH_THUMB_BIAS_Y_DEFAULT above is a
  * stand-in for until this mode has run once.
+ *
+ * EXTENDED THE SAME DAY TO THE ZERO, ON THE OWNER'S OWN WORD: "also we
+ * should calibrate 0". This is not a completeness itch. The zero is the
+ * pad's BOTTOM row, i.e. the extreme of the very trend this mode measures -
+ * his own runs grew from ~28px of offset at the top of the pad to ~64px at
+ * the bottom - so leaving it out meant the single key where the error is
+ * LARGEST was the one key still uncorrected. Ten keys, ten taps each, 100
+ * taps; the zero is learned exactly like any other key (median of its own
+ * ten raw pre-bias touches, measured against its DRAWN centre) and differs
+ * only in how the learned number is USED, because it is one key three cells
+ * wide - see NEAREST LEARNED CENTRE below for the three-centre trick that
+ * costs it none of its width.
  *
  * REWRITTEN 2026-08-19, FROM A FITTED LINE TO NINE LEARNED CENTRES. The
  * version this replaced prompted 3, 4, 9, then 5 six times (nine samples)
@@ -644,21 +656,20 @@ static int numpad_hit(int lx, int ly, float biasY) {
  * what it normally does. Only the QUESTION BAND changes: instead of a
  * multiplication fact it shows the single digit to press next.
  *
- * THE SEQUENCE: all NINE digit keys (1-9; CELL_ZERO is not one of them,
- * see NEAREST LEARNED CENTRE below), TEN taps each, 90 taps total
- * (CALIB_KEYS x CALIB_TAPS_PER_KEY, CALIB_SEQ_LEN below). Deliberately not
- * reduced from the owner's own "10 taps for each number" - the whole
+ * THE SEQUENCE: all TEN digit keys (1-9 and 0), TEN taps each, 100 taps
+ * total (CALIB_KEYS x CALIB_TAPS_PER_KEY, CALIB_SEQ_LEN below). Deliberately
+ * not reduced from the owner's own "10 taps for each number" - the whole
  * lesson of the run-to-run swing above is that fewer samples measure
  * nothing against his own gesture noise.
  *
- * ROTATED, NOT BLOCKED. The prompt order is 1,2,...,9, 1,2,...,9, ten times
- * over (calib_seq_digit() below) rather than ten of "1" then ten of "2" and
- * so on. A blocked order would let each key's own ten samples fall inside
- * one short window of the pass - the first few seconds for key 1, the last
- * few for key 9 - so anything that drifts slowly over a 90-tap session (the
- * hand tiring, the grip settling, the device shifting slightly against
- * whatever it is resting on) would show up as a PER-KEY bias rather than
- * the session-wide noise it actually is: key 9's median would carry
+ * ROTATED, NOT BLOCKED. The prompt order is 1,2,...,9,0, 1,2,...,9,0, ten
+ * times over (calib_seq_digit() below) rather than ten of "1" then ten of
+ * "2" and so on. A blocked order would let each key's own ten samples fall
+ * inside one short window of the pass - the first few seconds for key 1, the
+ * last few for the zero - so anything that drifts slowly over a 100-tap
+ * session (the hand tiring, the grip settling, the device shifting slightly
+ * against whatever it is resting on) would show up as a PER-KEY bias rather
+ * than the session-wide noise it actually is: the zero's median would carry
  * whatever the hand was doing two minutes in, key 1's whatever it was
  * doing at second zero, and the two would disagree for a reason that has
  * nothing to do with where either key actually sits. Rotating spreads every
@@ -671,7 +682,7 @@ static int numpad_hit(int lx, int ly, float biasY) {
  * offset". The visible cost is that the SAME digit is not asked twice in a
  * row (a mild rhythm change from the old design's six-in-a-row block); the
  * benefit is a median immunised against exactly the kind of drift a real
- * 90-tap pass is long enough to develop.
+ * 100-tap pass is long enough to develop.
  *
  * NO REJECTION, EVER - unchanged from both earlier designs. Any touch that
  * lands anywhere on the numpad - the digit prompted or a different one
@@ -702,25 +713,45 @@ static int numpad_hit(int lx, int ly, float biasY) {
  *
  * NEAREST LEARNED CENTRE, NOT SHIFTED RECTANGLES. The old model kept a
  * single shared rectangle grid and moved every zone by the same fitted
- * amount; nine independently learned centres do not share a common shift,
- * so shifted rectangles would either overlap or leave gaps between
- * neighbours whose centres moved by different amounts. Assigning a touch to
- * whichever of the nine learned centres is nearest (Euclidean, on the RAW
- * touch, no bias applied - the centres already sit where he actually
- * touches) partitions the pad by his own taps with neither gap nor overlap
- * and assumes nothing about the shape of that partition - see
- * numpad_hit_calibrated() below numpad_hit(). CELL_ZERO is deliberately NOT
- * one of the nine learned keys (the owner's own instruction: "keep it as
- * the whole bottom row"), so numpad_hit_calibrated() keeps a rectangle-
- * style gate for it - a touch at or below a line drawn a half-key beneath
- * the LOWEST of the nine learned centres (whichever key that turns out to
- * be, not assumed to be row 3) is the zero key outright, before nearest-
- * centre is even evaluated for the digit keys. That gate is anchored to the
- * learned centres themselves rather than to the drawn grid, so it still
- * gives the zero key its full reach below the pad no matter how far down
- * his own taps pulled the ninth row - see that function's own comment for
- * why a fixed line (the drawn grid boundary) cannot make this promise once
- * the centres it would need to sit below are free to move independently.
+ * amount; independently learned centres do not share a common shift, so
+ * shifted rectangles would either overlap or leave gaps between neighbours
+ * whose centres moved by different amounts. Assigning a touch to whichever
+ * learned centre is nearest (Euclidean, on the RAW touch, no bias applied -
+ * the centres already sit where he actually touches) partitions the pad by
+ * his own taps with neither gap nor overlap and assumes nothing about the
+ * shape of that partition - see numpad_hit_calibrated() below numpad_hit().
+ *
+ * THE ZERO IS ONE KEY AT THREE CENTRES, and this is the whole reason
+ * calibrating it needed a design at all rather than a tenth array slot. It
+ * is drawn three cells wide (cell_rect()'s CELL_ZERO, the full NUMPAD_W),
+ * and a single learned centre for it would have to sit at the pad's
+ * MIDLINE. Nearest-centre then breaks at the corners: a touch near the
+ * bottom-LEFT is ~100px from a midline zero centre but only a row-height
+ * from the learned "7" directly above it, so it would commit a 7 on a key
+ * the finger was nowhere near - the same failure at bottom-right with the
+ * "9". THE FIX: ONE learned dy, THREE centres. Each column contributes a
+ * centre at its OWN x (the same three column centres the digit keys use),
+ * all three carrying the SAME learned y, all three labelled CELL_ZERO.
+ * Nearest-centre then works uniformly across the whole pad - twelve centres
+ * over twelve drawn cells, three of which happen to name the same key - and
+ * the zero keeps its full triple width, which is what makes it the easiest
+ * target on the pad (numpad_hit()'s own comment on why that suits the digit
+ * a child reaches for last).
+ *
+ * THE OLD WHOLE-ROW GATE IS GONE, deliberately, not kept alongside. The
+ * nine-key version could not let the zero win a nearest-centre comparison
+ * (it had no centre to compare), so it special-cased it: everything at or
+ * below a line drawn a half-key beneath the LOWEST learned centre was the
+ * zero outright, before nearest-centre ran at all. With a learned zero that
+ * rectangle is not merely redundant, it is WRONG - it would hand the zero
+ * territory its own learned centre says belongs to 7/8/9 whenever his taps
+ * on the bottom digit row run lower than that line, and it would keep the
+ * zero's assignment from being measured at all. Two mechanisms deciding the
+ * same key is how a future reader ends up debugging the one that is not
+ * running. What survives at the bottom is a CANCEL bound, not a
+ * classification: past a full key below the learned zero centre, a touch is
+ * off the pad entirely (-1), exactly as the top gate says of anything above
+ * NUMPAD_Y0 - see numpad_hit_calibrated()'s own comment.
  *
  * THE SAMPLE IS THE RAW TOUCH, BEFORE ANY BIAS - unchanged. tables_gesture_
  * tick() below stores s->rawX/s->rawY from f->touchX/f->touchY every tick a
@@ -742,7 +773,7 @@ static int numpad_hit(int lx, int ly, float biasY) {
  *
  * THE TUNABLE VS. A STORED CALIBRATION is unchanged in SHAPE
  * (tables_gesture_tick()'s own precedence check, below) though what "a
- * stored calibration" means changed from a line to nine centres - see that
+ * stored calibration" means changed from a line to ten centres - see that
  * function's own comment. Still worth repeating why g_tuneThumbBiasMoved
  * has to exist at all: TABLES_LIVE_TUNE is compiled into every emulator
  * build (the devlink tuning registry serves sketch.c/clock.c/tables.c from
@@ -750,181 +781,236 @@ static int numpad_hit(int lx, int ly, float biasY) {
  * including this mode's own test, and without that flag no test could ever
  * observe a calibration actually being used.
  * ========================================================================= */
-#define CALIB_KEYS          9   // digits 1..9; CELL_ZERO is never one of them
+#define CALIB_KEYS         10   // digits 1..9 AND 0 - the zero is key index CALIB_KEY_ZERO
 #define CALIB_TAPS_PER_KEY 10   // the owner's own number, not reduced
-#define CALIB_SEQ_LEN (CALIB_KEYS * CALIB_TAPS_PER_KEY) // 90
+#define CALIB_SEQ_LEN (CALIB_KEYS * CALIB_TAPS_PER_KEY) // 100
+#define CALIB_KEY_ZERO (CALIB_KEYS - 1) // 9 - the zero sits LAST, so keys 0..8 keep
+                                        // being cell 0..8 (digit i+1) unchanged
+// How many CENTRES those ten keys classify against: one per digit key, and
+// NUMPAD_COLS of them for the triple-width zero (see THE ZERO IS ONE KEY AT
+// THREE CENTRES above, and numpad_hit_calibrated()). 9 + 3 = 12, one per
+// drawn cell of the pad as it happens, which is a coincidence of this
+// layout and not something either side depends on.
+#define CALIB_CENTRES (CALIB_KEY_ZERO + NUMPAD_COLS) // 12
 
 // The rotated prompt order (see ROTATED, NOT BLOCKED above): digit
-// 1,2,...,9 repeating, so idx%CALIB_KEYS is the digit-minus-one and
-// idx/CALIB_KEYS is which of its ten taps this is (0..9). No lookup table
-// needed - the whole point is that the order is a simple, predictable
-// rotation rather than a hand-picked sequence.
-static int calib_seq_digit(int idx) { return (idx % CALIB_KEYS) + 1; }
+// 1,2,...,9,0 repeating, so idx%CALIB_KEYS names the position in the
+// rotation and idx/CALIB_KEYS is which of its ten taps this is (0..9). The
+// %10 at the end is the whole of "the zero comes last": position 9 asks for
+// digit 10, which is 0. No lookup table needed - the whole point is that the
+// order is a simple, predictable rotation rather than a hand-picked
+// sequence.
+static int calib_seq_digit(int idx) { return ((idx % CALIB_KEYS) + 1) % 10; }
 static int calib_seq_tap(int idx)   { return idx / CALIB_KEYS; }
+
+// The three conversions between a learned KEY index (0..CALIB_KEYS-1, how
+// calibDy/calibCentreDy are indexed), the DIGIT it prompts, and the CELL
+// cell_rect() draws it as. Keys 0..8 are cells 0..8 (digit i+1); the zero is
+// key CALIB_KEY_ZERO, digit 0, cell CELL_ZERO - one key three cells wide.
+// One place, because a per-key array indexed by "digit - 1" would be a
+// silent off-by-one for the zero specifically.
+static int calib_key_of_digit(int digit) { return digit == 0 ? CALIB_KEY_ZERO : digit - 1; }
+static int calib_key_digit(int key)      { return key == CALIB_KEY_ZERO ? 0 : key + 1; }
+static int calib_key_cell(int key)       { return key == CALIB_KEY_ZERO ? CELL_ZERO : key; }
 
 #define CALIB_DOUBLE_PRESS_WINDOW_MS 500u // clock.c's own DOUBLE_PRESS_WINDOW_MS, same reasoning
 
 /* ---- STORAGE, AND THE TORN-WRITE ARGUMENT --------------------------------
  *
- * ONLY DY IS STORED - nine of them, one per key, each the learned centre's
- * offset from that key's own drawn cell_rect() centre (so loading needs
- * only re-add a stored dy to a target this file already knows how to
- * compute, never a stored x at all - see PER KEY, THE LEARNED CENTRE above
- * for why x is measured and printed but not kept).
+ * ONLY DY IS STORED - ten of them now, one per key (the zero included),
+ * each the learned centre's offset from that key's own drawn cell_rect()
+ * centre (so loading needs only re-add a stored dy to a target this file
+ * already knows how to compute, never a stored x at all - see PER KEY, THE
+ * LEARNED CENTRE above for why x is measured and printed but not kept, and
+ * THE ZERO IS ONE KEY AT THREE CENTRES for why one stored dy is still
+ * enough for a key that classifies at three x's).
  *
- * NINE VALUES DO NOT FIT ONE RECORD. storage.h's record carries one
- * uint32_t `value`; the old model's two floats fit in one (PACKING, this
- * section's own previous version). Nine dy's do not: measured dy sits
- * roughly 20..70px (this app's own report), so each is packed as a signed
- * 7-bit value of (dy - CALIB_DY_OFFSET) - 45 chosen as the offset because it
- * centres that 20..70 range on zero, covering -25..+25 with the 7-bit
- * field's own -64..+63 range to spare for a run that lands outside the
- * range this file has actually seen. 9 x 7 = 63 bits: two uint32 words (LO
- * = bits 0..31, HI = bits 32..62 - see tables_calib_pack9()/unpack9()),
- * i.e. TWO storage records, STORAGE_KIND_TABLES_CALIB_LO and _HI
- * (storage.h).
+ * TEN VALUES DO NOT FIT TWO RECORDS. storage.h's record carries one
+ * uint32_t `value`; the old model's two floats fit in one, and nine 7-bit
+ * fields fit 63 bits, i.e. two records exactly (this section's own previous
+ * version). Ten do not fit those 64 bits, so this is THREE records - and
+ * once a third record is being spent anyway, the field widens from 7 bits
+ * to 8: 10 x 8 = 80 bits inside the 96 three records carry. That is not
+ * padding for its own sake, it buys two things. An 8-bit signed field of
+ * (dy - CALIB_DY_OFFSET) covers -128..+127 against a measured dy of roughly
+ * 20..70px (this app's own report), i.e. -25..+25 in field terms, so
+ * saturation is not something a real pass can reach - it is still WARNED
+ * about on the print rather than saturating silently, because a value that
+ * did clip would otherwise become a plausible-looking learned centre nobody
+ * could tell from a real one. And 8 bits divides 32 exactly, so field i
+ * lives wholly inside word i/4 at shift 8*(i%4) and no value ever straddles
+ * a record boundary - the 7-bit version had key 4's field split across LO
+ * and HI, which is precisely the kind of thing a torn write makes
+ * unreadable in a way that is hard to reason about. LO = keys 0..3, MID =
+ * keys 4..7, HI = keys 8..9 (its top 16 bits stay zero), stored as
+ * STORAGE_KIND_TABLES_CALIB10_LO/_MID/_HI (storage.h - NEW kinds, appended;
+ * the two-record 3/4 pair is retired, never renumbered, per that header's
+ * own rule).
  *
- * A TORN WRITE - power lost between the LO save and the HI save - MUST be
- * detected and MUST fall back to the uncalibrated default, never apply
- * half a pass. storage.c appends records one at a time; there is no atomic
- * "write two records together" primitive, and there should not be one just
- * for this caller (storage.h is deliberately not a transactional store).
- * THE SCHEME: both records of one calibration pass are saved with the SAME
- * small tag, stored in the record's own `reserved` byte (offset 3 - already
- * covered by the CRC, storage.c's own record layout comment; using it
- * changes no on-flash shape, only what a byte that used to always be 0
- * holds) via storage_save_u32_tagged()/storage_get_u32_tagged()
- * (storage.h). A read (tables_enter() below) accepts the pair ONLY if BOTH
- * records are present AND their tags match:
+ * A TORN WRITE - power lost partway through the three saves - MUST be
+ * detected and MUST fall back to the uncalibrated default, never apply part
+ * of a pass. storage.c appends records one at a time; there is no atomic
+ * "write three records together" primitive, and there should not be one
+ * just for this caller (storage.h is deliberately not a transactional
+ * store). THE SCHEME is the two-record one generalised, not a new
+ * mechanism: all THREE records of one calibration pass are saved with the
+ * SAME small generation tag, stored in the record's own `reserved` byte
+ * (offset 3 - already covered by the CRC, storage.c's own record layout
+ * comment; using it changes no on-flash shape, only what a byte that used
+ * to always be 0 holds) via storage_save_u32_tagged()/
+ * storage_get_u32_tagged() (storage.h). A read (tables_enter() below)
+ * accepts the trio ONLY if ALL THREE records are present AND all three tags
+ * match:
  *
- *   - if LO is missing, HI is missing, or the read simply never ran a
- *     calibration pass before - no pair, calibHave stays false, the
+ *   - if all three are missing - no trio, calibHave stays false, the
  *     uncalibrated default is used. This is also the ordinary "never
  *     calibrated" case, so it needs no separate message.
- *   - if LO is present and HI is not (or the reverse) - power was lost
- *     between the two saves, or storage was disabled for part of a boot
- *     that spanned two calibration passes (see storage.c's own new
- *     diagnostic for that path). calibHave stays false: a HALF-applied
- *     calibration - eight keys with fresh data, one still carrying
- *     whatever a stale HI or LO happens to hold - is worse than none, since
- *     it silently mixes two different passes' geometry.
- *   - if BOTH are present but their tags DIFFER - the more dangerous case,
- *     because it is not simply "one record missing": a torn write between
- *     two DIFFERENT calibration passes can leave a fresh LO sitting next to
- *     a STALE HI (or vice versa) that is individually well-formed (valid
- *     magic, valid CRC, a plausible-looking value) and would silently pass
- *     any check that only asks "does a record exist for this kind". Tags
- *     catch exactly this: tables_calib_finish() below reads whichever of
- *     LO/HI is currently stored (if either) and saves the NEW pass at
- *     old_tag + 1 (wrapping in the tag byte's own 8 bits), so a genuinely
- *     torn write - new LO, old HI - carries two DIFFERENT tags and is
- *     rejected, where a fixed tag (e.g. always 0) would have silently
- *     accepted it. calibHave stays false; the uncalibrated default is used
- *     until a complete pass lands.
+ *   - if ONE OR TWO are present and the rest are not - power was lost
+ *     partway through the saves, or storage was disabled for part of a boot
+ *     that spanned two calibration passes (see storage.c's own diagnostic
+ *     for that path). calibHave stays false: a PART-applied calibration -
+ *     some keys with fresh data, others still carrying whatever a stale
+ *     record happens to hold - is worse than none, since it silently mixes
+ *     two different passes' geometry.
+ *   - THE NEW CASE THREE RECORDS ADD, and it is the one worth stating
+ *     plainly: a tear between record TWO and record THREE. With two records
+ *     a tear could only ever be "one landed, one did not". With three, the
+ *     sector can now hold a fresh LO **and** a fresh MID next to a STALE HI
+ *     from an older pass - all three records present, all three individually
+ *     well-formed (valid magic, valid CRC, a plausible value), so every
+ *     "does a record exist for this kind" check passes and eight of the ten
+ *     keys really are the new pass. That is exactly the state that would
+ *     apply a two-thirds calibration and look correct doing it. The tags are
+ *     what catch it, and they catch it the same way they caught the
+ *     two-record case: tables_calib_finish() below reads whichever of
+ *     LO/MID/HI is currently stored (if any) and saves the NEW pass at
+ *     old_tag + 1 (wrapping in the tag byte's own 8 bits), so the fresh
+ *     LO/MID carry a tag the stale HI cannot also carry and the trio is
+ *     rejected. Requiring ALL THREE tags equal - not "the two I happened to
+ *     check" - is what makes the middle record part of the check rather than
+ *     a record nobody validates.
  *
  * Worth naming why incrementing (rather than a fixed constant) matters:
- * with a FIXED tag, pass 2 writing LO(tag0, dataB) and then losing power
- * before HI(tag0, dataB) would leave the sector holding LO(tag0, dataB) next
- * to HI(tag0, dataA) from pass 1 - same tag, different passes, and a
- * same-tag check would wrongly accept the mismatched pair. Incrementing
- * makes pass 2's LO carry a tag pass 1's HI cannot also carry, so the same
- * scenario is caught. A single stray collision (the tag byte wrapping back
- * to a value an old stale record happens to share) is not ruled out in
- * principle, but at 256 possible tags and a mode a child never touches and
- * an owner runs on the order of once per session, it is not a real risk
- * worth spending more of the record's own bytes on.
+ * with a FIXED tag, pass 2 writing LO(tag0, dataB), MID(tag0, dataB) and
+ * then losing power before HI(tag0, dataB) would leave the sector holding
+ * two fresh records next to HI(tag0, dataA) from pass 1 - same tag,
+ * different passes, and a same-tag check would wrongly accept the
+ * mismatched trio. Incrementing makes pass 2's records carry a tag pass 1's
+ * HI cannot also carry, so the same scenario is caught. A single stray
+ * collision (the tag byte wrapping back to a value an old stale record
+ * happens to share) is not ruled out in principle, but at 256 possible tags
+ * and a mode a child never touches and an owner runs on the order of once
+ * per session, it is not a real risk worth spending more of the record's own
+ * bytes on.
  */
-#define CALIB_DY_OFFSET     45   // centres the measured 20..70px range on zero
-#define CALIB_DY_FIELD_MIN (-64) // signed 7-bit range: -64..63
-#define CALIB_DY_FIELD_MAX   63
-#define CALIB_DY_FIELD_BITS   7
-#define CALIB_DY_FIELD_MASK 0x7Fu
+#define CALIB_DY_OFFSET      45   // centres the measured 20..70px range on zero
+#define CALIB_DY_FIELD_MIN (-128) // signed 8-bit range: -128..127
+#define CALIB_DY_FIELD_MAX   127
+#define CALIB_DY_FIELD_BITS    8
+#define CALIB_DY_FIELD_MASK 0xFFu
+#define CALIB_FIELDS_PER_WORD (32 / CALIB_DY_FIELD_BITS) // 4, exactly - no field straddles a record
+#define CALIB_WORDS            3   // LO, MID, HI - 96 bits for 80 used
 
-static void tables_calib_pack9(const int dy[CALIB_KEYS], uint32_t *outLo, uint32_t *outHi) {
-    uint64_t packed = 0;
+static void tables_calib_pack10(const int dy[CALIB_KEYS], uint32_t out[CALIB_WORDS]) {
+    for (int w = 0; w < CALIB_WORDS; w++) out[w] = 0;
     for (int i = 0; i < CALIB_KEYS; i++) {
         int32_t v = dy[i] - CALIB_DY_OFFSET;
         bool clipped = v < CALIB_DY_FIELD_MIN || v > CALIB_DY_FIELD_MAX;
         if (v < CALIB_DY_FIELD_MIN) v = CALIB_DY_FIELD_MIN;
         if (v > CALIB_DY_FIELD_MAX) v = CALIB_DY_FIELD_MAX;
         if (clipped) {
-            printf("tables: calib WARNING - key %d's learned dy exceeded the packed range and was clamped\r\n", i + 1);
+            // Not reachable by any measurement this app has seen (see the
+            // field-width argument above), which is exactly why it is said
+            // out loud rather than saturated in silence: a clamped value
+            // becomes a learned centre indistinguishable from a real one.
+            printf("tables: calib WARNING - key %d's learned dy exceeded the packed range and was clamped\r\n",
+                   calib_key_digit(i));
         }
-        uint64_t field = (uint64_t)((uint32_t)v & CALIB_DY_FIELD_MASK);
-        packed |= field << (CALIB_DY_FIELD_BITS * i);
+        out[i / CALIB_FIELDS_PER_WORD] |=
+            (uint32_t)((uint32_t)v & CALIB_DY_FIELD_MASK) << (CALIB_DY_FIELD_BITS * (i % CALIB_FIELDS_PER_WORD));
     }
-    *outLo = (uint32_t)(packed & 0xFFFFFFFFu);
-    *outHi = (uint32_t)((packed >> 32) & 0xFFFFFFFFu);
 }
 
-static void tables_calib_unpack9(uint32_t lo, uint32_t hi, int outDy[CALIB_KEYS]) {
-    uint64_t packed = ((uint64_t)hi << 32) | (uint64_t)lo;
+static void tables_calib_unpack10(const uint32_t in[CALIB_WORDS], int outDy[CALIB_KEYS]) {
     for (int i = 0; i < CALIB_KEYS; i++) {
-        uint32_t field = (uint32_t)((packed >> (CALIB_DY_FIELD_BITS * i)) & CALIB_DY_FIELD_MASK);
+        uint32_t field = (in[i / CALIB_FIELDS_PER_WORD] >>
+                          (CALIB_DY_FIELD_BITS * (i % CALIB_FIELDS_PER_WORD))) & CALIB_DY_FIELD_MASK;
         int32_t v = (int32_t)field;
-        if (field & 0x40u) v -= 0x80; // sign-extend the 7-bit two's-complement field
+        if (field & 0x80u) v -= 0x100; // sign-extend the 8-bit two's-complement field
         outDy[i] = v + CALIB_DY_OFFSET;
     }
 }
 
-// NEAREST LEARNED CENTRE (see this section's own header). `dy` is the nine
-// learned per-key offsets (tables_state_t's own calibCentreDy, indexed the
-// same way cell_rect()'s cell 0..8 already is - digit i+1 lives at index
-// i). Only ever called once calibHave is true (tables_gesture_tick() below
-// gates on that), so this never has to fall back to anything itself.
+// NEAREST LEARNED CENTRE (see this section's own header). `dy` is the ten
+// learned per-key offsets (tables_state_t's own calibCentreDy, indexed by
+// KEY - keys 0..8 are cells 0..8, i.e. digits 1..9, and key CALIB_KEY_ZERO
+// is the zero: calib_key_cell()). Only ever called once calibHave is true
+// (tables_gesture_tick() below gates on that), so this never has to fall
+// back to anything itself.
+//
+// TWELVE CENTRES FOR TEN KEYS. Nine digit keys contribute one centre each,
+// at their own drawn cell centre plus their own learned dy. The ZERO
+// contributes THREE - one per column, each at that COLUMN's own centre x,
+// all three at the single learned zero y, all three labelled CELL_ZERO -
+// because it is one key three cells wide and a lone centre at the pad's
+// midline would lose the bottom corners to 7 and 9 (the full argument is in
+// this section's header, THE ZERO IS ONE KEY AT THREE CENTRES). Nothing
+// else in this function knows the zero is special: it is twelve centres,
+// nearest wins, and three of them happen to name the same key.
 //
 // THE TWO GATES, both unbiased (raw lx/ly, no TOUCH_THUMB_BIAS_Y anywhere
 // in this function - the learned centres already sit where he touches, so
-// adding a bias on top would double-correct):
+// adding a bias on top would double-correct). Both CANCEL (-1); neither
+// classifies, which is the difference from the whole-row zero rectangle
+// this function used to carry and no longer does:
 //
 //   - TOP: ly < NUMPAD_Y0 cancels, same as numpad_hit()'s own top gate.
 //     Nearest-centre alone would still assign a touch well above the pad
-//     (the loupe zone, the question band) to whichever digit key happens
-//     to be closest, which is wrong - that space is not the numpad.
-//   - BOTTOM (the zero key): CELL_ZERO is not one of the nine learned
-//     keys, so it cannot win a nearest-centre comparison on its own. A
-//     touch at or below `zeroGateY` - a half key beneath the LOWEST of the
-//     nine learned centres, whichever key that is - is the zero key
-//     outright, checked BEFORE nearest-centre runs. Anchoring to the
-//     learned centres (not to NUMPAD_Y0 + 3*CELL_H, the drawn grid's own
-//     row-3 boundary) is what keeps this promise even when his taps pull
-//     the bottom digit row's centres well past that fixed line: measured
-//     dy runs up to 70px against a CELL_H of 57, so a learned centre can
-//     already sit past the drawn grid's own next row boundary, and a fixed
-//     gate would then hand some of the zero key's own territory to
-//     whichever digit centre moved into it. zeroOuterY reuses
-//     TOUCH_THUMB_BIAS_Y_DEFAULT's own 40px as how far below the pad's
-//     drawn bottom edge a touch may still reach and count - not a
-//     calibrated number (the zero key is not calibrated at all), just the
-//     same "how far below is still a legitimate reach" this app already
-//     shipped with, kept as-is rather than invented fresh for one gate.
+//     (the loupe zone, the question band) to whichever key happens to be
+//     closest, which is wrong - that space is not the numpad.
+//   - BOTTOM: a full key below the LEARNED zero centre cancels. Anchored to
+//     the learned centre rather than to the drawn grid for the same reason
+//     the old gate was: measured dy runs up to ~70px against a CELL_H of
+//     57, so the bottom row's learned centres can already sit past the
+//     drawn grid's own bottom edge, and a fixed line would start cancelling
+//     touches the zero key has legitimately learned to own. A full key
+//     (rather than a half) keeps at least the reach below the pad the
+//     uncalibrated path already gives the bottom row (numpad_hit()'s
+//     asymmetric bottom edge, a bias-worth below NUMPAD_Y0 + NUMPAD_H).
 static int numpad_hit_calibrated(int lx, int ly, const int dy[CALIB_KEYS]) {
     if (lx < NUMPAD_X0 || lx >= NUMPAD_X0 + NUMPAD_W) return -1;
     if (ly < NUMPAD_Y0) return -1;
 
-    int centreX[CALIB_KEYS], centreY[CALIB_KEYS];
-    int maxCentreY = 0;
-    for (int i = 0; i < CALIB_KEYS; i++) {
+    int centreX[CALIB_CENTRES], centreY[CALIB_CENTRES], centreCell[CALIB_CENTRES];
+    int n = 0;
+    for (int key = 0; key < CALIB_KEY_ZERO; key++) {
         int bx, by, bw, bh;
-        cell_rect(i, &bx, &by, &bw, &bh); // cell i (0..8) IS digit i+1's cell
-        centreX[i] = bx + bw / 2;
-        centreY[i] = by + bh / 2 + dy[i];
-        if (i == 0 || centreY[i] > maxCentreY) maxCentreY = centreY[i];
+        cell_rect(calib_key_cell(key), &bx, &by, &bw, &bh); // cell key (0..8) IS digit key+1's cell
+        centreX[n] = bx + bw / 2;
+        centreY[n] = by + bh / 2 + dy[key];
+        centreCell[n] = calib_key_cell(key);
+        n++;
     }
 
-    int zeroGateY = maxCentreY + CELL_H / 2;
-    int zeroOuterY = NUMPAD_Y0 + NUMPAD_H + (int)TOUCH_THUMB_BIAS_Y_DEFAULT;
-    if (ly >= zeroGateY) {
-        return ly < zeroOuterY ? CELL_ZERO : -1;
+    int zbx, zby, zbw, zbh;
+    cell_rect(CELL_ZERO, &zbx, &zby, &zbw, &zbh); // the whole bottom row, three cells wide
+    int zeroCentreY = zby + zbh / 2 + dy[CALIB_KEY_ZERO];
+    for (int col = 0; col < NUMPAD_COLS; col++) {
+        centreX[n] = NUMPAD_X0 + col * CELL_W + CELL_W / 2;
+        centreY[n] = zeroCentreY;
+        centreCell[n] = CELL_ZERO;
+        n++;
     }
+
+    if (ly >= zeroCentreY + CELL_H) return -1; // below the pad entirely - see THE TWO GATES
 
     int best = 0, bestDistSq = -1;
-    for (int i = 0; i < CALIB_KEYS; i++) {
+    for (int i = 0; i < n; i++) {
         int ddx = lx - centreX[i], ddy = ly - centreY[i];
         int distSq = ddx * ddx + ddy * ddy;
         if (bestDistSq < 0 || distSq < bestDistSq) { bestDistSq = distSq; best = i; }
     }
-    return best; // cell i IS digit i+1's cell - see cell_digit_value()
+    return centreCell[best];
 }
 
 /* ---- THE LOUPE ------------------------------------------------------------
@@ -1548,7 +1634,7 @@ typedef struct {
     // private copy of them - see THE COMMIT PATH in that section's header
     // for why sharing the exact same gesture state is the whole point.
     bool     calibActive;
-    int      calibSeqIdx;                             // 0..CALIB_SEQ_LEN (90); next prompt / samples landed so far
+    int      calibSeqIdx;                             // 0..CALIB_SEQ_LEN (100); next prompt / samples landed so far
     int      calibDy[CALIB_KEYS][CALIB_TAPS_PER_KEY];  // raw (touchY - prompted key's drawn centre Y), pre-bias, per key per tap
     int      calibDx[CALIB_KEYS][CALIB_TAPS_PER_KEY];  // raw dx, per key per tap - printed only, never used for classification
 
@@ -1560,10 +1646,11 @@ typedef struct {
 
     // The stored calibration THIS RUN is using (loaded once, on enter() -
     // see tables_gesture_tick()'s own precedence check). Independent of
-    // calibActive: these are the nine learned centres numpad_hit_calibrated()
+    // calibActive: these are the ten learned offsets numpad_hit_calibrated()
     // reads on every ordinary touch, not just while a pass is in progress.
     bool     calibHave;
-    int      calibCentreDy[CALIB_KEYS]; // one learned dy per digit 1..9 (index = digit-1)
+    int      calibCentreDy[CALIB_KEYS]; // one learned dy per KEY - calib_key_digit()/calib_key_cell();
+                                        // keys 0..8 are digits 1..9, key CALIB_KEY_ZERO is the zero
 } tables_state_t;
 
 static tables_state_t *s_tables;
@@ -2052,22 +2139,23 @@ static int tables_calib_median_n(const int *v, int n) {
     return tables_round_i32(((float)a[n / 2 - 1] + (float)a[n / 2]) / 2.0f);
 }
 
-/* ---- PROGRESS DISPLAY - nine meters, not nine dots -----------------------
+/* ---- PROGRESS DISPLAY - ten meters, not a hundred dots -------------------
  *
- * A NINE-DOT ROW WAS ENOUGH FOR NINE SAMPLES; IT IS NOT ENOUGH FOR NINETY.
- * The old design's own dots (one per SAMPLE, filled once that sample
- * landed) worked because there were exactly as many dots as samples in the
- * whole pass. At 90 samples that stops being legible - ninety dots either
- * shrink below anything a finger-sized panel can resolve or spill off the
- * 348px of usable width - and it stops answering the question that
- * actually matters mid-pass, which is not "how many samples total" but
+ * A NINE-DOT ROW WAS ENOUGH FOR NINE SAMPLES; IT IS NOT ENOUGH FOR A
+ * HUNDRED. The old design's own dots (one per SAMPLE, filled once that
+ * sample landed) worked because there were exactly as many dots as samples
+ * in the whole pass. At 100 samples that stops being legible - a hundred
+ * dots either shrink below anything a finger-sized panel can resolve or
+ * spill off the 348px of usable width - and it stops answering the question
+ * that actually matters mid-pass, which is not "how many samples total" but
  * "which key am I on, and how far through ITS ten am I".
  *
- * ONE METER PER KEY, LEFT TO RIGHT IN DIGIT ORDER (1..9), each a vertical
- * bar that fills from empty to full as that key's own ten taps land -
- * CALIB_METER_W wide, CALIB_METER_H tall, spaced CALIB_METER_GAP apart, the
- * same 240px span across 348 the old nine dots used, just turned from a
- * row of instants into a row of fill levels. A key with zero taps so far
+ * ONE METER PER KEY, LEFT TO RIGHT IN PROMPT ORDER (1..9 then 0, the same
+ * rotation calib_seq_digit() asks in, so the marker dot below travels
+ * left-to-right and wraps), each a vertical bar that fills from empty to
+ * full as that key's own ten taps land - CALIB_METER_W wide, CALIB_METER_H
+ * tall, spaced CALIB_METER_GAP apart, turned from a row of instants into a
+ * row of fill levels. A key with zero taps so far
  * reads as an empty outline; a key with all ten reads as a solid bar;
  * anything between reads as a fraction, at a glance, without reading a
  * number - the same "answer legible without a number" property the rest of
@@ -2088,6 +2176,16 @@ static int tables_calib_median_n(const int *v, int n) {
  * the real loupe bubble would paint straight over anything left in its own
  * zone the instant a finger is down, which is exactly what made the old
  * nine-dot version read as frozen before it moved down here.
+ *
+ * A TENTH METER STILL FITS, and the arithmetic is the reason the geometry
+ * below did not have to change when the zero became a learned key. The row
+ * spans (CALIB_KEYS - 1) * CALIB_METER_GAP = 270px centred on the panel, so
+ * it runs 49..319 with the bars themselves reaching 42..326 - inside the
+ * 10..358 of usable width, with 32px of margin each side. Each bar keeps its
+ * full 14px width and 16px of clear space to its neighbour, so nothing got
+ * thinner or closer to make room: the row simply got 30px wider. Checked on
+ * a rendered framebuffer, not by arithmetic alone (this project's own rule
+ * about looking at the picture).
  */
 #define CALIB_METER_W       14
 #define CALIB_METER_H       40
@@ -2095,7 +2193,7 @@ static int tables_calib_median_n(const int *v, int n) {
 #define CALIB_METER_MARK_R  4.0f
 #define CALIB_METER_MARK_GAP 2
 
-// How many of key `key`'s (0..8) ten taps have already landed, given the
+// How many of key `key`'s (0..CALIB_KEYS-1) ten taps have already landed, given the
 // rotated sequence position `seqIdx` (0..CALIB_SEQ_LEN, calib_seq_digit()/
 // calib_seq_tap() above) - i.e. how many FULL rotations have completed,
 // plus one more for a key whose own slot in the CURRENT partial rotation
@@ -2117,7 +2215,7 @@ static void tables_calib_draw_progress(tables_state_t *s) {
     int markCy = COUNTERS_Y0 + topMargin + (int)CALIB_METER_MARK_R;
     int meterY0 = COUNTERS_Y0 + topMargin + (int)(CALIB_METER_MARK_R * 2.0f) + CALIB_METER_MARK_GAP;
 
-    int currentKey = calib_seq_digit(s->calibSeqIdx) - 1;
+    int currentKey = calib_key_of_digit(calib_seq_digit(s->calibSeqIdx));
     for (int key = 0; key < CALIB_KEYS; key++) {
         int cx = x0 + key * CALIB_METER_GAP;
         int mx = cx - CALIB_METER_W / 2;
@@ -2142,11 +2240,11 @@ static void tables_calib_draw_progress(tables_state_t *s) {
 }
 
 // A full repaint: the prompted digit (top band, where the question
-// normally sits), the nine per-key progress meters (counters' band) and
+// normally sits), the ten per-key progress meters (counters' band) and
 // the numpad itself, drawn exactly as draw_numpad_all() draws it for
 // ordinary gameplay - see this section's own header for why the pad has to
 // be the real one rather than a stand-in target. Called only on entry and
-// after each sample lands - up to 90 times over a whole pass, not per
+// after each sample lands - up to 100 times over a whole pass, not per
 // tick, so a whole-panel clear-and-push (gfx_push_all(), the same "rare,
 // big transition" cost clock.c's own paint_all() accepts for set mode) is
 // the honest cost here.
@@ -2196,12 +2294,12 @@ static void tables_calib_abort(tables_state_t *s) {
     tables_calib_redraw_practice_screen(s);
 }
 
-// All 90 samples done. Prints, per key 1..9, the ten raw dy's min/max/
-// spread (the noise floor of THAT key's own repeats - the six-5s idea
-// generalised to every key now that every key gets repeats) and the
+// All 100 samples done. Prints, per key (1..9 then 0), the ten raw dy's
+// min/max/spread (the noise floor of THAT key's own repeats - the six-5s
+// idea generalised to every key now that every key gets repeats) and the
 // median dy AND median dx (dx printed only - see this section's own header,
-// ONLY DY IS STORED), THEN packs and saves the nine learned dy's - the
-// tagged two-record write STORAGE, AND THE TORN-WRITE ARGUMENT above
+// ONLY DY IS STORED), THEN packs and saves the ten learned dy's - the
+// tagged THREE-record write STORAGE, AND THE TORN-WRITE ARGUMENT above
 // describes - THEN loads them straight into s->calibCentreDy so the pass
 // that just finished takes effect immediately, no reboot needed.
 static void tables_calib_finish(tables_state_t *s) {
@@ -2218,25 +2316,35 @@ static void tables_calib_finish(tables_state_t *s) {
         int dxMedian = tables_calib_median_n(dx, CALIB_TAPS_PER_KEY);
         learnedDy[key] = dyMedian;
         printf("tables: calib key %d: dy min=%d max=%d spread=%d median=%d px | dx median=%d px (printed only, not stored)\r\n",
-               key + 1, dyMin, dyMax, dyMax - dyMin, dyMedian, dxMedian);
+               calib_key_digit(key), dyMin, dyMax, dyMax - dyMin, dyMedian, dxMedian);
     }
 
-    uint32_t lo, hi;
-    tables_calib_pack9(learnedDy, &lo, &hi);
+    uint32_t words[CALIB_WORDS];
+    tables_calib_pack10(learnedDy, words);
 
-    // The generation tag: whatever tag is currently stored (LO if present,
-    // else HI, else this is the first pass ever) plus one - see STORAGE,
-    // AND THE TORN-WRITE ARGUMENT above for why incrementing (not a fixed
-    // tag) is what makes a torn write between two DIFFERENT passes
-    // detectable rather than just a torn write within one.
+    // The generation tag: whatever tag is currently stored (the first of
+    // LO/MID/HI that is present, else this is the first pass ever) plus one
+    // - see STORAGE, AND THE TORN-WRITE ARGUMENT above for why incrementing
+    // (not a fixed tag) is what makes a torn write between two DIFFERENT
+    // passes detectable rather than just a torn write within one. Reading
+    // ANY one of the three is enough to learn the previous generation, and
+    // the FIRST present one is taken rather than the largest tag seen: a
+    // torn pass leaves records from two generations side by side, one tag
+    // apart, so "first present + 1" can at worst collide with a tag one
+    // stale record already carries - which the read side then REJECTS as a
+    // mismatched trio, the safe direction. Comparing tags for a maximum
+    // instead would have to reason about the byte wrapping at 256, which is
+    // more machinery than a mode run once a session deserves.
+    static const uint8_t kinds[CALIB_WORDS] = {
+        STORAGE_KIND_TABLES_CALIB10_LO, STORAGE_KIND_TABLES_CALIB10_MID, STORAGE_KIND_TABLES_CALIB10_HI,
+    };
     uint32_t prevValue; uint8_t prevTag = 0;
-    if (!storage_get_u32_tagged(STORAGE_KIND_TABLES_CALIB_LO, &prevValue, &prevTag)) {
-        storage_get_u32_tagged(STORAGE_KIND_TABLES_CALIB_HI, &prevValue, &prevTag);
+    for (int w = 0; w < CALIB_WORDS; w++) {
+        if (storage_get_u32_tagged(kinds[w], &prevValue, &prevTag)) break;
     }
     uint8_t tag = (uint8_t)(prevTag + 1);
 
-    storage_save_u32_tagged(STORAGE_KIND_TABLES_CALIB_LO, lo, tag);
-    storage_save_u32_tagged(STORAGE_KIND_TABLES_CALIB_HI, hi, tag);
+    for (int w = 0; w < CALIB_WORDS; w++) storage_save_u32_tagged(kinds[w], words[w], tag);
     printf("tables: calibration saved (tag=%d)\r\n", (int)tag);
 
     for (int key = 0; key < CALIB_KEYS; key++) s->calibCentreDy[key] = learnedDy[key];
@@ -2257,10 +2365,15 @@ static void tables_calib_finish(tables_state_t *s) {
 static void tables_calib_on_commit(tables_state_t *s, int rawX, int rawY, int hitCell) {
     int idx = s->calibSeqIdx;
     int digit = calib_seq_digit(idx);
-    int key = digit - 1;
+    int key = calib_key_of_digit(digit);
     int tap = calib_seq_tap(idx);
     int bx, by, bw, bh;
-    cell_rect(key, &bx, &by, &bw, &bh); // cell `key` IS digit `digit`'s cell
+    // The DRAWN centre of the prompted key. For the zero that is the middle
+    // of the triple-width key (cell_rect(CELL_ZERO): bx=NUMPAD_X0, bw=NUMPAD_W,
+    // so the target sits at the pad's own midline) - the thing his eye aims
+    // at, exactly as for the other nine, and the same target the three
+    // learned centres are all offset from.
+    cell_rect(calib_key_cell(key), &bx, &by, &bw, &bh);
     int targetX = bx + bw / 2, targetY = by + bh / 2;
     int dx = rawX - targetX, dy = rawY - targetY;
     s->calibDx[key][tap] = dx;
@@ -2288,26 +2401,38 @@ static void tables_enter(void) {
 
     tables_tune_reset_moved(); // a fresh session trusts calibration/default again - see its own comment
 
-    // Accept the pair ONLY if both LO and HI are present and carry the SAME
-    // tag - see STORAGE, AND THE TORN-WRITE ARGUMENT (above numpad_hit_
-    // calibrated()) for why a tag mismatch (or either record simply
-    // missing) means "do not trust this, fall back to the uncalibrated
-    // default" rather than applying whichever half did land.
-    uint32_t lo = 0, hi = 0; uint8_t loTag = 0, hiTag = 0;
-    bool haveLo = storage_get_u32_tagged(STORAGE_KIND_TABLES_CALIB_LO, &lo, &loTag);
-    bool haveHi = storage_get_u32_tagged(STORAGE_KIND_TABLES_CALIB_HI, &hi, &hiTag);
-    if (haveLo && haveHi && loTag == hiTag) {
+    // Accept the trio ONLY if ALL THREE of LO/MID/HI are present and all
+    // three carry the SAME tag - see STORAGE, AND THE TORN-WRITE ARGUMENT
+    // (above numpad_hit_calibrated()) for why a tag mismatch (or any record
+    // simply missing) means "do not trust this, fall back to the
+    // uncalibrated default" rather than applying whichever part did land,
+    // and in particular for the case three records add over two: a fresh
+    // LO+MID next to a stale HI, every record individually well-formed.
+    static const uint8_t kinds[CALIB_WORDS] = {
+        STORAGE_KIND_TABLES_CALIB10_LO, STORAGE_KIND_TABLES_CALIB10_MID, STORAGE_KIND_TABLES_CALIB10_HI,
+    };
+    uint32_t words[CALIB_WORDS] = {0, 0, 0};
+    uint8_t tags[CALIB_WORDS] = {0, 0, 0};
+    int haveCount = 0;
+    bool tagsAgree = true;
+    for (int w = 0; w < CALIB_WORDS; w++) {
+        if (storage_get_u32_tagged(kinds[w], &words[w], &tags[w])) haveCount++;
+        else tagsAgree = false; // a missing record cannot agree with anything
+        if (haveCount > 1 && tags[w] != tags[0]) tagsAgree = false;
+    }
+    if (haveCount == CALIB_WORDS && tagsAgree) {
         int learnedDy[CALIB_KEYS];
-        tables_calib_unpack9(lo, hi, learnedDy);
+        tables_calib_unpack10(words, learnedDy);
         for (int key = 0; key < CALIB_KEYS; key++) s->calibCentreDy[key] = learnedDy[key];
         s->calibHave = true;
-        printf("tables: loaded stored calibration (tag=%d)\r\n", (int)loTag);
-    } else if (haveLo || haveHi) {
-        // One record without its matching other - a torn write between two
-        // saves, or between two DIFFERENT passes (tag mismatch). Either
-        // way this is exactly the case that must NOT be half-applied - see
-        // this file's own torn-write argument for why a mismatched or
-        // incomplete pair is worse than none at all.
+        printf("tables: loaded stored calibration (tag=%d)\r\n", (int)tags[0]);
+    } else if (haveCount > 0) {
+        // One or two records without the rest, or three that do not agree on
+        // their generation - a torn write between two of the three saves, or
+        // between two DIFFERENT passes (tag mismatch). Either way this is
+        // exactly the case that must NOT be part-applied - see this file's
+        // own torn-write argument for why a mismatched or incomplete trio is
+        // worse than none at all.
         s->calibHave = false;
         printf("tables: stored calibration was incomplete (a torn write?) - using the default bias\r\n");
     } else {
@@ -2365,7 +2490,7 @@ static bool tables_gesture_tick(tables_state_t *s, const app_frame_t *f, int *ou
             // apps map through panel_to_land() first; this one does not
             // need or have such a function.
             int lx = f->touchX, ly = f->touchY;
-            // CALIBRATED (nearest of nine learned centres) wins whenever a
+            // CALIBRATED (nearest learned centre) wins whenever a
             // calibration is loaded, UNLESS the live-tune slider has
             // actually been moved this session - see THE TUNABLE VS. A
             // STORED CALIBRATION above tables_tunable_moved()/

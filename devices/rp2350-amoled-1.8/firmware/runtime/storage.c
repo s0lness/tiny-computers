@@ -225,13 +225,16 @@ static bool record_valid(const storage_record_t *r) {
 // very flash_safe_execute() call about to program over it). Sized for
 // comfortably more kinds than exist today; a second kind adds a second
 // cache slot the same way, not a data structure.
-// STORAGE_MAX_KINDS raised 4 -> 6: DINO_HISCORE (1) plus the retired
-// TABLES_CALIB (2, never written again but a slot is cheap) plus the new
-// TABLES_CALIB_LO/_HI (3, 4) is already 4 kinds that could appear in one
-// sector's scan, and this is a fixed-size RAM array sized "comfortably more
-// kinds than exist today" per its own original comment - 6 keeps that true
-// rather than trimming the margin to exactly what is used right now.
-#define STORAGE_MAX_KINDS 6
+// STORAGE_MAX_KINDS raised 4 -> 6 -> 10. A sector written by any past build
+// can hold DINO_HISCORE (1), the retired TABLES_CALIB (2), the retired
+// TABLES_CALIB_LO/_HI (3, 4) and the live TABLES_CALIB10_LO/_MID/_HI (5, 6,
+// 7): SEVEN distinct kinds could appear in one sector's scan, and a retired
+// kind still costs a cache slot because the scan meets its records whether
+// or not anything ever asks for them again. This is a fixed-size RAM array
+// sized "comfortably more kinds than exist today" per its own original
+// comment - 10 keeps that true (70 bytes of RAM) rather than trimming the
+// margin to exactly what is used right now.
+#define STORAGE_MAX_KINDS 10
 static uint8_t  s_cacheKind[STORAGE_MAX_KINDS];
 static uint32_t s_cacheValue[STORAGE_MAX_KINDS];
 static uint8_t  s_cacheTag[STORAGE_MAX_KINDS];   // the record's own `reserved` byte - see storage.h's storage_get/save_u32_tagged()

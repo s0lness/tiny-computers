@@ -200,25 +200,40 @@ export function panelPoint(x: number, y: number): [number, number] {
 
 // ---- NUMPAD TOUCH CALIBRATION (tables.c's own CALIB_* constants) ----------
 // Rewritten 2026-08-19 from a fitted `offset_y = alpha + beta*y` line (nine
-// samples: 3, 4, 9, then 5 six times) to nine independently LEARNED
-// centres, one per digit key, each the MEDIAN of ten real taps - see
-// tables.c's own NUMPAD TOUCH CALIBRATION header for why a fitted line
-// could not be trusted (one real sample deciding a key's own position,
-// against a 22-30px gesture-noise floor) and for the owner's own request
-// ("10 taps for each number"). Before that, an even earlier five-crosshair
-// design measured a POINTING gesture instead of the TYPING gesture the
-// numpad actually gets - also covered in that same header.
+// samples: 3, 4, 9, then 5 six times) to independently LEARNED centres, one
+// per key, each the MEDIAN of ten real taps - see tables.c's own NUMPAD
+// TOUCH CALIBRATION header for why a fitted line could not be trusted (one
+// real sample deciding a key's own position, against a 22-30px gesture-noise
+// floor) and for the owner's own request ("10 taps for each number"). Before
+// that, an even earlier five-crosshair design measured a POINTING gesture
+// instead of the TYPING gesture the numpad actually gets - also covered in
+// that same header.
 //
-// THE SEQUENCE IS NOW A ROTATION, not a hand-picked list: digit
-// 1,2,...,9 repeating ten times (calibSeqDigit()/calibSeqTap() below,
-// mirroring tables.c's own calib_seq_digit()/calib_seq_tap() - simple
-// arithmetic on the index, not a table, so there is no array to keep in
-// sync by hand the way CALIB_SEQ_DIGITS used to be). A sample's own TARGET
-// is still the prompted digit's cell_rect() centre - cellCx(digitCell(d)),
-// cellCy(digitCell(d)) above, already exported for exactly this - never a
-// separate crosshair coordinate.
-export const CALIB_KEYS = 9;          // digits 1..9; CELL_ZERO is never one of them
+// TEN KEYS, NOT NINE, since the owner's "also we should calibrate 0" the
+// same day. The zero is the pad's bottom row, i.e. the extreme of the very
+// trend this mode measures (his own runs: ~28px of offset at the top of the
+// pad, ~64px at the bottom), so leaving it out left the largest error on the
+// one key that never got corrected. It is ONE key THREE cells wide, and the
+// firmware learns it as ONE dy applied at THREE centres (one per column) -
+// see tables.c's numpad_hit_calibrated(); nothing about that is visible in
+// this file's constants, but a test asserting the pad's bottom-left corner
+// reads as zero is asserting exactly it.
+//
+// THE SEQUENCE IS A ROTATION, not a hand-picked list: digit 1,2,...,9,0
+// repeating ten times (calibSeqDigit()/calibSeqTap() below, mirroring
+// tables.c's own calib_seq_digit()/calib_seq_tap() - simple arithmetic on
+// the index, not a table, so there is no array to keep in sync by hand the
+// way CALIB_SEQ_DIGITS used to be). A sample's own TARGET is still the
+// prompted digit's cell_rect() centre - cellCx(digitCell(d)),
+// cellCy(digitCell(d)) above, already exported for exactly this, and correct
+// for the zero too since cell 10 reads as row 3, column 1, whose centre IS
+// the triple-width key's own centre - never a separate crosshair coordinate.
+export const CALIB_KEYS = 10;         // digits 1..9 AND 0 (the zero is the LAST key, index 9)
 export const CALIB_TAPS_PER_KEY = 10; // the owner's own number
-export const CALIB_SEQ_LEN = CALIB_KEYS * CALIB_TAPS_PER_KEY; // 90
-export const calibSeqDigit = (idx: number) => (idx % CALIB_KEYS) + 1;
+export const CALIB_SEQ_LEN = CALIB_KEYS * CALIB_TAPS_PER_KEY; // 100
+export const calibSeqDigit = (idx: number) => ((idx % CALIB_KEYS) + 1) % 10;
 export const calibSeqTap = (idx: number) => Math.floor(idx / CALIB_KEYS);
+// Which learned key index a prompted digit is - the inverse of the above,
+// and the one place the "zero lives last" convention is written down on this
+// side (tables.c's own calib_key_of_digit()).
+export const calibKeyOfDigit = (digit: number) => (digit === 0 ? CALIB_KEYS - 1 : digit - 1);

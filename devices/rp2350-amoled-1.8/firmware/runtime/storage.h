@@ -54,17 +54,33 @@
 // full design and the two-record torn-write argument.
 #define STORAGE_KIND_TABLES_CALIB 2
 
-// tables.c's per-key numpad calibration: nine keys' learned y-offsets,
-// packed 7 bits each (63 bits) across TWO records of this shared 16-byte
-// shape - one uint32 cannot hold nine 7-bit fields, so this is LO (bits
-// 0..31 of the 63-bit blob) and HI (bits 32..62). Both records are written
-// with the SAME small tag in the `reserved` byte (storage_save_u32_tagged()
-// below) so a read can tell a genuine, complete pair from one where power
-// was lost between the two saves - see tables.c's tables_calib_pack9()/
-// unpack9() for the bit layout and tables_calib_finish()'s own comment for
-// the torn-write argument this tag exists to make.
+// RETIRED, 2026-08-19, hours after they were added - never reused, same
+// rule as kind 2 above. This PAIR carried NINE keys' learned y-offsets,
+// packed 7 bits each (63 bits) across two records: LO (bits 0..31) and HI
+// (bits 32..62). Replaced by STORAGE_KIND_TABLES_CALIB10_* below when the
+// owner asked for the ZERO key to be calibrated too ("also we should
+// calibrate 0"): ten values do not fit 64 bits, and a stale 7-bit-packed
+// record must never be read back as if it were the ten-key layout - which
+// is exactly what reusing these two numbers would have allowed.
 #define STORAGE_KIND_TABLES_CALIB_LO 3
 #define STORAGE_KIND_TABLES_CALIB_HI 4
+
+// tables.c's per-key numpad calibration: TEN keys' learned y-offsets (the
+// nine digits and the zero), packed 8 bits each (80 bits) across THREE
+// records of this shared 16-byte shape - LO is keys 0..3, MID keys 4..7, HI
+// keys 8..9. Eight bits rather than seven because a third record was needed
+// for ten values anyway, and 8 divides 32 exactly, so no key's field
+// straddles a record boundary. All three records are written with the SAME
+// small tag in the `reserved` byte (storage_save_u32_tagged() below) so a
+// read can tell a genuine, complete trio from one where power was lost
+// partway through the three saves - including the case only three records
+// can produce, a fresh LO and MID next to a STALE HI, each individually
+// well-formed. See tables.c's tables_calib_pack10()/unpack10() for the bit
+// layout and its STORAGE, AND THE TORN-WRITE ARGUMENT section for the
+// argument this tag exists to make.
+#define STORAGE_KIND_TABLES_CALIB10_LO  5
+#define STORAGE_KIND_TABLES_CALIB10_MID 6
+#define STORAGE_KIND_TABLES_CALIB10_HI  7
 
 // Core0, once, at boot, before sensors_start() - see storage.c's own
 // comment for why. On the board this scans the sector; in the emulator it
@@ -89,8 +105,8 @@ void storage_save_u32(uint8_t kind, uint32_t value);
 // goes in a byte that used to always be 0) as a small caller-defined tag.
 // storage_save_u32(k, v) is exactly storage_save_u32_tagged(k, v, 0); a kind
 // that never needs a tag can ignore these two and use the plain pair above.
-// Built for STORAGE_KIND_TABLES_CALIB_LO/_HI's own multi-record torn-write
-// check (tables.c) - a caller that appends more than one record per logical
+// Built for STORAGE_KIND_TABLES_CALIB10_LO/_MID/_HI's own multi-record
+// torn-write check (tables.c) - a caller that appends more than one record per logical
 // save and needs to tell "both landed" from "one did" reads this back and
 // compares tags itself; storage.c does not know what a matching pair means
 // to any particular kind.

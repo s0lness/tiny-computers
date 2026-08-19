@@ -52,7 +52,10 @@
  */
 import { readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { PANEL_W, PANEL_H, CELL_BACK, CELL_CHECK, cellCx, cellTouchCy, digitCell, panelPoint } from "./tables-layout";
+import {
+    PANEL_W, PANEL_H, CELL_BACK, CELL_CHECK, cellCx, cellCy as cellCyOf, cellTouchCy,
+    digitCell, panelPoint, calibSeqDigit,
+} from "./tables-layout";
 
 const ROOT = join(import.meta.dir, "..");
 const WASM_PATH = join(ROOT, "emulator", "wasm", "dist", "emu.wasm");
@@ -125,6 +128,28 @@ async function loadDevice() {
             e.emu_touch(0, 0, 0);
             const end3 = t + 400;
             while (t < end3) { t += FRAME_MS; e.emu_tick(t); }
+        },
+        // A full press-hold-release at a RAW panel point, for the
+        // calibration shots below: they have to land where the pass tells
+        // them to, not where cellTouchCy() would put a gameplay tap.
+        tapAt(px: number, py: number) {
+            const end2 = t + 200;
+            while (t < end2) { t += FRAME_MS; e.emu_touch(1, px, py); e.emu_tick(t); }
+            e.emu_touch(0, 0, 0);
+            const end3 = t + 400;
+            while (t < end3) { t += FRAME_MS; e.emu_tick(t); }
+        },
+        // The PWR double-press that opens (and, sent again, aborts)
+        // calibration - the same edges feature-tables-calibration.ts drives.
+        doublePressPWR() {
+            for (let i = 0; i < 2; i++) {
+                e.emu_button(1, 1);
+                t += FRAME_MS; e.emu_tick(t);
+                e.emu_button(1, 0);
+                e.emu_button_verdict(1, 0);
+                t += FRAME_MS; e.emu_tick(t);
+                t += 100; e.emu_tick(t);
+            }
         },
         drainLog(): string[] { const o = fwLog.slice(); fwLog.length = 0; return o; },
         fb(): Uint8Array { return new Uint8Array(memory.buffer, e.emu_fb(), PANEL_W * PANEL_H * 2).slice(); },
@@ -290,6 +315,40 @@ async function main() {
         // Third question: two digits typed, not yet submitted.
         typeDigits(dev, [4, 2]);
         await write("realistic", dev.fb());
+    }
+    {
+        // NUMPAD TOUCH CALIBRATION, the screen itself (tables.c's own
+        // section of that name). Two frames, because the thing worth
+        // looking at is the row of per-key meters under the pad and a
+        // fresh pass shows every one of them empty:
+        //
+        //   calib-start  the pass just opened - the prompted digit "1" in
+        //                the question band, ten EMPTY meters, the marker
+        //                dot over the first.
+        //   calib-mid    55 taps in - keys 1..5 on their sixth tap, the
+        //                rest on their fifth, so the meters read as a
+        //                staircase and the marker sits over key 6. This is
+        //                the frame that answers "do TEN meters still read
+        //                clearly", which nine did.
+        //   calib-zero   nine taps in, so the tenth key - the ZERO, the one
+        //                the owner asked for on 2026-08-19 - is what the
+        //                band is asking for and what the marker points at.
+        const [calibStart, calibZero, calibMid] = await (async () => {
+            const dev = await loadDevice();
+            dev.doublePressPWR();
+            const start = dev.fb();
+            const tap = (i: number) => {
+                const cell = digitCell(calibSeqDigit(i));
+                dev.tapAt(cellCx(cell), Math.floor(cellCyOf(cell)) + 40);
+            };
+            for (let i = 0; i < 9; i++) tap(i);
+            const zero = dev.fb();
+            for (let i = 9; i < 55; i++) tap(i);
+            return [start, zero, dev.fb()];
+        })();
+        await write("calib-start", calibStart);
+        await write("calib-zero", calibZero);
+        await write("calib-mid", calibMid);
     }
 }
 
