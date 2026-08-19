@@ -1740,6 +1740,8 @@ static void draw_loupe_at(int bx, int by, int bw, int bh, int cell) {
 // union. Appearing and disappearing still need only their own single
 // rectangle each.
 static void loupe_update(tables_state_t *s, int rawX) {
+    if (s->calibActive) return; // see set_hover()'s own comment: a calibration
+                                // must not show him where he landed
     bool show = s->hoverCell >= 0;
     int nby = LOUPE_CY - LOUPE_BOX_H / 2, nbw = LOUPE_BOX_W, nbh = LOUPE_BOX_H;
     int nbx = 0;
@@ -1783,6 +1785,22 @@ static void set_hover(tables_state_t *s, int cell) {
     if (cell == s->hoverCell) return;
     int old = s->hoverCell;
     s->hoverCell = cell;
+    // NOTHING LIGHTS UP DURING CALIBRATION, here or in loupe_update(), which
+    // returns early for the same reason. Both the lit key and the loupe show
+    // WHERE THE FINGER LANDED, and that is the one thing a calibration pass
+    // must not tell him. The owner, mid-pass: "when calibrating don't show me
+    // the magnifier it's disturbing me and i'm not aiming naturally." It is
+    // the same argument as never saying the key was wrong - shown his own
+    // landing point he corrects it, and the pass measures the correction
+    // instead of the habit.
+    //
+    // Only the PAINTING is skipped. s->hoverCell above still moves, because
+    // the commit path reads it - tables_gesture_tick()'s COMMIT_CONFIRM_MS
+    // check compares the pending cell against it - and calibration shares
+    // that exact path on purpose, so the point recorded is the point ordinary
+    // play would have recorded. Suppressing the state instead of the pixels
+    // would quietly change what is being measured.
+    if (s->calibActive) return;
     if (old >= 0)  { render_cell(old, false); push_cell(old); }
     if (cell >= 0) { render_cell(cell, true); push_cell(cell); }
 }
