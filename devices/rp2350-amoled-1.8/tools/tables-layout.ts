@@ -199,18 +199,26 @@ export function panelPoint(x: number, y: number): [number, number] {
 }
 
 // ---- NUMPAD TOUCH CALIBRATION (tables.c's own CALIB_* constants) ----------
-// Replaces an earlier five-crosshair design (four corners + centre, five
-// taps each) that measured a POINTING gesture instead of the TYPING
-// gesture the numpad actually gets - see tables.c's own NUMPAD TOUCH
-// CALIBRATION header (above numpad_hit()) for the owner's own account of
-// why. The calibration screen is now the real numpad, drawn exactly as
-// draw_numpad_all() draws it for ordinary gameplay, prompting one digit at
-// a time - CALIB_SEQ_DIGITS below, hand-mirrored from tables.c's own
-// CALIB_SEQ_DIGITS per this file's standing discipline (see the header
-// above: there is no build step that extracts a C #define into
-// TypeScript on this project). A sample's own TARGET is the prompted
-// digit's cell_rect() centre - i.e. cellCx(digitCell(d)), cellCy(digitCell(d))
-// above, already exported for exactly this - never a separate crosshair
-// coordinate.
-export const CALIB_SEQ_DIGITS = [3, 4, 9, 5, 5, 5, 5, 5, 5];
-export const CALIB_SEQ_LEN = CALIB_SEQ_DIGITS.length; // 9
+// Rewritten 2026-08-19 from a fitted `offset_y = alpha + beta*y` line (nine
+// samples: 3, 4, 9, then 5 six times) to nine independently LEARNED
+// centres, one per digit key, each the MEDIAN of ten real taps - see
+// tables.c's own NUMPAD TOUCH CALIBRATION header for why a fitted line
+// could not be trusted (one real sample deciding a key's own position,
+// against a 22-30px gesture-noise floor) and for the owner's own request
+// ("10 taps for each number"). Before that, an even earlier five-crosshair
+// design measured a POINTING gesture instead of the TYPING gesture the
+// numpad actually gets - also covered in that same header.
+//
+// THE SEQUENCE IS NOW A ROTATION, not a hand-picked list: digit
+// 1,2,...,9 repeating ten times (calibSeqDigit()/calibSeqTap() below,
+// mirroring tables.c's own calib_seq_digit()/calib_seq_tap() - simple
+// arithmetic on the index, not a table, so there is no array to keep in
+// sync by hand the way CALIB_SEQ_DIGITS used to be). A sample's own TARGET
+// is still the prompted digit's cell_rect() centre - cellCx(digitCell(d)),
+// cellCy(digitCell(d)) above, already exported for exactly this - never a
+// separate crosshair coordinate.
+export const CALIB_KEYS = 9;          // digits 1..9; CELL_ZERO is never one of them
+export const CALIB_TAPS_PER_KEY = 10; // the owner's own number
+export const CALIB_SEQ_LEN = CALIB_KEYS * CALIB_TAPS_PER_KEY; // 90
+export const calibSeqDigit = (idx: number) => (idx % CALIB_KEYS) + 1;
+export const calibSeqTap = (idx: number) => Math.floor(idx / CALIB_KEYS);

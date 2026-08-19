@@ -576,9 +576,13 @@ void sensors_stats(sensors_stats_t *out) {
  * sector erase, or core1's lockout. Only the board answers those
  * questions; see docs/decisions/0011 and firmware/runtime/storage.c.
  * ======================================================================= */
-#define EMU_STORAGE_MAX_KINDS 4
+// 6, not 4: DINO_HISCORE (1), the retired TABLES_CALIB (2), and the new
+// TABLES_CALIB_LO/_HI (3, 4) - same bump storage.c's own real-flash stand-in
+// took, for the same reason (storage.h).
+#define EMU_STORAGE_MAX_KINDS 6
 static uint8_t  s_storageKind[EMU_STORAGE_MAX_KINDS];
 static uint32_t s_storageValue[EMU_STORAGE_MAX_KINDS];
+static uint8_t  s_storageTag[EMU_STORAGE_MAX_KINDS];
 static bool     s_storageHave[EMU_STORAGE_MAX_KINDS];
 static int      s_storageCount = 0;
 
@@ -589,10 +593,16 @@ void storage_init(void) {
 }
 
 bool storage_get_u32(uint8_t kind, uint32_t *outValue) {
+    uint8_t tag;
+    return storage_get_u32_tagged(kind, outValue, &tag);
+}
+
+bool storage_get_u32_tagged(uint8_t kind, uint32_t *outValue, uint8_t *outTag) {
     for (int i = 0; i < s_storageCount; i++) {
         if (s_storageKind[i] == kind) {
             if (!s_storageHave[i]) return false;
             *outValue = s_storageValue[i];
+            *outTag = s_storageTag[i];
             return true;
         }
     }
@@ -600,9 +610,14 @@ bool storage_get_u32(uint8_t kind, uint32_t *outValue) {
 }
 
 void storage_save_u32(uint8_t kind, uint32_t value) {
+    storage_save_u32_tagged(kind, value, 0);
+}
+
+void storage_save_u32_tagged(uint8_t kind, uint32_t value, uint8_t tag) {
     for (int i = 0; i < s_storageCount; i++) {
         if (s_storageKind[i] == kind) {
             s_storageValue[i] = value;
+            s_storageTag[i] = tag;
             s_storageHave[i] = true;
             return;
         }
@@ -611,6 +626,7 @@ void storage_save_u32(uint8_t kind, uint32_t value) {
     int i = s_storageCount++;
     s_storageKind[i] = kind;
     s_storageValue[i] = value;
+    s_storageTag[i] = tag;
     s_storageHave[i] = true;
 }
 

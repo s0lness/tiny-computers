@@ -730,6 +730,74 @@ board booted from, does the sector-number decode actually land on
 `0x100000`/`0x800000` - has not been flashed. The owner will verify that on
 the board himself.
 
+## SUSPECTED: an ordinary reflash can destroy the partition table, not just fail to reach it
+
+Found investigating a real report: the board printed `tables: no stored
+calibration, using the default bias` right after a routine reflash, having
+saved a calibration successfully before that reflash. Static analysis only
+this session (no board access) - the mechanism below is the best-evidenced
+explanation, not a hardware-confirmed one, and storage.c now prints
+distinctly when this is happening (see below) so the next occurrence is
+diagnosable rather than mysterious.
+
+**The reflash's own UF2 does not touch storage.c's sector directly.**
+Checked both of this section's own candidate explanations and ruled both
+out: `picotool load <uf2> -f` erases and writes only the byte ranges
+embedded in the UF2 itself (store/README.md's own "The picotool finding",
+verified against picotool 2.3.0's source), and `firmware/build/main.uf2`'s
+own image (a twelve-app single binary, "several times" 1MB per store/
+README.md) never reaches anywhere near storage's sector, which sits in the
+LAST 4KB of a 7MB partition. So neither "does the UF2 cover the sector" nor
+"does `-f` erase more than the image" - the two questions worth asking
+first - explains it by itself.
+
+**The actual mechanism: `firmware/build/main.uf2` and any previously
+embedded partition table occupy the SAME address.** `firmware/CMakeLists.txt`
+does not embed `store/partitions.json` (only `store/bootloader/CMakeLists.txt`
+does, via `pico_embed_pt_in_binary()`) and does not set `APP_FLASH_ORIGIN`
+(store/README.md's own integration diff is explicitly "not applied"), so
+the ordinary, single-app image this project's own routine reflash command
+uses is linked at the SDK default `0x10000000` - the exact address a
+partition table's own metadata block lives at when one has been embedded
+there (see store/README.md's own `picotool info -a` output on the
+bootloader: `next block address: 0x10000138`, well inside main.uf2's own
+multi-hundred-KB footprint). Whenever a partition table happens to be
+present in flash (decision 0018 measured one on this exact board, via
+`picotool partition info`, the same day a calibration was later reported
+lost), the next ordinary `picotool load firmware/build/main.uf2 -f -x`
+overwrites it, because writing an image at `0x10000000` is indistinguishable
+from writing a partition table at `0x10000000` as far as flash is
+concerned - there is no partition-awareness in that command at all.
+
+**Once the partition table is gone, `storage.c` disables itself entirely,
+silently, for the whole boot - not just for calibration.** `rom_get_boot_info()`
+can no longer report which partition this boot is running from (there is
+no partition table to consult), `active_partition_base()` (storage.c)
+returns false, and `storage_init()` sets `s_nextFreeSlot = -2`: every
+`storage_get_u32()` for every kind returns false, and every
+`storage_save_u32()` silently no-ops, for the rest of that boot. The app
+still runs fine (that IS how the plain, unpartitioned single-app build is
+meant to run) - only durable storage goes quiet, with no error a caller can
+see.
+
+**The fix applied this session is a diagnostic, not a behaviour change**:
+`storage_init()` now prints `storage: no partition table found this boot...`
+on exactly this path (`firmware/runtime/storage.c`), so "no stored
+calibration" (genuinely never calibrated) and "storage is disabled this
+boot" (this bug) are no longer the same silent outcome. No change to which
+address anything reads or writes - that would need hardware to verify
+safely, per this section's own opening caveat.
+
+**Not fixed, and not safe to fix blind**: making `firmware/build/main.uf2`
+preserve or re-embed a partition table on every reflash, or falling back to
+chip-absolute (whole-chip) addressing when no partition table is found, are
+both real candidate fixes - and both are flash-address-space changes on a
+board decision 0018 already found one white-screen freeze in, from
+reasoning about this exact split (partition-relative vs chip-absolute)
+without hardware to check it against. Left for the owner to verify on the
+board, the same standing caveat this whole file already carries for
+anything storage/flash-address related.
+
 ## The emulator cannot see the panel, and once that cost a day
 
 `docs/findings-panel-streaks.md` is the write-up and it is short. The summary:

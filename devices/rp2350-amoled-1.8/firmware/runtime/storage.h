@@ -42,13 +42,29 @@
 // misread by whatever claims that number next.
 #define STORAGE_KIND_DINO_HISCORE 1
 
-// tables.c's five-point touch calibration: a fitted `offset_y = alpha +
-// beta*y` line replacing the app's own hand-picked TOUCH_THUMB_BIAS_Y_
-// DEFAULT constant. ONE record for both coefficients, per this file's own
-// "one shared sector, one 16-byte record shape" - see tables.c's
-// tables_calib_pack()/tables_calib_unpack() for how alpha and beta are
-// packed into the single uint32_t this kind carries.
+// RETIRED, 2026-08-19 - never reused (this header's own rule, two
+// paragraphs up in the original: "never reuse a retired one, since a stale
+// record carrying an old kind byte would otherwise be misread"). This kind
+// used to carry a fitted `offset_y = alpha + beta*y` line, ONE uint32 for
+// both coefficients (tables.c's old tables_calib_pack()/unpack()). Replaced
+// by STORAGE_KIND_TABLES_CALIB_LO/_HI below: the owner asked for each of
+// the numpad's nine keys to learn its own centre from ten real taps rather
+// than a line fitted through three of them, and nine centres do not fit in
+// one record - see tables.c's own NUMPAD TOUCH CALIBRATION section for the
+// full design and the two-record torn-write argument.
 #define STORAGE_KIND_TABLES_CALIB 2
+
+// tables.c's per-key numpad calibration: nine keys' learned y-offsets,
+// packed 7 bits each (63 bits) across TWO records of this shared 16-byte
+// shape - one uint32 cannot hold nine 7-bit fields, so this is LO (bits
+// 0..31 of the 63-bit blob) and HI (bits 32..62). Both records are written
+// with the SAME small tag in the `reserved` byte (storage_save_u32_tagged()
+// below) so a read can tell a genuine, complete pair from one where power
+// was lost between the two saves - see tables.c's tables_calib_pack9()/
+// unpack9() for the bit layout and tables_calib_finish()'s own comment for
+// the torn-write argument this tag exists to make.
+#define STORAGE_KIND_TABLES_CALIB_LO 3
+#define STORAGE_KIND_TABLES_CALIB_HI 4
 
 // Core0, once, at boot, before sensors_start() - see storage.c's own
 // comment for why. On the board this scans the sector; in the emulator it
@@ -66,5 +82,19 @@ bool storage_get_u32(uint8_t kind, uint32_t *outValue);
 // storage.c. Call only on the event that made the value worth keeping -
 // never per frame, never in a loop, never speculatively. Core0 only.
 void storage_save_u32(uint8_t kind, uint32_t value);
+
+// Same as storage_get_u32()/storage_save_u32() above, plus the record's own
+// `reserved` byte (offset 3, storage.c's own record layout - already
+// covered by the CRC, so this changes no on-flash shape, only what value
+// goes in a byte that used to always be 0) as a small caller-defined tag.
+// storage_save_u32(k, v) is exactly storage_save_u32_tagged(k, v, 0); a kind
+// that never needs a tag can ignore these two and use the plain pair above.
+// Built for STORAGE_KIND_TABLES_CALIB_LO/_HI's own multi-record torn-write
+// check (tables.c) - a caller that appends more than one record per logical
+// save and needs to tell "both landed" from "one did" reads this back and
+// compares tags itself; storage.c does not know what a matching pair means
+// to any particular kind.
+bool storage_get_u32_tagged(uint8_t kind, uint32_t *outValue, uint8_t *outTag);
+void storage_save_u32_tagged(uint8_t kind, uint32_t value, uint8_t tag);
 
 #endif // STORAGE_H

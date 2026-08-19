@@ -5,47 +5,47 @@
 // numpad-bias measurement mode - see tables.c's "NUMPAD TOUCH CALIBRATION"
 // section for the full design.
 //
-// REPLACES A FIVE-CROSSHAIR VERSION OF THIS TEST. The mode itself changed:
-// it used to show five lone crosshairs and ask for five taps each, which
-// measured a POINTING gesture the owner never makes while actually typing
-// on the numpad ("the way I type on a numpad is not the same as when I
-// press buttons somewhere" - his own words, see tables.c's own header for
-// the full quote). The calibration screen is now the real numpad, drawn
-// exactly as ordinary gameplay draws it, and the sequence is the owner's
-// own design: prompt 3, 4, 9, then 5 six times - nine samples total
-// (CALIB_SEQ_DIGITS, tools/tables-layout.ts).
+// REWRITTEN 2026-08-19, FROM A FITTED LINE TO NINE LEARNED CENTRES. The
+// version this replaces prompted 3, 4, 9, then 5 six times (nine samples,
+// CALIB_SEQ_DIGITS) and fit offset_y = alpha + beta*y through them. Three
+// real runs on the board (same person, same grip, minutes apart) showed key
+// 4 - which got exactly ONE sample - swing 31px between runs, and in one
+// run the fitted trend no longer even exceeded the six-5s noise floor that
+// same run measured. tables.c's own header has the full account. The
+// owner's own fix: ask for ten taps per key, all nine keys, and let each
+// key's own MEDIAN become its target - no fitted line, no assumed
+// functional form.
 //
 // WHAT THIS FILE PROVES:
 //   1. The PWR double-press opens calibration (a log line says so), and a
 //      second double-press mid-pass aborts without saving.
-//   2. Nine synthetic taps, one per CALIB_SEQ_DIGITS entry, each landing a
-//      KNOWN, FIXED 30px below its own PROMPTED KEY'S DRAWN CENTRE
-//      (SYNTHETIC_OFFSET_PX below, cellCx/cellCy from tools/tables-layout,
-//      the exact target tables_calib_on_commit() measures against) -
-//      through the SAME arm/commit-confirm/release-grace gesture path
-//      ordinary digit entry uses (tapAt() below mirrors feature-tables.ts's
-//      own HOLD_MS/RELEASE_WAIT_MS, not a shortened synthetic-only wait).
-//      A flat, known offset with no real jitter and no real slope should
-//      drive: the six-5s spread to 0 (no noise fed in), all four per-key
-//      medians to exactly 30, the least-squares fit back to alpha ~= 30 /
-//      beta ~= 0, and the plain constant to 30 too.
-//   3. The calibration is actually SAVED and then USED: a fresh touch,
-//      landing SYNTHETIC_OFFSET_PX below the CENTRE of the numpad key the
-//      child is aiming at, is named as that key by numpad_hit() once the
-//      fit is loaded - checked at a coordinate where the shipped 40px
-//      DEFAULT bias would have named a DIFFERENT key, so this is a proof
-//      the calibration changed real behaviour, not a coincidence that any
-//      bias in the right ballpark would also have passed. A FRESH,
-//      never-calibrated device reads the identical raw coordinate as the
-//      OLD default's key, ruling out "the coordinate itself just happens
-//      to read as 5" as an explanation.
+//   2. NINETY synthetic taps - all nine digit keys, ten taps each, in the
+//      ROTATED order tables.c's own calib_seq_digit()/calib_seq_tap() use
+//      (1,2,...,9 repeating, not blocked) - each landing at a KNOWN, FIXED,
+//      PER-KEY offset below its own prompted key's drawn centre
+//      (TARGET_DY_FOR_DIGIT below - a DIFFERENT number for every one of the
+//      nine keys, deliberately, so a single global bias could not pass this
+//      test by accident). A flat per-key offset with no noise should drive
+//      every key's own printed spread to 0 and every key's own printed
+//      median back to exactly that key's TARGET_DY_FOR_DIGIT.
+//   3. The calibration is actually SAVED (once, with a generation tag) and
+//      then USED: nearest-learned-centre classification, at a probe
+//      coordinate chosen so the calibrated centres name a DIFFERENT digit
+//      than the shipped 40px default would - see PROBE_* below for the
+//      geometry - proving the nine learned centres are what is actually
+//      driving numpad_hit_calibrated(), not a coincidence of the
+//      coordinate chosen. A FRESH, never-calibrated device reads the SAME
+//      raw coordinate as the OLD default's digit, ruling that out.
 //
 // Run with (after `bun run emulator/wasm/build.ts`):
 //
 //   bun run emulator/wasm/tests/feature-tables-calibration.ts
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { NUMPAD_X0, NUMPAD_Y0, CELL_W, CELL_H, digitCell, cellCx, cellCy, CALIB_SEQ_DIGITS, CALIB_SEQ_LEN } from "../../../tools/tables-layout";
+import {
+  NUMPAD_X0, NUMPAD_Y0, CELL_W, CELL_H, digitCell, cellCx, cellCy,
+  CALIB_KEYS, CALIB_TAPS_PER_KEY, CALIB_SEQ_LEN, calibSeqDigit, calibSeqTap,
+} from "../../../tools/tables-layout";
 
 const WASM_PATH = join(import.meta.dir, "..", "dist", "emu.wasm");
 const BTN_PWR = 1;
@@ -62,11 +62,14 @@ const HOLD_MS = ARM_MS + COMMIT_CONFIRM_MS + 60;
 const RELEASE_WAIT_MS = RELEASE_GRACE_MS + 60;
 const STEP_MS = 16;
 
-// The KNOWN, FIXED synthetic offset every tap in this file lands at, below
-// (and never left/right of) whatever key's drawn centre it targets - a
-// flat offset with no slope and no x error, so the fit's own beta should
-// come back near zero, alpha near this number, and every printed dx near 0.
-const SYNTHETIC_OFFSET_PX = 30;
+// A DIFFERENT known dy per digit key (1..9), 30..54 in steps of 3 - chosen
+// so no single flat bias could make this test pass by accident, and small
+// enough that every synthetic touch still lands on the numpad's own
+// drawn cell (CELL_H=57, so even digit 9's own +54 dy stays inside its
+// row plus a little, never wandering into a neighbour's drawn cell).
+function targetDy(digit: number): number {
+  return 30 + 3 * (digit - 1);
+}
 
 let passCount = 0, failCount = 0;
 function check(label: string, ok: boolean, detail?: string) {
@@ -157,10 +160,6 @@ function tapAt(dev: Device, x: number, y: number) {
   clock = t;
 }
 
-function parseFixed(s: string): number {
-  return Number(s);
-}
-
 // The prompted digit's drawn cell centre, EXACTLY as tables.c's cell_rect()
 // computes it (integer division, by + bh/2 with bh=CELL_H=57 -> floor(28.5)
 // = 28) - NOT tools/tables-layout.ts's own cellCy() unmodified, which
@@ -203,16 +202,16 @@ async function main() {
   //
   // Checked on its OWN probe device (never affecting the main run below):
   // open, take one tap (on the real numpad, same as gameplay - the first
-  // prompted key, CALIB_SEQ_DIGITS[0]), abort, and confirm nothing was
-  // saved and the ordinary practice screen is what is showing again.
+  // prompted key, digit 1), abort, and confirm nothing was saved and the
+  // ordinary practice screen is what is showing again.
   {
     const probe = await loadDevice();
     await enterTables(probe, APP_TABLES);
     clock = doublePressPWR(probe, clock);
     probe.drainLog();
-    const d0 = CALIB_SEQ_DIGITS[0]!;
+    const d0 = calibSeqDigit(0);
     const [d0x, d0y] = keyCenter(d0);
-    tapAt(probe, d0x, d0y + SYNTHETIC_OFFSET_PX);
+    tapAt(probe, d0x, d0y + targetDy(d0));
     probe.drainLog();
     clock = doublePressPWR(probe, clock);
     const log = probe.drainLog();
@@ -221,68 +220,70 @@ async function main() {
     check("an abort never logs a save", !log.some((l) => l.includes("tables: calibration saved")), log.join(" | "));
   }
 
-  // ---- the nine-sample sequence: 3, 4, 9, then 5 six times, every tap
-  // landing a KNOWN, FLAT 30px below its own prompted key's drawn centre --
+  // ---- the ninety-tap sequence: nine keys, ten taps each, rotated order,
+  // every tap landing at a KNOWN, FLAT, PER-KEY offset below its own
+  // prompted key's drawn centre -------------------------------------------
   let sawSaved = false;
-  let fitAlpha = NaN, fitBeta = NaN;
-  let sawSpreadLine = false, sawMediansLine = false, sawConstantLine = false, sawTrendLine = false;
   const perTapOk: boolean[] = [];
+  const perKeyFinishOk: boolean[] = new Array(CALIB_KEYS).fill(false);
   for (let i = 0; i < CALIB_SEQ_LEN; i++) {
-    const digit = CALIB_SEQ_DIGITS[i]!;
+    const digit = calibSeqDigit(i);
+    const tap = calibSeqTap(i);
+    const dy = targetDy(digit);
     const [tx, ty] = keyCenter(digit);
-    tapAt(dev, tx, ty + SYNTHETIC_OFFSET_PX);
+    tapAt(dev, tx, ty + dy);
     const log = dev.drainLog();
 
-    const tapLine = log.find((l) => l.includes(`tables: calib ${i + 1}/${CALIB_SEQ_LEN} prompted=${digit}`));
+    const tapLine = log.find((l) => l.includes(`tables: calib ${i + 1}/${CALIB_SEQ_LEN} prompted=${digit} tap=${tap + 1}/${CALIB_TAPS_PER_KEY}`));
     const tapOk = !!tapLine && tapLine.includes(`target=(${tx},${ty})`) && tapLine.includes("dx=0") &&
-      tapLine.includes(`dy=${SYNTHETIC_OFFSET_PX} px`);
+      tapLine.includes(`dy=${dy} px`);
     perTapOk.push(tapOk);
 
-    if (log.some((l) => l.includes("tables: calib SPREAD OF THE SIX 5s"))) sawSpreadLine = true;
-    if (log.some((l) => l.includes("tables: calib per-key medians"))) sawMediansLine = true;
-    if (log.some((l) => l.includes("tables: calib CONSTANT"))) sawConstantLine = true;
-    if (log.some((l) => l.includes("tables: calib the vertical trend across 3/5/9"))) sawTrendLine = true;
-    if (log.some((l) => l === "tables: calibration saved")) sawSaved = true;
-    for (const l of log) {
-      const mA = l.match(/alpha=(-?[\d.]+) px/);
-      if (mA) fitAlpha = parseFixed(mA[1]!);
-      const mB = l.match(/beta=(-?[\d.]+) px\/px/);
-      if (mB) fitBeta = parseFixed(mB[1]!);
+    if (log.some((l) => l === "tables: calibration saved (tag=1)")) sawSaved = true;
+    for (let key = 0; key < CALIB_KEYS; key++) {
+      const d = key + 1;
+      const wantDy = targetDy(d);
+      const finishLine = log.find((l) => l.includes(`tables: calib key ${d}: `));
+      if (finishLine) {
+        perKeyFinishOk[key] = finishLine.includes(`dy min=${wantDy} max=${wantDy} spread=0 median=${wantDy} px`) &&
+          finishLine.includes("dx median=0 px");
+      }
     }
   }
-  check(`every one of the nine per-tap lines printed prompted key, target centre, dx=0 and dy=${SYNTHETIC_OFFSET_PX}px`,
+  check(`every one of the 90 per-tap lines printed prompted key, tap index, target centre, dx=0 and its own dy`,
     perTapOk.every((ok) => ok), `${perTapOk.filter((x) => x).length}/${CALIB_SEQ_LEN}`);
-  check("the six-5s SPREAD line was printed (the noise floor)", sawSpreadLine);
-  check("the per-key medians line (3/4/9/5) was printed", sawMediansLine);
-  check("the plain CONSTANT (median of all nine) line was printed", sawConstantLine);
-  check("the trend-vs-spread comparison line was printed", sawTrendLine);
-  check("the fit was printed and the calibration was saved once all nine samples completed", sawSaved);
-  check(`the fitted alpha comes back near the synthetic offset (${SYNTHETIC_OFFSET_PX}px)`,
-    !Number.isNaN(fitAlpha) && Math.abs(fitAlpha - SYNTHETIC_OFFSET_PX) < 1, `alpha=${fitAlpha}`);
-  check("the fitted beta comes back near zero (a flat offset has no slope to find)",
-    !Number.isNaN(fitBeta) && Math.abs(fitBeta) < 0.02, `beta=${fitBeta}`);
+  check("every one of the nine per-key finish lines printed spread=0 and the exact synthetic median (no noise fed in)",
+    perKeyFinishOk.every((ok) => ok), `${perKeyFinishOk.filter((x) => x).length}/${CALIB_KEYS}`);
+  check("the calibration was saved once, with generation tag 1 (first pass ever)", sawSaved);
 
-  // ---- the saved calibration is actually USED by numpad_hit() -----------
+  // ---- the saved calibration is actually USED by numpad_hit_calibrated() -
   //
-  // Column 1's own centre x, and a raw y chosen so the TRUE required
-  // correction (this file's own 30px) and the shipped 40px DEFAULT land in
-  // DIFFERENT rows: with a 30px bias the touch resolves into row 1 (the
-  // "5" key), with the old flat 40px guess it resolves one row up (the
-  // "2" key) instead - so this is a proof the fit is actually being read
-  // by numpad_hit(), not merely that some plausible bias still worked.
-  const col1CenterX = NUMPAD_X0 + CELL_W + CELL_W / 2; // 184
-  const boundaryRawY = NUMPAD_Y0 + CELL_H + (SYNTHETIC_OFFSET_PX + 2); // 243: (this - 30) sits 2px inside row 1
-  check("the chosen probe coordinate is a genuine differentiator (30px bias names row 1, 40px would have named row 0)",
-    (() => {
-      const withCalib = Math.floor(((boundaryRawY - SYNTHETIC_OFFSET_PX) - NUMPAD_Y0) / CELL_H);
-      const withDefault = Math.floor(((boundaryRawY - 40) - NUMPAD_Y0) / CELL_H);
-      return withCalib === 1 && withDefault === 0;
-    })(), `boundaryRawY=${boundaryRawY}`);
+  // PROBE: column 1's own centre x (184), a raw y chosen so nearest-learned-
+  // centre names digit 5 while the shipped 40px DEFAULT rectangle+bias
+  // names digit 8 instead - worked out from the SAME synthetic offsets this
+  // file just fed in (targetDy(5)=42, targetDy(8)=51 -> learned centres at
+  // y=239+42=281 and y=296+51=347; a probe at y=310 sits 29px from the
+  // first and 37px from the second, and the uncalibrated 40px-biased
+  // rectangle grid puts y=310 in row 2 = digit 8's row) - so this is a
+  // proof the nine learned centres are actually being read by
+  // numpad_hit_calibrated(), not merely that some plausible bias also
+  // happened to work.
+  const PROBE_X = NUMPAD_X0 + CELL_W + CELL_W / 2; // 184, column 1's centre
+  const PROBE_Y = 310;
+  {
+    const learnedY5 = NUMPAD_Y0 + CELL_H + Math.floor(CELL_H / 2) + targetDy(5); // row1 col1 centre + its dy
+    const learnedY8 = NUMPAD_Y0 + 2 * CELL_H + Math.floor(CELL_H / 2) + targetDy(8); // row2 col1 centre + its dy
+    const distTo5 = Math.abs(PROBE_Y - learnedY5), distTo8 = Math.abs(PROBE_Y - learnedY8);
+    const uncalibratedRow = Math.floor(((PROBE_Y - 40) - NUMPAD_Y0) / CELL_H);
+    check("the probe coordinate is a genuine differentiator (nearest learned centre = digit 5, uncalibrated default = digit 8)",
+      distTo5 < distTo8 && uncalibratedRow === 2,
+      `distTo5=${distTo5} distTo8=${distTo8} uncalibratedRow=${uncalibratedRow}`);
+  }
 
-  tapAt(dev, col1CenterX, boundaryRawY);
+  tapAt(dev, PROBE_X, PROBE_Y);
   {
     const log = dev.drainLog();
-    check("after calibration, a touch the shipped default would have misread as '2' is correctly read as the key she aimed at ('5')",
+    check("after calibration, a touch the shipped default would have misread as '8' is correctly read as the key nearest its learned centre ('5')",
       log.some((l) => l.includes("tables: digit 5")), log.join(" | ") || "(nothing logged)");
   }
 
@@ -292,10 +293,10 @@ async function main() {
   {
     const fresh = await loadDevice();
     await enterTables(fresh, APP_TABLES);
-    tapAt(fresh, col1CenterX, boundaryRawY);
+    tapAt(fresh, PROBE_X, PROBE_Y);
     const log = fresh.drainLog();
-    check("the SAME raw touch, on a device with NO stored calibration, still reads as the shipped default's '2'",
-      log.some((l) => l.includes("tables: digit 2")), log.join(" | ") || "(nothing logged)");
+    check("the SAME raw touch, on a device with NO stored calibration, still reads as the shipped default's '8'",
+      log.some((l) => l.includes("tables: digit 8")), log.join(" | ") || "(nothing logged)");
   }
 
   console.log(`\n${passCount} passed, ${failCount} failed`);

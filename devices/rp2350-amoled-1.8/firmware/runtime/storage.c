@@ -143,6 +143,7 @@
  */
 #include "storage.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "hardware/flash.h"
@@ -224,9 +225,16 @@ static bool record_valid(const storage_record_t *r) {
 // very flash_safe_execute() call about to program over it). Sized for
 // comfortably more kinds than exist today; a second kind adds a second
 // cache slot the same way, not a data structure.
-#define STORAGE_MAX_KINDS 4
+// STORAGE_MAX_KINDS raised 4 -> 6: DINO_HISCORE (1) plus the retired
+// TABLES_CALIB (2, never written again but a slot is cheap) plus the new
+// TABLES_CALIB_LO/_HI (3, 4) is already 4 kinds that could appear in one
+// sector's scan, and this is a fixed-size RAM array sized "comfortably more
+// kinds than exist today" per its own original comment - 6 keeps that true
+// rather than trimming the margin to exactly what is used right now.
+#define STORAGE_MAX_KINDS 6
 static uint8_t  s_cacheKind[STORAGE_MAX_KINDS];
 static uint32_t s_cacheValue[STORAGE_MAX_KINDS];
+static uint8_t  s_cacheTag[STORAGE_MAX_KINDS];   // the record's own `reserved` byte - see storage.h's storage_get/save_u32_tagged()
 static bool     s_cacheHave[STORAGE_MAX_KINDS];
 static int      s_cacheCount = 0;
 
@@ -239,6 +247,7 @@ static int cache_slot_for(uint8_t kind, bool create) {
     s_cacheKind[i] = kind;
     s_cacheHave[i] = false;
     s_cacheValue[i] = 0;
+    s_cacheTag[i] = 0;
     return i;
 }
 
@@ -309,6 +318,24 @@ void storage_init(void) {
         // same "-2" state storage_save_u32() already reads as "storage_
         // init() never ran": from a caller's point of view the two are
         // indistinguishable - storage simply is not available this boot.
+        //
+        // PRINTED, NOT SILENT, since 2026-08-19 - this is the one failure
+        // mode a caller cannot tell apart from "genuinely never saved
+        // anything" without this line. tables.c's own investigation (see
+        // its NUMPAD TOUCH CALIBRATION section and AGENTS.md's flash notes)
+        // found a calibration that had been saved and then, after an
+        // ordinary firmware reflash, read back as "no stored calibration" -
+        // consistent with the reflash overwriting whatever partition table
+        // this boot needed rom_get_boot_info() to see, which makes THIS
+        // branch fire, which disables storage for the whole boot, silently,
+        // for every kind at once. A caller reading storage_get_u32() return
+        // false has no way to distinguish "nothing was ever saved" from
+        // "nothing can be read this boot" without this line existing
+        // somewhere; this is that somewhere, printed once, at the only
+        // moment storage.c itself knows which case it is.
+        printf("storage: no partition table found this boot (rom_get_boot_info/"
+               "partition-table lookup failed) - flash storage disabled until "
+               "a valid partition table is present again\r\n");
         s_nextFreeSlot = -2;
         return;
     }
@@ -334,6 +361,7 @@ void storage_init(void) {
         int slot = cache_slot_for(rec.kind, true);
         if (slot >= 0) {
             s_cacheValue[slot] = rec.value;
+            s_cacheTag[slot] = rec.reserved0;
             s_cacheHave[slot] = true;
         }
         // Ran off the end with every slot valid: the sector is genuinely
@@ -344,9 +372,15 @@ void storage_init(void) {
 }
 
 bool storage_get_u32(uint8_t kind, uint32_t *outValue) {
+    uint8_t tag;
+    return storage_get_u32_tagged(kind, outValue, &tag);
+}
+
+bool storage_get_u32_tagged(uint8_t kind, uint32_t *outValue, uint8_t *outTag) {
     int slot = cache_slot_for(kind, false);
     if (slot < 0 || !s_cacheHave[slot]) return false;
     *outValue = s_cacheValue[slot];
+    *outTag = s_cacheTag[slot];
     return true;
 }
 
@@ -374,6 +408,10 @@ static void do_program(void *param) {
 #define STORAGE_LOCKOUT_TIMEOUT_MS 1500u
 
 void storage_save_u32(uint8_t kind, uint32_t value) {
+    storage_save_u32_tagged(kind, value, 0);
+}
+
+void storage_save_u32_tagged(uint8_t kind, uint32_t value, uint8_t tag) {
     if (s_nextFreeSlot == -2) return; // storage_init() never ran - refuse
                                        // rather than guess at the sector.
 
@@ -386,7 +424,7 @@ void storage_save_u32(uint8_t kind, uint32_t value) {
     storage_record_t rec;
     rec.magic = (uint16_t)STORAGE_MAGIC;
     rec.kind = kind;
-    rec.reserved0 = 0;
+    rec.reserved0 = tag;
     rec.value = value;
     rec.crc = crc32_bytes((const uint8_t *)&rec, 8);
     rec.reserved1 = 0xFFFFFFFFu;
@@ -408,6 +446,7 @@ void storage_save_u32(uint8_t kind, uint32_t value) {
 
     int slot = cache_slot_for(kind, true);
     s_cacheValue[slot] = value;
+    s_cacheTag[slot] = tag;
     s_cacheHave[slot] = true;
     s_nextFreeSlot = slotInSector + 1;
 }
