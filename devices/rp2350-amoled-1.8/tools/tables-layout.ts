@@ -100,12 +100,20 @@ export const NUMPAD_Y0 = OY + QROW_H + LOUPE_ZONE_H; // 154
 export const TOUCH_THUMB_BIAS_Y = 40;
 
 export const CELL_BACK = 9, CELL_ZERO = 10, CELL_CHECK = 11;
-export const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + CELL_W / 2;
+// INTEGER DIVISION, because the firmware's cell_rect() is C and CELL_H is
+// odd. tables.c centres a cell at `by + bh / 2`, which for bh = 57 is 28, not
+// 28.5. This file returned 28.5 for a while: half a pixel, invisible to a
+// test that only needs its tap to land somewhere inside a 57px cell, and
+// load-bearing the moment a test asserts an exact pixel. That is this file's
+// own stated failure mode - a mirror that is nearly right - so it is fixed
+// here rather than worked around in whichever test noticed. CELL_W is even,
+// so cellCx never diverged; it floors anyway so the two read the same way.
+export const cellCx = (c: number) => NUMPAD_X0 + (c % NUMPAD_COLS) * CELL_W + Math.floor(CELL_W / 2);
 // cellCy(): the cell's DRAWN centre. Correct for READING/MEASURING the
 // drawing itself (framebuffer probes, ink bounding boxes, highlight-centre
 // assertions) - NOT where a finger lands, so never feed this straight to a
 // touch/press call.
-export const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + CELL_H / 2;
+export const cellCy = (c: number) => NUMPAD_Y0 + Math.floor(c / NUMPAD_COLS) * CELL_H + Math.floor(CELL_H / 2);
 // cellTouchCy(): where a FINGER lands to hit cell `c` - the drawn centre plus
 // the thumb bias. Every tap site (emu_touch / setPointer / a press helper)
 // must use this, not cellCy().
@@ -190,18 +198,19 @@ export function panelPoint(x: number, y: number): [number, number] {
   return [Math.round(x), Math.round(y)];
 }
 
-// ---- FIVE-POINT TOUCH CALIBRATION (tables.c's own CALIB_* constants) ------
-// Four near the numpad's own corners, one at its centre - the same values
-// tables.c's CALIB_MARGIN_X/Y and CALIB_TARGET_X/Y use, hand-mirrored here
-// per this file's own standing discipline (see the header above): there is
-// no build step that extracts a C #define into TypeScript on this project.
-export const CALIB_TARGET_COUNT = 5;
-export const CALIB_MARGIN_X = 30, CALIB_MARGIN_Y = 30;
-export const CALIB_LEFT_X = NUMPAD_X0 + CALIB_MARGIN_X;             // 64
-export const CALIB_RIGHT_X = NUMPAD_X0 + NUMPAD_W - CALIB_MARGIN_X; // 304
-export const CALIB_TOP_Y = NUMPAD_Y0 + CALIB_MARGIN_Y;              // 184
-export const CALIB_BOTTOM_Y = NUMPAD_Y0 + NUMPAD_H - CALIB_MARGIN_Y; // 352
-export const CALIB_CENTER_X = NUMPAD_X0 + NUMPAD_W / 2;             // 184
-export const CALIB_CENTER_Y = NUMPAD_Y0 + NUMPAD_H / 2;             // 268
-export const CALIB_TARGET_X = [CALIB_LEFT_X, CALIB_RIGHT_X, CALIB_LEFT_X, CALIB_RIGHT_X, CALIB_CENTER_X];
-export const CALIB_TARGET_Y = [CALIB_TOP_Y, CALIB_TOP_Y, CALIB_BOTTOM_Y, CALIB_BOTTOM_Y, CALIB_CENTER_Y];
+// ---- NUMPAD TOUCH CALIBRATION (tables.c's own CALIB_* constants) ----------
+// Replaces an earlier five-crosshair design (four corners + centre, five
+// taps each) that measured a POINTING gesture instead of the TYPING
+// gesture the numpad actually gets - see tables.c's own NUMPAD TOUCH
+// CALIBRATION header (above numpad_hit()) for the owner's own account of
+// why. The calibration screen is now the real numpad, drawn exactly as
+// draw_numpad_all() draws it for ordinary gameplay, prompting one digit at
+// a time - CALIB_SEQ_DIGITS below, hand-mirrored from tables.c's own
+// CALIB_SEQ_DIGITS per this file's standing discipline (see the header
+// above: there is no build step that extracts a C #define into
+// TypeScript on this project). A sample's own TARGET is the prompted
+// digit's cell_rect() centre - i.e. cellCx(digitCell(d)), cellCy(digitCell(d))
+// above, already exported for exactly this - never a separate crosshair
+// coordinate.
+export const CALIB_SEQ_DIGITS = [3, 4, 9, 5, 5, 5, 5, 5, 5];
+export const CALIB_SEQ_LEN = CALIB_SEQ_DIGITS.length; // 9
