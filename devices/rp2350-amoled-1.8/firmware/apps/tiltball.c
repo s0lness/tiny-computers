@@ -138,16 +138,19 @@
 // is soldered - it reads f->tilt.gx/gy, already filtered and already
 // rotated into this app's own landscape space by runtime_core.c's
 // tilt_for_app() (firmware/runtime/tilt.h, docs/decisions/0012). The
-// device-to-panel mapping in tilt.c is a documented HYPOTHESIS (identity)
-// until the on-board axis ritual (tilt.h's "THE AXIS RITUAL",
-// `bun tools/dev.ts tilt`) settles it by hand. Because this app has no
-// orientation code of its own - no sign flip, no swap, nothing - if that
-// mapping is ever found to be flipped or transposed, the fix is one edit to
-// `device_to_panel()` in tilt.c and this file does not change at all. If it
-// IS wrong today and nobody has run the ritual yet, the practical
-// consequence for THIS app is that the ball would roll toward the wrong
-// physical edge for a given real-world tip - direction wrong, magnitude and
-// feel unaffected, and corrected for every app at once the moment the
+// device-to-panel mapping in tilt.c has moved past the identity hypothesis
+// this paragraph originally described: it is now a measured fit (swap X/Y,
+// negate Z), corrected again 2026-08-20 after the owner found horizontal
+// tilt inverted on real silicon (device_to_panel()'s own header comment in
+// tilt.c has the full history and the arithmetic). Synced into this repo by
+// tools/sync-pack.ts. Because this app has no orientation code of its own -
+// no sign flip, no swap, nothing - none of that history ever touched this
+// file: the fix was one edit to `device_to_panel()` in tilt.c, same as this
+// paragraph always said it would be. If a future axis correction ever lands
+// there, the practical consequence for THIS app, if any, is that the ball
+// would roll toward a different physical edge for a given real-world tip -
+// direction only, magnitude and feel unaffected, and corrected for every
+// app at once the moment the
 // ritual is run.
 //
 // =========================================================================

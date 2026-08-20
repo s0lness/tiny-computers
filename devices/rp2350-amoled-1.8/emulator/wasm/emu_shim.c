@@ -449,13 +449,12 @@ void sensors_inject_erase(void) {
  * this default has to be device_to_panel()'s own inverse of (0,0,1), which
  * is why it reads (0, 0, -1) below rather than (0, 0, 1): device_to_panel()
  * is currently a 180-degree turn (swap X/Y, negate Z) and therefore its own
- * inverse, so this repeats that formula rather than a separate one - the
- * same reasoning every emulator test file's own gravity()/tilt() helper
- * now carries (feature-tilt.ts's gravity() has the fuller version of this
- * comment). A host that wants a PANEL pose still calls through one of
- * those helpers, never emu_sensor_vector() directly; only
- * repro-tilt-axis-mapping.ts (emulator/wasm/tests) calls this raw, on
- * purpose, to pin device_to_panel() itself.
+ * inverse, so this repeats that formula rather than a separate one. Every
+ * consumer, app or host UI, reads the result through app_frame_t.tilt /
+ * emu_tilt() below - the published, filtered, axis-mapped signal - never
+ * this raw vector directly; there used to be a second, private accessor
+ * for exactly that raw reading (apps/fluidbox's own port called it), and it
+ * is gone now that app_frame_t.tilt carries the real thing on both targets.
  *
  * QUANTISED AND CLAMPED ON THE WAY IN, which is emu_abi.h's honesty rule
  * doing real work rather than being cited. The board's QMI8658 is left at
@@ -468,6 +467,38 @@ void sensors_inject_erase(void) {
  * range, quantise to the LSB, convert back - before it ever reaches
  * tilt.c's filter, the same way a real out-of-range or off-grid sample
  * never reaches it on the board either.
+ *
+ * PRE-COMPENSATED FOR device_to_panel(), on x/y only, and this is NOT the
+ * same thing as the quantisation above. device_to_panel() is a REAL,
+ * MEASURED correction for how THIS ONE PART is physically soldered onto
+ * THIS ONE BOARD (tilt.c's own header comment has the ritual and the
+ * numbers); there is no chip here to be mounted at any orientation at all,
+ * so nothing about a browser's tilt reading is naturally expressed in
+ * "this part's silicon axes". Instead, docs/abi.md's emu_sensor_vector
+ * convention - and every host-side caller of it (src/rotate.ts's
+ * gravityForQuickDeg, src/motion.ts's composePhoneVector) - documents and
+ * derives its (x, y) directly in PANEL space (x right, y down), the same
+ * space app_tilt_t's own gx/gy already promise an app. Handed to
+ * tilt_submit_device_g() unchanged, device_to_panel()'s swap (px=-dy,
+ * py=dx) would silently rotate (and, since 2026-08-20, also mirror) that
+ * promise - caught empirically (bun run verify:tilt failed after wiring
+ * app_frame_t.tilt into fluid.c, gravity landing on the wrong panel edge)
+ * before being understood, not guessed in advance. So x and y are
+ * transformed here, ONE TIME, before quantisation, by solving
+ * device_to_panel(dx,dy,dz)=(x,y,z) for (dx,dy): with py=dx unchanged,
+ * dx=y still; with px=-dy now (tilt.c's 2026-08-20 horizontal-axis fix,
+ * see its own header comment), -dy=x, so dy=-x - the negation on x is NEW
+ * here, in lockstep with that fix, and is what keeps this round-trip
+ * exact: device_to_panel() was self-inverse on a plain swap before that
+ * fix (px=dy, py=dx), so back then dy=x needed no sign change; it is no
+ * longer self-inverse now that px carries an extra minus sign, and this is
+ * that minus sign, moved to the other side of the equation. z is NOT
+ * touched here - the specific-force-to-gravity flip device_to_panel() also
+ * performs (pz=-dz, unchanged by the 2026-08-20 fix) is not a chip-mounting
+ * artifact, it is the same physics on every accelerometer regardless of
+ * mounting, and docs/abi.md's own convention (flat, screen up, reads
+ * ~(0,0,-1)) already assumes that flip still happens once, downstream, in
+ * tilt.c - exactly where it happens for real hardware too.
  */
 #define QMI8658_RANGE_G   8.0f
 #define QMI8658_G_PER_LSB (1.0f / 4096.0f)
@@ -480,6 +511,9 @@ static float accel_as_hardware_would(float g) {
     return counts * QMI8658_G_PER_LSB;
 }
 
+// (0, 0, -1): x=y=0 needs no swap to stay (0,0), and z is untouched here
+// either way - see this section's own header comment - so this is simply
+// docs/abi.md's own "flat, screen up" example value, unchanged.
 static float g_gravX = 0.0f, g_gravY = 0.0f, g_gravZ = -1.0f;
 
 void emu_sensor_vector(int index, float x, float y, float z) {
@@ -487,30 +521,14 @@ void emu_sensor_vector(int index, float x, float y, float z) {
                  // ("gravity"); a host passing another index is a host bug,
                  // ignored rather than trapped, same policy emu_button()
                  // uses for a bad button index.
-    g_gravX = accel_as_hardware_would(x);
-    g_gravY = accel_as_hardware_would(y);
+    // x/y transformed on the way in (dx=y, dy=x): device_to_panel() is a
+    // plain self-inverse swap again (px=dy, py=dx) since the silicon
+    // verdict of 2026-08-20 REVERTED the earlier px=-dy change (Sylve's
+    // hands on the real puck: vertical fine, horizontal inverted with the
+    // negation). See tilt.c's device_to_panel() comment.
+    g_gravX = accel_as_hardware_would(y);
+    g_gravY = accel_as_hardware_would(x);
     g_gravZ = accel_as_hardware_would(z);
-}
-
-// Private, non-ABI: not declared in emu_abi.h, not part of the contract a
-// firmware author reads there. It exists for a single-app port compiled
-// alongside this shim (wasm/build.ts's --app flag) that wants the raw
-// submitted vector without going through app_frame_t - the fluidbox port is
-// the one caller. Everything else, every real app included, reads
-// app_frame_t.tilt, which is the filtered, axis-mapped, app-space signal
-// firmware/runtime/tilt.c publishes; this is the unfiltered device-axes
-// reading and is deliberately NOT a shortcut to that.
-//
-// Its default moved with the rest of this section: it used to read (0,0,0)
-// until the host sent something, and now reads the same "lying flat, screen
-// up" pose the filter is seeded with. A caller whose fallback tested for a
-// near-zero magnitude therefore sees a valid flat pose instead of "no data" -
-// which is the better answer either way, since a flat pose has no in-plane
-// gravity and drives nothing.
-void emu_shim_tilt_get(float *x, float *y, float *z) {
-    *x = g_gravX;
-    *y = g_gravY;
-    *z = g_gravZ;
 }
 
 float emu_tilt(int field) {
@@ -959,7 +977,7 @@ int emu_device(void) {
     // one.
     p = json_append(p, "\"sensors\":[");
     p = json_append(p, "{\"id\":\"shake\",\"kind\":\"event\"},");
-    p = json_append(p, "{\"id\":\"gravity\",\"kind\":\"gravity\",\"label\":\"tilt\",\"unit\":\"g\"}");
+    p = json_append(p, "{\"id\":\"gravity\",\"kind\":\"vector\",\"label\":\"tilt\",\"unit\":\"g\"}");
     p = json_append(p, "],");
     p = json_append(p, "\"apps\":[");
     // Deduplicated by name, because a single-app build aliases every slot of

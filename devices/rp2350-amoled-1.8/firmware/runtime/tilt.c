@@ -118,13 +118,43 @@
  * is what made the axis mapping below look unverified rather than simply
  * uncorrected.
  *
- * UNVERIFIED ON SILICON: this correction is derived from the raw readings
- * above, taken on the real board against the OLD (identity) code. The
- * corrected function itself has run in the emulator and its tests, never
- * yet on the board. The owner will verify with a flashed build.
+ * VALIDATED ON SILICON, 2026-08-20, AND CORRECTED AGAIN. The owner flashed
+ * the fluid app (apps/fluidbox/ports/rp2350-touch-amoled-18/fluid.c) to the
+ * real board and tilted it by hand: VERTICAL tilt (py, from dx above) was
+ * correct - the liquid pours toward the low edge exactly as app.h's
+ * app_tilt_t doc promises. HORIZONTAL tilt (px, from dy above) was
+ * INVERTED - the liquid poured AWAY from the low side. So px's sign flips:
+ *
+ *   *px = -dy;
+ *   *py = dx;
+ *   *pz = -dz;
+ *
+ * py and pz are UNCHANGED from the fit above (they were already right on
+ * real hardware); only px's sign moved.
+ *
+ * THIS IS NOW A REFLECTION, NOT A ROTATION, by this comment's own earlier
+ * determinant test: flipping one row of a proper-rotation matrix while
+ * holding the other two fixed always flips the sign of the determinant (was
+ * +1, now -1), and a reflection is not something a rigid chip-on-PCB mount
+ * can produce on its own. Recorded rather than hidden: the theoretical
+ * "must be a rotation" argument above was built on the OLD, board-unverified
+ * fit, and it is now outweighed by an actual measurement on an actual puck
+ * running an actual app - ground truth over an internally-consistent guess.
+ * The most likely explanation is that one of the THREE poses the original
+ * fit was built from (tilt.h's axis ritual) had a sign recorded wrong in a
+ * way that this one-axis patch corrects for px without re-deriving py/pz
+ * from scratch; py's own real-hardware correctness is why it was left
+ * alone. If a future re-run of the axis ritual (tilt.h) turns up a cleaner
+ * rotation that also gets px right, prefer that over this patch - but until
+ * then, this is what the fluid app actually does on silicon, which is the
+ * only oracle this file answers to.
  */
 static void TILT_NOT_IN_FLASH(device_to_panel)(float dx, float dy, float dz,
                             float *px, float *py, float *pz) {
+    // Horizontal sign validated on silicon 2026-08-20 with the fluid app:
+    // vertical tilt behaved, horizontal poured AWAY from the low side with
+    // the old `*px = -dy`. The QMI8658 mounting maps device +y to panel +x
+    // without a flip.
     *px = dy;
     *py = dx;
     *pz = -dz;

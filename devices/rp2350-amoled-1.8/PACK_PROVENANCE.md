@@ -15,11 +15,11 @@ comment for what is synced, what is not, and why each line falls where it does.
 
 | | |
 |---|---|
-| synced on | 2026-08-19 |
+| synced on | 2026-08-20 |
 | pack path | `C:/Users/sylve/projects/puck/packs/rp2350-touch-amoled-18` |
-| puck commit | `3e2434a57aab94911eb7159b631a842eb8915c1f` |
-| commit date | 2026-08-19T18:22:32+02:00 |
-| commit subject | The pack catches up with its device: tiny-computers runtime converges |
+| puck commit | `aa71764a08553d7bf679c3721446ff08be64d880` |
+| commit date | 2026-08-20T16:09:21+02:00 |
+| commit subject | Bench verdict: the ESP32 flashes from the browser, first try |
 | pack worktree | clean |
 
 ## Files
