@@ -49,6 +49,7 @@ const server = Bun.spawn(["bun", "run", "server.ts"], {
 });
 
 let browser: Awaited<ReturnType<typeof puppeteer.launch>> | null = null;
+let foreignOriginServer: import("bun").Server<undefined> | null = null;
 try {
   await waitForServer(`http://127.0.0.1:${PORT}/`, 15000);
   console.log("server up");
@@ -71,6 +72,40 @@ try {
   console.log("write routes reject unguarded requests");
 
   browser = await puppeteer.launch({ executablePath: CHROME, headless: true });
+  foreignOriginServer = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () =>
+      new Response("<!doctype html><title>foreign origin</title>", {
+        headers: { "content-type": "text/html" },
+      }),
+  });
+  const foreignPage = await browser.newPage();
+  await foreignPage.goto(`http://127.0.0.1:${foreignOriginServer.port}/`);
+  const foreignDevlinkOpened = await foreignPage.evaluate(
+    (url) =>
+      new Promise<boolean>((resolve) => {
+        const ws = new WebSocket(url);
+        const timer = setTimeout(() => {
+          ws.close();
+          resolve(false);
+        }, 2000);
+        ws.addEventListener("open", () => {
+          clearTimeout(timer);
+          ws.close();
+          resolve(true);
+        });
+        ws.addEventListener("error", () => {
+          clearTimeout(timer);
+          resolve(false);
+        });
+      }),
+    `ws://127.0.0.1:${PORT}/api/devlink`,
+  );
+  await foreignPage.close();
+  if (foreignDevlinkOpened) fail("/api/devlink accepted a WebSocket from a foreign browser origin");
+  console.log("devlink socket rejects foreign browser origins");
+
   const page = await browser.newPage();
   await page.setViewport({ width: 1400, height: 1000 });
   page.on("pageerror", (e) => console.error("page error:", e));
@@ -113,6 +148,7 @@ try {
   }
 } finally {
   if (browser) await browser.close();
+  foreignOriginServer?.stop(true);
   // Plain server.kill() (SIGTERM) was observed to leave the Bun dev server
   // (development.hmr spawns a watcher) still listening on Windows even
   // after the parent process object reports killed. Force the whole tree,

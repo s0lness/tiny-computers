@@ -29,6 +29,15 @@ function guard(req: Request): boolean {
   return req.headers.get("x-rp2350-emulator") === "1";
 }
 
+function allowDevlinkSocket(req: Request): boolean {
+  // Browsers always send Origin on a WebSocket handshake. Match it to the
+  // server being addressed so another page cannot relay commands to the
+  // physical board. Bun's CLI WebSocket client sends no Origin, and remains
+  // allowed for tools/dev.ts.
+  const origin = req.headers.get("origin");
+  return origin === null || origin === new URL(req.url).origin;
+}
+
 function quit(req: Request): Response {
   if (!guard(req)) return new Response("nope", { status: 403 });
   // Releases the real COM port (if this server is holding one) before
@@ -327,6 +336,7 @@ const server = Bun.serve<WsKind>({
     },
     "/api/devlink": {
       GET(req: Request, srv: import("bun").Server<WsKind>) {
+        if (!allowDevlinkSocket(req)) return new Response("nope", { status: 403 });
         if (srv.upgrade(req, { data: { kind: "devlink" } })) return;
         return new Response("upgrade failed", { status: 400 });
       },

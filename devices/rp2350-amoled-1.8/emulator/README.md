@@ -86,4 +86,6 @@ must still be measured on the board.
 Freeze bundles are written under `freezes/` and traces under `traces/`. Both
 directories are ignored by git. All write routes require
 `x-rp2350-emulator: 1`; keep that guard and the matching client header on any
-new route that changes local state.
+new route that changes local state. The devlink WebSocket accepts browser
+clients only from the emulator's own origin; CLI clients without an `Origin`
+header remain supported.
