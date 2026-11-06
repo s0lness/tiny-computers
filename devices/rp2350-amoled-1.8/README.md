@@ -1,9 +1,9 @@
 # rp2350-amoled-1.8
 
 Firmware for the **Waveshare RP2350-Touch-AMOLED-1.8**, a 368x448 AMOLED
-touchscreen in a small plastic puck. A single-binary runtime holds three apps
-(a stopwatch, a sketchpad, a countdown timer) plus a menu, switched by a
-function call rather than a reboot; see `AGENTS.md` for the current shape.
+touchscreen in a small plastic puck. A single-binary runtime builds eleven apps
+and exposes five of them on its menu, switched by a function call rather than a
+reboot; see `AGENTS.md` for the current roster and architecture.
 
 `AGENTS.md` says how to build, flash and work on it. `docs/decisions/` says why
 things are the way they are. This file is the bring-up log: what the hardware

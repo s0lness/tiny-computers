@@ -14,7 +14,7 @@ almost nothing to write down afterwards. So they get written down.
 
 | Device | MCU | Screen | Status |
 |---|---|---|---|
-| [`rp2350-amoled-1.8`](devices/rp2350-amoled-1.8) | RP2350A | 368x448 AMOLED, SH8601 over QSPI | working: sketchpad, two app slots |
+| [`rp2350-amoled-1.8`](devices/rp2350-amoled-1.8) | RP2350A | 368x448 AMOLED, SH8601 over QSPI | working: eleven apps built, five on the menu |
 
 Planned: the ESP32-S3 sibling of the same 1.8" AMOLED puck. Waveshare sells
 both under nearly identical names in the same case, which is its own lesson:
